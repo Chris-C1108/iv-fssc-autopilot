@@ -1,7 +1,7 @@
 # AGENTS.md — IVision FSSC Autopilot (元年云费控极速自动驾驶副驾) AI 协作与维护指南
 
 > **GitHub 项目主页**：[Chris-C1108/iv-fssc-autopilot](https://github.com/Chris-C1108/iv-fssc-autopilot)  
-> **当前基准版本**：`v4.3.0`  
+> **当前基准版本**：`v4.4.0`  
 > **工程体系**：TypeScript + Rollup + JavaScript-Obfuscator 混淆打包流水线
 
 本文档是任何接手该项目的 AI Agent（或开发者）的第一入口。旨在帮助 Agent 迅速理解系统架构、遵循代码与文档规范、复用 API 资产并避免重复踩坑。
@@ -10,14 +10,14 @@
 
 ## 1. 语义化版本演进治理规约 (Versioning Governance)
 
-以当前版本 **`v4.3.0`** 为基准起点，所有 AI Agent 与开发者必须严格遵循三级版本号递增规约：
+以当前版本 **`v4.4.0`** 为基准起点，所有 AI Agent 与开发者必须严格遵循三级版本号递增规约：
 
 ```
                 【版本号格式：X . Y . Z】
                 
   ┌───────────────────┬───────────────────┬───────────────────┐
   │  1. 主版本 (Major) │  2. 次版本 (Minor) │  3. 修订版 (Patch) │
-  │      X . 0 . 0    │     4 . Y . 0     │    4 . 3 . Z      │
+  │      X . 0 . 0    │     4 . Y . 0     │    4 . 4 . Z      │
   ├───────────────────┼───────────────────┼───────────────────┤
   │ • 由用户/开发者修改 │ • 由 AI Agent 递增 │ • 由 AI Agent 递增 │
   │ • 跨架构/破坏性变更 │ • 每次递增 +0.1.0  │ • 每次递增 +0.0.1  │
@@ -37,8 +37,10 @@
   *触发条件*：修改任何 API 调用逻辑、组装 Payload 或调试保存失败问题时必读。
 - **元年 FSSC 全量 API 字典**：[`docs/api/YUANNIAN_API_REFERENCE.md`](docs/api/YUANNIAN_API_REFERENCE.md)  
   *触发条件*：需要查阅接口端点、请求参数、响应结构或字段映射 ID 时查阅。
+- **考勤工数系统 API 字典**：[`docs/api/TIMEMG_API_REFERENCE.md`](docs/api/TIMEMG_API_REFERENCE.md)  
+  *触发条件*：需要查阅爱模考勤系统 (`time-mg.huge-vision.com`) 接口端点、门禁推断或工时分配规则时查阅。
 - **最新交接文档 (Handoff)**：[`docs/handoff/handoff_20260817.md`](docs/handoff/handoff_20260817.md)  
-  *触发条件*：了解上一轮开发成果、当前最新稳定版本状态（v4.3.0）与架构决策时查阅。
+  *触发条件*：了解上一轮开发成果、当前最新稳定版本状态（v4.4.0）与架构决策时查阅。
 - **TS 工程化模块架构**：[`src/README.md`](src/README.md)  
   *触发条件*：进行多文件工程开发或新增模块时参考。
 

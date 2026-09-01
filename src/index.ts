@@ -21,6 +21,19 @@ import {
 } from './services/expenseService';
 import { injectStyles } from './ui/styles';
 import { createModalDOM } from './ui/modal';
+import { fetchExpWHInfoApi, fetchDetailWHInfoApi, getCsrfToken, detectActiveYearAndMonth } from './services/timeMgService';
+import { computeProjectAllocationPlan, calculateBudgetShortfall } from './services/timeMgAllocation';
+import { saveAttendanceTwinClient, syncHostMonth } from './services/timeMgDomService';
+import { injectTimeMgStyles } from './ui/timeMgStyles';
+import {
+    createTimeMgModalDOM,
+    renderTimeMgExpProjects,
+    renderTimeMgPlans,
+    updateCollapseHeaderShortfallBadge,
+    autoInitHostCollapseBadge
+} from './ui/timeMgModal';
+import { showToast } from './utils/toast';
+import { AutopilotLogger } from './utils/logger';
 
 // ==========================================
 // 1. 全局状态单例
@@ -64,6 +77,11 @@ const STATE: GlobalState = {
 function detectPageMode(): PageMode {
     const url = window.location.href;
     const decodedUrl = decodeURIComponent(url);
+
+    // 0. 【考勤工数系统】页面特征检测 (与元年完全独立)
+    if (window.location.hostname.includes('time-mg.huge-vision.com') || url.includes('time-mg.huge-vision.com')) {
+        return 'TIME_MG';
+    }
 
     // 1. 【经费报销单页】特征检测
     const isBillPage = (
@@ -142,6 +160,23 @@ function initInterceptor() {
         if (getH('menuid')) STATE.menuId = getH('menuid');
         if (getH('eicds')) STATE.eicds = getH('eicds');
         if (getH('v')) STATE.v = getH('v');
+        if (getH('X-CSRF-TOKEN') || getH('x-csrf-token')) {
+            if (!STATE.timeMg) {
+                const now = new Date();
+                STATE.timeMg = {
+                    selectedYear: String(now.getFullYear()),
+                    selectedMonth: String(now.getMonth() + 1).padStart(2, '0'),
+                    csrfToken: '',
+                    expProjects: [],
+                    detailDays: [],
+                    allocatedPlans: [],
+                    isProcessing: false,
+                    lastSyncTime: ''
+                };
+            }
+            STATE.timeMg.csrfToken = getH('X-CSRF-TOKEN') || getH('x-csrf-token');
+            updateTimeMgTokenStatus();
+        }
         updateTokenStatus();
     };
 
@@ -1495,8 +1530,291 @@ function bindEvents() {
     }
 }
 
+// ==========================================
+// 9. 模式 C: 考勤工数系统 (time-mg.huge-vision.com) 核心逻辑与事件
+// ==========================================
+function updateTimeMgTokenStatus() {
+    const badge = document.querySelector('#yn-timemg-helper-btn .yn-timemg-badge');
+    const csrf = getCsrfToken(STATE.timeMg);
+    if (badge) {
+        badge.className = `yn-timemg-badge ${csrf ? '' : 'offline'}`;
+    }
+}
+
+function initTimeMgSystem() {
+    const activeYM = detectActiveYearAndMonth();
+    if (!STATE.timeMg) {
+        STATE.timeMg = {
+            selectedYear: activeYM.year,
+            selectedMonth: activeYM.month,
+            csrfToken: getCsrfToken(),
+            expProjects: [],
+            detailDays: [],
+            allocatedPlans: [],
+            isProcessing: false,
+            lastSyncTime: ''
+        };
+    } else {
+        STATE.timeMg.selectedYear = activeYM.year;
+        STATE.timeMg.selectedMonth = activeYM.month;
+    }
+    injectTimeMgStyles();
+    createTimeMgModalDOM(STATE.timeMg);
+    bindTimeMgEvents();
+    updateTimeMgTokenStatus();
+    autoInitHostCollapseBadge();
+}
+
+let timeMgEventsBound = false;
+
+function bindTimeMgEvents() {
+    if (timeMgEventsBound) return;
+    timeMgEventsBound = true;
+
+    const btn = document.getElementById('yn-timemg-helper-btn');
+    const modal = document.getElementById('yn-timemg-modal');
+    const mask = document.getElementById('yn-timemg-modal-mask');
+    const closeBtn = document.getElementById('yn-timemg-modal-close');
+    const btnSync = document.getElementById('yn-timemg-btn-sync');
+    const btnRecalc = document.getElementById('yn-timemg-btn-recalc');
+    const btnAutofill = document.getElementById('yn-timemg-btn-autofill');
+    const btnCopyLog = document.getElementById('yn-timemg-btn-copylog');
+    const yearInput = document.getElementById('yn-timemg-input-year') as HTMLInputElement;
+    const monthInput = document.getElementById('yn-timemg-input-month') as HTMLInputElement;
+
+    if (!btn || !modal) return;
+
+    const openModal = async () => {
+        // 打开模态框时，优先嗅探宿主页面当前正在展示的最新年月
+        const activeYM = detectActiveYearAndMonth();
+        if (yearInput) yearInput.value = activeYM.year;
+        if (monthInput) monthInput.value = String(parseInt(activeYM.month, 10));
+
+        let monthChanged = false;
+        if (STATE.timeMg) {
+            monthChanged = (STATE.timeMg.selectedYear !== activeYM.year) || (STATE.timeMg.selectedMonth !== activeYM.month);
+            STATE.timeMg.selectedYear = activeYM.year;
+            STATE.timeMg.selectedMonth = activeYM.month;
+            if (monthChanged) {
+                STATE.timeMg.expProjects = [];
+                STATE.timeMg.detailDays = [];
+                STATE.timeMg.allocatedPlans = [];
+            }
+        }
+
+        modal.style.display = 'flex';
+        if (mask) mask.style.display = 'block';
+        updateTimeMgTokenStatus();
+
+        if (STATE.timeMg && (STATE.timeMg.expProjects.length === 0 || monthChanged)) {
+            await syncTimeMgData();
+        }
+    };
+
+    const closeModal = () => {
+        modal.style.display = 'none';
+        if (mask) mask.style.display = 'none';
+    };
+
+    btn.addEventListener('click', openModal);
+    if (mask) mask.addEventListener('click', closeModal);
+    if (closeBtn) closeBtn.addEventListener('click', closeModal);
+
+    if (btnSync) btnSync.addEventListener('click', () => syncTimeMgData());
+    if (btnRecalc) btnRecalc.addEventListener('click', () => recalcTimeMgAllocation());
+    if (btnAutofill) btnAutofill.addEventListener('click', () => executeTimeMgAutofill());
+    if (btnCopyLog) {
+        btnCopyLog.addEventListener('click', async () => {
+            const ok = await AutopilotLogger.copyLogsToClipboard();
+            if (ok) {
+                showToast('success', '📋 完整运行日志已成功复制到剪贴板！');
+            } else {
+                showToast('error', '❌ 复制失败，请手动选择日志文本复制。');
+            }
+        });
+    }
+
+    if (yearInput) {
+        yearInput.addEventListener('change', () => {
+            if (STATE.timeMg) STATE.timeMg.selectedYear = yearInput.value;
+        });
+    }
+    if (monthInput) {
+        monthInput.addEventListener('change', () => {
+            if (STATE.timeMg) STATE.timeMg.selectedMonth = String(monthInput.value).padStart(2, '0');
+        });
+    }
+}
+
+function handleToggleOverflow(pjNo: string, checked: boolean) {
+    if (!STATE.timeMg) return;
+    const set = new Set(STATE.timeMg.allowedOverflowPjNos || []);
+    if (checked) set.add(pjNo);
+    else set.delete(pjNo);
+    STATE.timeMg.allowedOverflowPjNos = Array.from(set);
+
+    const plans = computeProjectAllocationPlan(
+        STATE.timeMg.expProjects,
+        STATE.timeMg.detailDays,
+        STATE.timeMg.allowedOverflowPjNos
+    );
+    STATE.timeMg.allocatedPlans = plans;
+
+    renderTimeMgExpProjects(STATE.timeMg.expProjects, STATE.timeMg, handleToggleOverflow);
+    renderTimeMgPlans(plans);
+
+    const assignedDays = plans.filter(p => p.isWorkDay && p.pjNo).length;
+    AutopilotLogger.info(`已更新项目超额配置：${pjNo} (${checked ? '允许超预算' : '不超预算'})，当前已分摊出勤日: ${assignedDays} 天`);
+    showToast('info', checked ? `已允许【${pjNo}】超出预算吸收缺口工时` : `已取消【${pjNo}】超预算分摊`, 2500);
+}
+
+async function syncTimeMgData() {
+    if (!STATE.timeMg) return;
+    const yearInput = document.getElementById('yn-timemg-input-year') as HTMLInputElement;
+    const monthInput = document.getElementById('yn-timemg-input-month') as HTMLInputElement;
+    const btnSync = document.getElementById('yn-timemg-btn-sync') as HTMLButtonElement;
+
+    const y = yearInput ? yearInput.value : STATE.timeMg.selectedYear;
+    const m = monthInput ? String(monthInput.value).padStart(2, '0') : STATE.timeMg.selectedMonth;
+    STATE.timeMg.selectedYear = y;
+    STATE.timeMg.selectedMonth = m;
+
+    if (btnSync) {
+        btnSync.disabled = true;
+        btnSync.innerText = '⏳ 正在同步...';
+    }
+
+    AutopilotLogger.info(`开始同步 ${y}年${m}月 考勤与项目预实工时数据...`);
+
+    try {
+        await syncHostMonth(y, m);
+
+        const [expProjects, detailDays] = await Promise.all([
+            fetchExpWHInfoApi(y, m, STATE.timeMg),
+            fetchDetailWHInfoApi(y, m, STATE.timeMg)
+        ]);
+
+        STATE.timeMg.expProjects = expProjects;
+        STATE.timeMg.detailDays = detailDays;
+        AutopilotLogger.success(`数据拉取完成：获取到 ${expProjects.length} 个项目预实对比项，${detailDays.length} 天考勤明细`);
+
+        // 执行智能分配 (支持勾选超预算项目)
+        const plans = computeProjectAllocationPlan(expProjects, detailDays, STATE.timeMg.allowedOverflowPjNos || []);
+        STATE.timeMg.allocatedPlans = plans;
+
+        // 计算预算工时缺口
+        const shortfall = calculateBudgetShortfall(expProjects, detailDays, plans);
+        STATE.timeMg.budgetShortfall = shortfall;
+
+        updateCollapseHeaderShortfallBadge(shortfall);
+        renderTimeMgExpProjects(expProjects, STATE.timeMg, handleToggleOverflow);
+        renderTimeMgPlans(plans);
+
+        const workDays = plans.filter(p => p.isWorkDay);
+        const assignedHours = workDays.filter(p => Boolean(p.pjNo)).reduce((s, p) => s + (p.timeWH || 0), 0);
+        AutopilotLogger.success(`智能工数分配完成：${workDays.length} 个出勤日，已分配工时 ${assignedHours.toFixed(2)}h`);
+
+        if (shortfall.shortfallHours > 0) {
+            showToast('info', `✅ 成功同步！当月出勤需求 ${shortfall.totalRequiredHours}h，预算缺口 ${shortfall.shortfallHours}h。可在左侧勾选允许超出的项目，或保持缺口留空。`, 5000);
+        } else {
+            showToast('success', `✅ 成功同步 ${y}年${m}月 数据！共 ${expProjects.length} 个项目，已自动完成分配。`, 4000);
+        }
+    } catch (err: any) {
+        AutopilotLogger.error(`同步失败: ${err.message}`);
+        showToast('error', `❌ 同步失败: ${err.message}，请检查登录状态或网络`, 5000);
+    } finally {
+        if (btnSync) {
+            btnSync.disabled = false;
+            btnSync.innerText = '🔄 同步考勤与项目数据';
+        }
+    }
+}
+
+function recalcTimeMgAllocation() {
+    if (!STATE.timeMg) return;
+    if (STATE.timeMg.expProjects.length === 0 || STATE.timeMg.detailDays.length === 0) {
+        showToast('warning', '请先点击【🔄 同步考勤与项目数据】获取当月考勤！');
+        return;
+    }
+
+    AutopilotLogger.info('正在重新试算工数分配方案...');
+    const plans = computeProjectAllocationPlan(
+        STATE.timeMg.expProjects,
+        STATE.timeMg.detailDays,
+        STATE.timeMg.allowedOverflowPjNos || []
+    );
+    STATE.timeMg.allocatedPlans = plans;
+
+    const shortfall = calculateBudgetShortfall(STATE.timeMg.expProjects, STATE.timeMg.detailDays, plans);
+    STATE.timeMg.budgetShortfall = shortfall;
+
+    updateCollapseHeaderShortfallBadge(shortfall);
+    renderTimeMgExpProjects(STATE.timeMg.expProjects, STATE.timeMg, handleToggleOverflow);
+    renderTimeMgPlans(plans);
+    AutopilotLogger.success('智能工数分配已重新刷新！');
+    showToast('info', '⚡ 智能工数分配已刷新！');
+}
+
+async function executeTimeMgAutofill() {
+    if (!STATE.timeMg || STATE.timeMg.allocatedPlans.length === 0) {
+        showToast('warning', '请先同步数据并生成分配方案！');
+        return;
+    }
+
+    const workDays = STATE.timeMg.allocatedPlans.filter(p => p.isWorkDay);
+    const existingDays = STATE.timeMg.allocatedPlans.filter(p => p.status === '已填写');
+    const toFillDays = STATE.timeMg.allocatedPlans.filter(p => p.status === '就绪');
+    const outCount = toFillDays.filter(p => p.isOut).length;
+    const officeCount = toFillDays.length - outCount;
+    const shortfall = STATE.timeMg.budgetShortfall;
+
+    AutopilotLogger.info(`准备执行孪生客户端填报：保留已有 ${existingDays.length} 条，装载待填 ${toFillDays.length} 条 (外出 ${outCount} 天, 公司 ${officeCount} 天)...`);
+
+    const progressWrap = document.getElementById('yn-timemg-progress-wrap')!;
+    const progressInner = document.getElementById('yn-timemg-progress-inner')!;
+    const logText = document.getElementById('yn-timemg-log-text')!;
+    const btnAutofill = document.getElementById('yn-timemg-btn-autofill') as HTMLButtonElement;
+
+    progressWrap.style.display = 'block';
+    btnAutofill.disabled = true;
+    btnAutofill.innerText = '⏳ 正在填报并保存...';
+
+    const res = await saveAttendanceTwinClient(STATE.timeMg.allocatedPlans, STATE.timeMg, (idx, total, msg) => {
+        const percent = Math.round((idx / total) * 100);
+        progressInner.style.width = `${percent}%`;
+        logText.innerText = `[${idx}/${total}] ${msg}`;
+        AutopilotLogger.info(`[进度 ${idx}/${total}] ${msg}`);
+    });
+
+    progressInner.style.width = '100%';
+    btnAutofill.disabled = false;
+    btnAutofill.innerText = '💾 一键填报并保存考勤 (Twin Client)';
+    renderTimeMgPlans(STATE.timeMg.allocatedPlans);
+
+    if (res.failCount === 0) {
+        logText.innerText = `✅ 全部 ${res.successCount} 条记录填报并生效保存！`;
+        AutopilotLogger.success(`🎉 填报成功完成：全部 ${res.successCount} 条记录已装载并触发生效保存！`);
+        let toastMsg = `🎉 全部 ${res.successCount} 条出勤记录已成功装载并触发生效保存！`;
+        if (shortfall && shortfall.shortfallHours > 0) {
+            toastMsg += `\n（注：缺口 ${shortfall.shortfallHours}h 的行项目编号已留空，请按需手动选择项目）`;
+        }
+        showToast('success', toastMsg, 6000);
+    } else {
+        logText.innerText = `⚠️ 填报完成：成功 ${res.successCount} 条，失败 ${res.failCount} 条`;
+        AutopilotLogger.warn(`填报部分异常：成功 ${res.successCount} 条，失败 ${res.failCount} 条。详情: ${res.errors.join('; ')}`);
+        showToast('warning', `⚠️ 填报完成：成功 ${res.successCount} 条，失败 ${res.failCount} 条`, 5000);
+    }
+}
+
 function checkAndMount() {
+    if (typeof window !== 'undefined' && window.top !== window.self) return;
     const mode = detectPageMode();
+    if (mode === 'TIME_MG') {
+        STATE.pageMode = mode;
+        initTimeMgSystem();
+        console.log(`[IVision FSSC Autopilot v4.4.0] Mounted successfully in [TIME_MG] mode.`);
+        return;
+    }
     if (mode && mode !== 'UNKNOWN') {
         STATE.pageMode = mode;
         extractUrlParams();
@@ -1504,7 +1822,7 @@ function checkAndMount() {
         createModalDOM(STATE);
         bindEvents();
         updateTokenStatus();
-        console.log(`[IVision FSSC Autopilot v4.3.0] Mounted successfully in [${mode}] mode.`);
+        console.log(`[IVision FSSC Autopilot v4.4.0] Mounted successfully in [${mode}] mode.`);
     }
 }
 
@@ -1518,7 +1836,7 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
 
 // 轮询检查避免 Vue 异步路由渲染遗漏
 setInterval(() => {
-    if (!document.getElementById('yn-batch-helper-btn')) {
+    if (!document.getElementById('yn-batch-helper-btn') && !document.getElementById('yn-timemg-helper-btn')) {
         checkAndMount();
     }
 }, 1500);

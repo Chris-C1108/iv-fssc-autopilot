@@ -1,4 +1,6 @@
-export type PageMode = 'POOL' | 'EXPENSE' | 'BILL' | 'UNKNOWN';
+import { TimeMgState } from './timeMgTypes';
+
+export type PageMode = 'POOL' | 'EXPENSE' | 'BILL' | 'TIME_MG' | 'UNKNOWN';
 
 export type ExpenseCategory = 'ALL' | 'TAXI' | 'COMMUNICATION' | 'OTHER';
 
@@ -74,4 +76,7 @@ export interface GlobalState {
     selectedProject: OptionItem | null;
     selectedKhfd: OptionItem | null;
     isProcessing: boolean;
+
+    // 模式 C: 爱模智能考勤工数系统数据
+    timeMg?: TimeMgState;
 }

@@ -1,10 +1,12 @@
 // ==UserScript==
 // @name         IVision FSSC Autopilot (元年云费控极速自动驾驶副驾)
 // @namespace    https://github.com/Chris-C1108/iv-fssc-autopilot
-// @version      4.3.0
+// @version      4.4.6
 // @description  元年云报销全流程超级副驾：①【发票夹 & 费用记录】全量OCR数据穿透补全(乘车时间/里程100%恢复)、自动识别通信费、自由切换分类、早晚行程智能推断、拖拽多附件；②【经费报销单页】丰富多维菜单Item(科目/项目/成本中心/向客户请款)、自动聚合备注TAG(如X2605-001)、智能检索匹配项目、蝴蝶效应引擎链式联动、一键自动持久化保存(saveBillData)并自动刷新单据视图；③【极速模式】首行蝴蝶+内存克隆+单次入库(30倍提速)。
 // @author       Chris-C1108
 // @match        https://ync37.yuanian.com/fssc/*
+// @match        https://time-mg.huge-vision.com/*
+// @noframes
 // @grant        GM_xmlhttpRequest
 // @grant        unsafeWindow
 // @run-at       document-end
@@ -1038,6 +1040,1902 @@
         return { btn, modal, mask };
     }
 
+    /**
+     * 考勤工数管理系统 (time-mg.huge-vision.com) 核心常量定义
+     */
+    const TIME_MG_CONSTANTS = {
+        ORIGIN: 'https://time-mg.huge-vision.com',
+        API_PREFIX: '/ivggs/api',
+        ENDPOINTS: {
+            // 项目工时预实对比表
+            EXP_WH_INFO: '/ivggs/api/wh10101/selectExpWHInfo/',
+            // 考勤一览明细表
+            DETAIL_WH_INFO: '/ivggs/api/wh10101/selectDetailWHInfo',
+            // 考勤提交/保存前置校验
+            SUBMIT_OR_SAVE_CHECK: '/ivggs/api/wh10101/submitOrSaveCheck',
+            // 考勤明细保存/提交
+            COMMIT_DETAIL: '/ivggs/api/wh10101/commitDetail',
+            // 项目列表弹窗字典
+            PROJECT_LIST: '/ivggs/api/pop/pjg/list',
+            // 工时试算接口
+            ACTUAL_WH: '/ivggs/api/wh10101/getActualWH'
+        },
+        // 考勤基准工时配置
+        DEFAULTS: {
+            START_TIME_API: '0900', // API 入参格式 0900
+            END_TIME_API: '1730', // API 入参格式 1730
+            START_TIME_DISPLAY: '09:00', // 页面展示/回填格式
+            END_TIME_DISPLAY: '17:30', // 页面展示/回填格式
+            STANDARD_HOURS: 7.5, // 每日标准出勤工时 7.5h
+            LUNCH_START: '12:00',
+            LUNCH_END: '13:00',
+            LOCATION_OUT: '外出', // 办公地点：外出
+            LOCATION_OFFICE: '社内', // 办公地点：社内
+            FLG_OUT_VALUE: '1' // 外出标志位
+        }
+    };
+
+    /**
+     * 获取当前页面的 CSRF Token
+     */
+    function getCsrfToken(state) {
+        if (state && state.csrfToken)
+            return state.csrfToken;
+        // 1. 从 meta 标签查找
+        const metaCsrf = document.querySelector('meta[name="_csrf"]')?.getAttribute('content') ||
+            document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
+        if (metaCsrf)
+            return metaCsrf;
+        // 2. 从 Cookie 查找
+        const match = document.cookie.match(/XSRF-TOKEN=([^;]+)/i) || document.cookie.match(/_csrf=([^;]+)/i);
+        if (match)
+            return decodeURIComponent(match[1]);
+        // 3. 从页面全局变量或 hidden input 查找
+        const inputCsrf = document.querySelector('input[name="_csrf"]')?.value;
+        if (inputCsrf)
+            return inputCsrf;
+        return '';
+    }
+    /**
+     * 封装带 CSRF Token 和凭据的通用 POST 请求
+     */
+    async function timeMgPost(endpoint, body, state) {
+        const csrfToken = getCsrfToken(state);
+        const headers = {
+            'Content-Type': 'application/json;charset=UTF-8',
+            'Accept': 'application/json, text/plain, */*'
+        };
+        if (csrfToken) {
+            headers['X-CSRF-TOKEN'] = csrfToken;
+        }
+        const url = endpoint.startsWith('http') ? endpoint : `${TIME_MG_CONSTANTS.ORIGIN}${endpoint}`;
+        const resp = await fetch(url, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(body),
+            credentials: 'include'
+        });
+        if (!resp.ok) {
+            throw new Error(`HTTP ${resp.status} - ${resp.statusText}`);
+        }
+        const data = await resp.json();
+        if (data && data.success === false) {
+            const errorMsg = (data.messages && data.messages.length > 0) ? data.messages.join('; ') : (data.message || '请求失败');
+            throw new Error(errorMsg);
+        }
+        return data;
+    }
+    /**
+     * 智能嗅探宿主页面当前正在查看/填报的考勤年月 (优先从 Vue 实例或 DOM 日期选择器读取)
+     */
+    function detectActiveYearAndMonth() {
+        try {
+            const allEls = Array.from(document.querySelectorAll('*'));
+            for (const el of allEls) {
+                const v = el.__vue__;
+                // 1. 优先从 AttendanceEdit 组件中的 attendance.ym 读取 (如 "2026/08" 或 "2026-08")
+                if (v && v.attendance && typeof v.attendance.ym === 'string' && v.attendance.ym.trim()) {
+                    const parts = v.attendance.ym.split(/[-/]/);
+                    if (parts.length >= 2) {
+                        return {
+                            year: parts[0],
+                            month: parts[1].padStart(2, '0')
+                        };
+                    }
+                }
+                // 2. 从 Handsontable 第一行数据的 ymd 读取 (如 "20260801")
+                if (v && v.hotSettings && Array.isArray(v.hotSettings.data) && v.hotSettings.data.length > 0) {
+                    const firstYmd = String(v.hotSettings.data[0].ymd || '');
+                    if (firstYmd.length >= 6) {
+                        return {
+                            year: firstYmd.substring(0, 4),
+                            month: firstYmd.substring(4, 6)
+                        };
+                    }
+                }
+            }
+            // 3. 从 DOM 中月份选择器的 input.value 读取 (如 "2026-08")
+            const dateInputs = Array.from(document.querySelectorAll('input.el-input__inner, input'));
+            for (const input of dateInputs) {
+                const val = (input.value || '').trim();
+                const m = val.match(/^(\d{4})[-/](\d{1,2})$/);
+                if (m) {
+                    return {
+                        year: m[1],
+                        month: m[2].padStart(2, '0')
+                    };
+                }
+            }
+        }
+        catch (e) { }
+        // 4. 兜底回退为当前系统时间
+        const now = new Date();
+        return {
+            year: now.getFullYear().toString(),
+            month: String(now.getMonth() + 1).padStart(2, '0')
+        };
+    }
+    /**
+     * 1. 查询项目工时预实对比表数据 (优先从 Vue 内存实时获取，网络 API 兜底，严格校验目标年月)
+     */
+    async function fetchExpWHInfoApi(objY, objM, state) {
+        const targetYm = `${String(objY)}${String(objM).padStart(2, '0')}`;
+        try {
+            const allEls = Array.from(document.querySelectorAll('*'));
+            for (const el of allEls) {
+                const v = el.__vue__;
+                // 严格校验宿主内存中的当前激活月份是否与请求的目标月份完全一致
+                const isMatch = (v && v.attendance && v.attendance.ym && v.attendance.ym.replace(/[-/]/g, '') === targetYm) ||
+                    (v && v.hotSettings && Array.isArray(v.hotSettings.data) && v.hotSettings.data.length > 0 && String(v.hotSettings.data[0].ymd || '').startsWith(targetYm));
+                if (isMatch && Array.isArray(v.expWhs) && v.expWhs.length > 0) {
+                    return v.expWhs.map((item) => {
+                        const exp = parseFloat(item.expWH || '0');
+                        const act = parseFloat(item.workingHours || '0');
+                        const remain = Math.max(0, parseFloat((exp - act).toFixed(2)));
+                        return {
+                            pjNo: item.pjNo || '',
+                            name: item.name || '',
+                            expWH: item.expWH || '0.00',
+                            workingHours: item.workingHours || '0.00',
+                            remainWH: remain,
+                            pjInfoID: item.pjInfoID || '',
+                            pjgID: item.pjgID || null,
+                            flgPJG: item.flgPJG || '2',
+                            department: item.department || ''
+                        };
+                    });
+                }
+            }
+        }
+        catch (e) { }
+        const payload = {
+            objY: String(objY),
+            objM: String(objM).padStart(2, '0')
+        };
+        const res = await timeMgPost(TIME_MG_CONSTANTS.ENDPOINTS.EXP_WH_INFO, payload, state);
+        const rawList = res?.datas?.searchResult || [];
+        return rawList.map(item => {
+            const exp = parseFloat(item.expWH || '0');
+            const act = parseFloat(item.workingHours || '0');
+            const remain = Math.max(0, parseFloat((exp - act).toFixed(2)));
+            return {
+                pjNo: item.pjNo || '',
+                name: item.name || '',
+                expWH: item.expWH || '0.00',
+                workingHours: item.workingHours || '0.00',
+                remainWH: remain,
+                pjInfoID: item.pjInfoID || '',
+                pjgID: item.pjgID || null,
+                flgPJG: item.flgPJG || '2',
+                department: item.department || ''
+            };
+        });
+    }
+    /**
+     * 2. 查询考勤一览明细表数据 (优先从 Vue 内存实时获取，网络 API 兜底，严格校验目标年月)
+     */
+    async function fetchDetailWHInfoApi(objY, objM, state) {
+        const targetYm = `${String(objY)}${String(objM).padStart(2, '0')}`;
+        try {
+            const allEls = Array.from(document.querySelectorAll('*'));
+            for (const el of allEls) {
+                const v = el.__vue__;
+                // 严格校验宿主内存中的第一行日期是否属于 targetYm
+                if (v && v.hotSettings && Array.isArray(v.hotSettings.data) && v.hotSettings.data.length > 0) {
+                    const firstYmd = String(v.hotSettings.data[0].ymd || '');
+                    if (firstYmd.startsWith(targetYm)) {
+                        return v.hotSettings.data.map((item) => ({
+                            ymd: item.ymd || '',
+                            objYMD: item.objYMD || null,
+                            showDate: item.showDate || '',
+                            month: item.month || '',
+                            date: item.date || '',
+                            weekDate: Number(item.weekDate || 0),
+                            dtDayType: Number(item.dtDayType || 1),
+                            onDutyStatus: String(item.onDutyStatus || '1'),
+                            inTime: item.inTime || null,
+                            outTime: item.outTime || null,
+                            fromDt: item.fromDt || null,
+                            toDt: item.toDt || null,
+                            timeWH: item.timeWH || null,
+                            pjNo: item.pjNo || null,
+                            name: item.name || null,
+                            flgOut: item.flgOut || null,
+                            flgOutShow: item.flgOutShow || null,
+                            whFormID: item.whFormID || null,
+                            whFormDetailID: item.whFormDetailID || null,
+                            dtAppStatus: item.dtAppStatus || null,
+                            applyFlowStatus: item.applyFlowStatus || null,
+                            department: item.department || null,
+                            memo: item.memo || null
+                        }));
+                    }
+                }
+            }
+        }
+        catch (e) { }
+        const payload = {
+            objY: String(objY),
+            objM: String(objM).padStart(2, '0')
+        };
+        const res = await timeMgPost(TIME_MG_CONSTANTS.ENDPOINTS.DETAIL_WH_INFO, payload, state);
+        const rawList = res?.datas?.searchResult || [];
+        return rawList.map(item => ({
+            ymd: item.ymd || '',
+            objYMD: item.objYMD || null,
+            showDate: item.showDate || '',
+            month: item.month || '',
+            date: item.date || '',
+            weekDate: Number(item.weekDate || 0),
+            dtDayType: Number(item.dtDayType || 1),
+            onDutyStatus: String(item.onDutyStatus || '1'),
+            inTime: item.inTime || null,
+            outTime: item.outTime || null,
+            fromDt: item.fromDt || null,
+            toDt: item.toDt || null,
+            timeWH: item.timeWH || null,
+            pjNo: item.pjNo || null,
+            name: item.name || null,
+            flgOut: item.flgOut || null,
+            flgOutShow: item.flgOutShow || null,
+            whFormID: item.whFormID || null,
+            whFormDetailID: item.whFormDetailID || null,
+            dtAppStatus: item.dtAppStatus || null,
+            applyFlowStatus: item.applyFlowStatus || null,
+            department: item.department || null,
+            memo: item.memo || null
+        }));
+    }
+
+    /**
+     * 格式化提取时间字符串 HH:mm:ss 或 HH:mm
+     */
+    function extractTime(timeStr) {
+        if (!timeStr)
+            return '';
+        const clean = timeStr.trim();
+        if (clean.includes(' ')) {
+            return clean.split(' ')[1];
+        }
+        return clean;
+    }
+    /**
+     * 判定工作时间 [09:00, 17:30] 是否完全在进出记录内
+     */
+    function checkIsOutOfOffice(inTime, outTime) {
+        const tIn = extractTime(inTime);
+        const tOut = extractTime(outTime);
+        if (!tIn && !tOut) {
+            return {
+                isOut: true,
+                locationName: TIME_MG_CONSTANTS.DEFAULTS.LOCATION_OUT,
+                reason: '无门禁进出记录'
+            };
+        }
+        if (!tIn || !tOut) {
+            return {
+                isOut: true,
+                locationName: TIME_MG_CONSTANTS.DEFAULTS.LOCATION_OUT,
+                reason: `门禁打卡单边缺失 (进:${tIn || '-'} 出:${tOut || '-'})`
+            };
+        }
+        const time1 = tIn.length === 5 ? `${tIn}:00` : tIn;
+        const time2 = tOut.length === 5 ? `${tOut}:00` : tOut;
+        const earliest = time1 < time2 ? time1 : time2;
+        const latest = time1 > time2 ? time1 : time2;
+        const stdStart = '09:00:00';
+        const stdEnd = '17:30:00';
+        const isCovered = (earliest <= stdStart) && (latest >= stdEnd);
+        if (isCovered) {
+            return {
+                isOut: false,
+                locationName: '公司',
+                reason: `门禁全覆盖 (最早 ${earliest.substring(0, 5)} ~ 最晚 ${latest.substring(0, 5)})`
+            };
+        }
+        else {
+            const missReasons = [];
+            if (earliest > stdStart)
+                missReasons.push(`到岗晚于09:00(${earliest.substring(0, 5)})`);
+            if (latest < stdEnd)
+                missReasons.push(`离岗早于17:30(${latest.substring(0, 5)})`);
+            return {
+                isOut: true,
+                locationName: TIME_MG_CONSTANTS.DEFAULTS.LOCATION_OUT,
+                reason: `打卡未覆盖 (${missReasons.join(', ')})`
+            };
+        }
+    }
+    /**
+     * 将小时数向下取整到 0.25h (15分钟刻度)，严禁超出预算
+     */
+    function floorToQuarterHour(hours) {
+        return Math.floor((hours + 1e-6) * 4) / 4;
+    }
+    /**
+     * 严格基于 15 分钟刻度 (0.25h) 累加工作时间并跳过 12:00 ~ 13:00 午休
+     * 返回格式为 HH:mm，分钟严格保证为 00, 15, 30, 45
+     */
+    function addWorkingHoursQuantized(startTimeStr, workHours) {
+        const quantizedHours = floorToQuarterHour(workHours);
+        const [h, m] = startTimeStr.split(':').map(Number);
+        let curMin = h * 60 + m;
+        let remainingWorkMin = Math.round(quantizedHours * 60);
+        const lunchStart = 12 * 60; // 720 分钟 (12:00)
+        const lunchEnd = 13 * 60; // 780 分钟 (13:00)
+        while (remainingWorkMin > 0) {
+            if (curMin >= lunchStart && curMin < lunchEnd) {
+                curMin = lunchEnd;
+            }
+            if (curMin < lunchStart) {
+                const availBeforeLunch = lunchStart - curMin;
+                if (remainingWorkMin <= availBeforeLunch) {
+                    curMin += remainingWorkMin;
+                    remainingWorkMin = 0;
+                }
+                else {
+                    remainingWorkMin -= availBeforeLunch;
+                    curMin = lunchEnd;
+                }
+            }
+            else {
+                curMin += remainingWorkMin;
+                remainingWorkMin = 0;
+            }
+        }
+        const endH = String(Math.floor(curMin / 60)).padStart(2, '0');
+        const endM = String(curMin % 60).padStart(2, '0');
+        return `${endH}:${endM}`;
+    }
+    /**
+     * 考勤工数智能分配引擎 (支持部分工时自动补全7.5h、已有记录保留、严禁超预算0.25h刻度向下量化与零碎集中拼凑)
+     */
+    function computeProjectAllocationPlan(expProjects, detailDays, allowedOverflowPjNos = []) {
+        const stdHours = TIME_MG_CONSTANTS.DEFAULTS.STANDARD_HOURS; // 7.5h
+        // 1. 检查各日期是否已有填写记录，并提取已有分段
+        const daysByYmd = new Map();
+        detailDays.forEach(d => {
+            if (!daysByYmd.has(d.ymd))
+                daysByYmd.set(d.ymd, []);
+            daysByYmd.get(d.ymd).push(d);
+        });
+        const formatTimeStr = (tStr, defaultVal = '') => {
+            if (!tStr)
+                return defaultVal;
+            const digits = tStr.replace(/[^0-9]/g, '');
+            if (digits.length >= 4) {
+                return `${digits.substring(0, 2)}:${digits.substring(2, 4)}`;
+            }
+            if (tStr.includes(':'))
+                return tStr.substring(0, 5);
+            return defaultVal;
+        };
+        const existingPlansByYmd = new Map();
+        daysByYmd.forEach((items, ymd) => {
+            // 筛选出当天已经填写了项目的行 (pjNo 不为空且工时 > 0)
+            const filledItems = items.filter(it => Boolean(it.pjNo && it.pjNo.trim().length > 0 && parseFloat(it.timeWH || '0') > 0));
+            if (filledItems.length > 0) {
+                const plans = filledItems.map((it, idx) => {
+                    const sTime = formatTimeStr(it.fromDt || it.startTime, '09:00');
+                    const eTime = formatTimeStr(it.toDt || it.endTime, '17:30');
+                    const locationCheck = checkIsOutOfOffice(it.inTime, it.outTime);
+                    const isOut = it.flgOut === '1' || locationCheck.isOut;
+                    return {
+                        ymd: it.ymd,
+                        showDate: it.showDate,
+                        isWorkDay: true,
+                        segmentIndex: idx,
+                        totalSegmentsInDay: filledItems.length,
+                        inTime: it.inTime,
+                        outTime: it.outTime,
+                        startTime: sTime,
+                        endTime: eTime,
+                        timeWH: parseFloat(it.timeWH || '7.5'),
+                        isOut: isOut,
+                        locationName: isOut ? TIME_MG_CONSTANTS.DEFAULTS.LOCATION_OUT : '公司',
+                        locationReason: locationCheck.reason,
+                        pjNo: it.pjNo || '',
+                        pjName: it.name || '',
+                        pjInfoID: it.pjInfoID || '',
+                        status: '已填写'
+                    };
+                });
+                existingPlansByYmd.set(ymd, plans);
+            }
+        });
+        // 2. 初始化项目队列并计算剩余所需工时
+        const projectQueue = expProjects
+            .filter(p => parseFloat(p.expWH) > 0)
+            .map(p => {
+            const exp = parseFloat(p.expWH);
+            const act = parseFloat(p.workingHours || '0');
+            const remain = Math.max(0, exp - act);
+            const qNeed = floorToQuarterHour(remain);
+            return {
+                pjNo: p.pjNo,
+                name: p.name,
+                pjInfoID: p.pjInfoID,
+                expWH: exp,
+                remainingHours: qNeed
+            };
+        });
+        // 3. 提取所有唯一日期
+        const uniqueDays = [];
+        const seenYmd = new Set();
+        detailDays.forEach(d => {
+            if (!seenYmd.has(d.ymd)) {
+                seenYmd.add(d.ymd);
+                uniqueDays.push(d);
+            }
+        });
+        const unfilledSlots = [];
+        uniqueDays.forEach(d => {
+            const isWorkDay = (d.dtDayType === 1) && (d.onDutyStatus === '1');
+            if (!isWorkDay)
+                return;
+            const existing = existingPlansByYmd.get(d.ymd) || [];
+            const filledHours = existing.reduce((sum, p) => sum + p.timeWH, 0);
+            const dayCapacity = Math.max(0, parseFloat((stdHours - filledHours).toFixed(2)));
+            if (dayCapacity >= 0.25) {
+                // 计算起始时间 (若已有分段，接在最后一个分段的结束时间后；否则 09:00)
+                let startT = TIME_MG_CONSTANTS.DEFAULTS.START_TIME_DISPLAY;
+                if (existing.length > 0) {
+                    // 取最大结束时间
+                    const lastEnd = existing[existing.length - 1].endTime;
+                    if (lastEnd)
+                        startT = lastEnd;
+                }
+                unfilledSlots.push({
+                    ymd: d.ymd,
+                    day: d,
+                    capacity: dayCapacity,
+                    curStartTime: startT,
+                    allocatedSegments: []
+                });
+            }
+        });
+        // 阶段 1: 完整工作日优先分配 (待分配工时 >= 7.5h 且 槽位容量 >= 7.5h)
+        for (const proj of projectQueue) {
+            if (proj.remainingHours < stdHours)
+                continue;
+            for (const slot of unfilledSlots) {
+                if (slot.capacity >= stdHours && proj.remainingHours >= stdHours) {
+                    const endTime = addWorkingHoursQuantized(slot.curStartTime, stdHours);
+                    slot.allocatedSegments.push({
+                        pjNo: proj.pjNo,
+                        pjName: proj.name,
+                        pjInfoID: proj.pjInfoID,
+                        startTime: slot.curStartTime,
+                        endTime: endTime,
+                        timeWH: stdHours
+                    });
+                    proj.remainingHours = parseFloat((proj.remainingHours - stdHours).toFixed(2));
+                    slot.capacity = 0;
+                    slot.curStartTime = endTime;
+                }
+            }
+        }
+        // 阶段 2: 零碎项目集中拼凑 (不足 7.5h，严格按剩余预算分配并填补部分工作日或剩余槽位)
+        const remainingFragments = projectQueue.filter(p => p.remainingHours > 0);
+        for (const frag of remainingFragments) {
+            if (frag.remainingHours <= 0)
+                continue;
+            for (const slot of unfilledSlots) {
+                while (frag.remainingHours > 0 && slot.capacity > 0) {
+                    const hoursToAllocate = floorToQuarterHour(Math.min(frag.remainingHours, slot.capacity));
+                    if (hoursToAllocate <= 0)
+                        break;
+                    const endTime = addWorkingHoursQuantized(slot.curStartTime, hoursToAllocate);
+                    slot.allocatedSegments.push({
+                        pjNo: frag.pjNo,
+                        pjName: frag.name,
+                        pjInfoID: frag.pjInfoID,
+                        startTime: slot.curStartTime,
+                        endTime: endTime,
+                        timeWH: hoursToAllocate
+                    });
+                    frag.remainingHours = parseFloat((frag.remainingHours - hoursToAllocate).toFixed(2));
+                    slot.capacity = parseFloat((slot.capacity - hoursToAllocate).toFixed(2));
+                    slot.curStartTime = endTime;
+                }
+            }
+        }
+        // 阶段 3: 剩余未填满 7.5h 的工作日槽位 (预算缺口处理)
+        // 若用户勾选了允许超预算的项目，则循环分摊给勾选项目；否则项目留空
+        const overflowProjs = expProjects.filter(p => allowedOverflowPjNos.includes(p.pjNo));
+        let overflowIdx = 0;
+        for (const slot of unfilledSlots) {
+            while (slot.capacity > 0) {
+                const gap = slot.capacity;
+                const assignedProj = overflowProjs.length > 0 ? overflowProjs[overflowIdx % overflowProjs.length] : null;
+                const endTime = addWorkingHoursQuantized(slot.curStartTime, gap);
+                slot.allocatedSegments.push({
+                    pjNo: assignedProj ? assignedProj.pjNo : '',
+                    pjName: assignedProj ? assignedProj.name : '',
+                    pjInfoID: assignedProj ? assignedProj.pjInfoID : '',
+                    startTime: slot.curStartTime,
+                    endTime: endTime,
+                    timeWH: gap
+                });
+                slot.capacity = 0;
+                slot.curStartTime = endTime;
+                if (assignedProj)
+                    overflowIdx++;
+            }
+        }
+        // 5. 构造完整方案列表 (按自然日历顺序组装，并将同一天所有分段合并重索引)
+        const resultPlans = [];
+        uniqueDays.forEach(day => {
+            const isWorkDay = (day.dtDayType === 1) && (day.onDutyStatus === '1');
+            if (!isWorkDay) {
+                resultPlans.push({
+                    ymd: day.ymd,
+                    showDate: day.showDate,
+                    isWorkDay: false,
+                    segmentIndex: 0,
+                    totalSegmentsInDay: 1,
+                    inTime: day.inTime,
+                    outTime: day.outTime,
+                    startTime: '',
+                    endTime: '',
+                    timeWH: 0,
+                    isOut: false,
+                    locationName: '-',
+                    locationReason: '休假日/非工作日',
+                    pjNo: '',
+                    pjName: '',
+                    pjInfoID: '',
+                    status: '跳过'
+                });
+                return;
+            }
+            const existing = existingPlansByYmd.get(day.ymd) || [];
+            const slot = unfilledSlots.find(s => s.ymd === day.ymd);
+            const newSegs = slot ? slot.allocatedSegments : [];
+            const locationCheck = checkIsOutOfOffice(day.inTime, day.outTime);
+            const allDaySegments = [];
+            // 放入已有分段
+            existing.forEach(p => allDaySegments.push(p));
+            // 放入新分配分段
+            newSegs.forEach(seg => {
+                allDaySegments.push({
+                    ymd: day.ymd,
+                    showDate: day.showDate,
+                    isWorkDay: true,
+                    segmentIndex: 0,
+                    totalSegmentsInDay: 1,
+                    inTime: day.inTime,
+                    outTime: day.outTime,
+                    startTime: seg.startTime,
+                    endTime: seg.endTime,
+                    timeWH: seg.timeWH,
+                    isOut: locationCheck.isOut,
+                    locationName: locationCheck.locationName,
+                    locationReason: locationCheck.reason,
+                    pjNo: seg.pjNo,
+                    pjName: seg.pjName || (seg.pjNo ? '' : '(未分配)'),
+                    pjInfoID: seg.pjInfoID,
+                    status: '就绪'
+                });
+            });
+            // 重新编号分段与总数
+            const totalSegs = allDaySegments.length;
+            allDaySegments.forEach((plan, sIdx) => {
+                plan.segmentIndex = sIdx;
+                plan.totalSegmentsInDay = totalSegs;
+                resultPlans.push(plan);
+            });
+        });
+        return resultPlans;
+    }
+    /**
+     * 试算当月项目总预算工时缺口与超出推荐
+     */
+    function calculateBudgetShortfall(expProjects, detailDays, plans) {
+        const stdHours = TIME_MG_CONSTANTS.DEFAULTS.STANDARD_HOURS; // 7.5h
+        // 1. 统计全月出勤工作日与全月总预算
+        const uniqueDaysMap = new Map();
+        detailDays.forEach(d => {
+            if (!uniqueDaysMap.has(d.ymd))
+                uniqueDaysMap.set(d.ymd, d);
+        });
+        const allWorkDays = Array.from(uniqueDaysMap.values()).filter(d => d.dtDayType === 1 && d.onDutyStatus === '1');
+        const totalMonthHours = parseFloat((allWorkDays.length * stdHours).toFixed(2)); // 如 157.50h (21天)
+        const totalMonthBudget = parseFloat(expProjects.reduce((sum, p) => sum + parseFloat(p.expWH || '0'), 0).toFixed(2)); // 如 114.99h
+        const monthShortfallHours = parseFloat(Math.max(0, totalMonthHours - totalMonthBudget).toFixed(2)); // 如 42.51h
+        // 2. 统计本次待填出勤工作日需求总工时 (如 20天*7.5h + 8/3缺口3.0h = 153.00h)
+        const totalRequiredHours = parseFloat(plans.filter(p => p.isWorkDay && p.status !== '已填写')
+            .reduce((sum, p) => sum + (p.timeWH || 0), 0)
+            .toFixed(2));
+        // 3. 统计各项目实际可用剩余预算 (向下取整至0.25h)
+        let totalAvailableBudget = 0;
+        const activeProjects = expProjects
+            .filter(p => parseFloat(p.expWH) > 0)
+            .map(p => {
+            const exp = parseFloat(p.expWH);
+            const act = parseFloat(p.workingHours || '0');
+            const remain = Math.max(0, exp - act);
+            const qRemain = floorToQuarterHour(remain);
+            totalAvailableBudget += qRemain;
+            return {
+                pjNo: p.pjNo,
+                name: p.name,
+                expWH: exp,
+                remainWH: qRemain
+            };
+        });
+        totalAvailableBudget = parseFloat(totalAvailableBudget.toFixed(2));
+        const shortfallHours = parseFloat(Math.max(0, totalRequiredHours - totalAvailableBudget).toFixed(2));
+        // 按预算大小降序排序，推荐优先追加/超出的项目
+        const suggestedProjects = activeProjects.sort((a, b) => b.expWH - a.expWH);
+        return {
+            totalMonthHours,
+            totalMonthBudget,
+            monthShortfallHours,
+            totalRequiredHours,
+            totalAvailableBudget,
+            shortfallHours,
+            suggestedProjects
+        };
+    }
+
+    /**
+     * 查找页面中包含 Handsontable (hotSettings) 的 AttendanceEdit Vue 组件实例
+     */
+    function findAttendanceEditComponent() {
+        const allEls = Array.from(document.querySelectorAll('*'));
+        for (const el of allEls) {
+            const v = el.__vue__;
+            if (v && v.hotSettings && Array.isArray(v.hotSettings.data)) {
+                return v;
+            }
+        }
+        return null;
+    }
+    /**
+     * 同步切换宿主页面 Handsontable 实例的当前考勤年月并重新拉取数据
+     */
+    async function syncHostMonth(year, month) {
+        const editComp = findAttendanceEditComponent();
+        if (!editComp)
+            return false;
+        const formattedYm = `${year}/${month.padStart(2, '0')}`;
+        const targetYmDigits = `${year}${month.padStart(2, '0')}`;
+        // 检查宿主当前 Handsontable 数据是否已是该月份
+        if (editComp.hotSettings && Array.isArray(editComp.hotSettings.data) && editComp.hotSettings.data.length > 0) {
+            const firstYmd = String(editComp.hotSettings.data[0].ymd || '');
+            if (firstYmd.startsWith(targetYmDigits)) {
+                return true;
+            }
+        }
+        // 切换宿主月份并触发拉取
+        if (editComp.attendance) {
+            editComp.attendance.ym = formattedYm;
+        }
+        editComp.oldYm = formattedYm;
+        const dp = document.querySelector('.el-date-editor--month input, .el-date-editor input');
+        if (dp) {
+            dp.value = `${year}-${month.padStart(2, '0')}`;
+        }
+        if (typeof editComp.fetchData === 'function') {
+            await editComp.fetchData();
+            await new Promise(r => setTimeout(r, 600));
+            return true;
+        }
+        return false;
+    }
+    /**
+     * 孪生客户端核心引擎：
+     * 将工数分配方案直接注入宿主 Handsontable 实例 (`hotSettings.data`)，
+     * 触发 Handsontable `loadData` 动态重绘，调用 `computeActKosu("pro")` 自动更新工时预实对比表，
+     * 并触发宿主页面原生的【保存】按钮提交入库！
+     */
+    async function saveAttendanceTwinClient(plans, state, onProgress) {
+        let successCount = 0;
+        let failCount = 0;
+        const errors = [];
+        if (onProgress)
+            onProgress(1, 4, '正在连接宿主页面 Handsontable 考勤核心...');
+        // 1. 查找 AttendanceEdit 组件
+        const editComp = findAttendanceEditComponent();
+        if (!editComp) {
+            return {
+                successCount: 0,
+                failCount: plans.length,
+                errors: ['未找到宿主页面考勤数据组件 (Handsontable)，请确认当前处于【考勤申请】编辑页面']
+            };
+        }
+        // 1.1 确保宿主表格已加载目标年月的考勤数据
+        const targetYear = state?.selectedYear || (plans[0] ? plans[0].ymd.substring(0, 4) : '');
+        const targetMonth = state?.selectedMonth || (plans[0] ? plans[0].ymd.substring(4, 6) : '');
+        if (targetYear && targetMonth) {
+            await syncHostMonth(targetYear, targetMonth);
+        }
+        const hotData = editComp.hotSettings.data;
+        const toFillPlans = plans.filter(p => p.isWorkDay);
+        if (onProgress)
+            onProgress(2, 4, `正在向内存装载 ${toFillPlans.length} 个工作日出勤明细...`);
+        // 2. 按日期将 plans 分组
+        const plansByYmd = new Map();
+        toFillPlans.forEach(p => {
+            if (!plansByYmd.has(p.ymd))
+                plansByYmd.set(p.ymd, []);
+            plansByYmd.get(p.ymd).push(p);
+        });
+        // 2.1 清理因多次试算追加的多余行 (若某日现有行数大于新分配的段数，移除多余的追加行)
+        plansByYmd.forEach((dayPlans, ymd) => {
+            const matchingIndices = [];
+            hotData.forEach((r, idx) => {
+                if (r.ymd === ymd)
+                    matchingIndices.push(idx);
+            });
+            if (matchingIndices.length > dayPlans.length) {
+                for (let i = matchingIndices.length - 1; i >= dayPlans.length; i--) {
+                    const targetIdx = matchingIndices[i];
+                    hotData.splice(targetIdx, 1);
+                }
+            }
+        });
+        // 2.2 逐日逐段精准回填
+        plansByYmd.forEach((dayPlans, ymd) => {
+            try {
+                // 查找 hotData 中该日期的第一行位置
+                const firstIdx = hotData.findIndex((r) => r.ymd === ymd);
+                if (firstIdx < 0)
+                    return;
+                // 查找该日期当前已有的所有行
+                const currentDayRows = hotData.filter((r) => r.ymd === ymd);
+                // 将分配方案的各字段写入对应行 (按分段序号对齐行，无对应行时自动克隆追加新行)
+                dayPlans.forEach((plan, planIdx) => {
+                    let targetRow = currentDayRows[planIdx];
+                    if (!targetRow) {
+                        const baseRow = hotData[firstIdx];
+                        const cloneRow = Object.assign({}, baseRow);
+                        cloneRow.checkable = null;
+                        cloneRow.isAdd = true;
+                        cloneRow.detailDisabled = 'abled';
+                        cloneRow.whFormDetailID = '';
+                        cloneRow.status = '--';
+                        cloneRow.dtAppStatus = '--';
+                        const insertPos = firstIdx + currentDayRows.length;
+                        hotData.splice(insertPos, 0, cloneRow);
+                        currentDayRows.push(cloneRow);
+                        targetRow = cloneRow;
+                    }
+                    targetRow._autopilotFilled = true;
+                    targetRow.fromDt = plan.startTime;
+                    targetRow.toDt = plan.endTime;
+                    targetRow.timeWH = String(plan.timeWH);
+                    targetRow.attandence = '是';
+                    targetRow.onDutyStatus = '1';
+                    targetRow.out = plan.isOut ? TIME_MG_CONSTANTS.DEFAULTS.LOCATION_OUT : (plan.locationName || '公司');
+                    targetRow.flgOut = plan.isOut ? '1' : '2';
+                    targetRow.workType = '项目';
+                    targetRow.flg = '1';
+                    targetRow.pjNo = plan.pjNo || '';
+                    targetRow.name = plan.pjName || '';
+                    targetRow.pjgID = plan.pjInfoID || null;
+                    targetRow.pjInfoID = plan.pjInfoID || null;
+                    targetRow.changeFlg = '1';
+                    targetRow.detailDisabled = 'abled';
+                    targetRow.display = true;
+                    // 补全部门信息
+                    if (plan.pjNo) {
+                        const projectInfo = (editComp.projectList || []).find((p) => p.pjNo === plan.pjNo);
+                        if (projectInfo && projectInfo.branch) {
+                            targetRow.department = projectInfo.branch;
+                        }
+                    }
+                    plan.status = '成功';
+                    successCount++;
+                });
+            }
+            catch (err) {
+                failCount++;
+                errors.push(`${ymd}: ${err.message}`);
+            }
+        });
+        // 3. 全量校准所有工作日行的办公地点 (若打卡未全覆盖09:00~17:30，100%设为外出)
+        hotData.forEach((row) => {
+            if (row.dtDayType === 1 && (row.pjNo || row.fromDt || row.toDt || row.attandence === '是')) {
+                const loc = checkIsOutOfOffice(row.inTime, row.outTime);
+                if (loc.isOut) {
+                    row.out = TIME_MG_CONSTANTS.DEFAULTS.LOCATION_OUT;
+                    row.flgOut = '1';
+                    row.changeFlg = '1';
+                }
+            }
+        });
+        // 4. 驱动 Handsontable 实例重载与工时重新试算
+        if (onProgress)
+            onProgress(3, 4, '正在重新渲染 Handsontable 与预实工数试算...');
+        if (editComp.$refs && editComp.$refs.editTable && editComp.$refs.editTable.hotInstance) {
+            editComp.$refs.editTable.hotInstance.loadData(hotData);
+        }
+        if (typeof editComp.computeActKosu === 'function') {
+            editComp.computeActKosu('pro');
+        }
+        // 5. 触发宿主原生保存按钮
+        if (onProgress)
+            onProgress(4, 4, '正在触发宿主页面原生【保存】提交入库...');
+        const saveBtn = Array.from(document.querySelectorAll('.operation-item, .dialog-btn-box li, button'))
+            .find(b => (b.textContent || '').trim() === '保存');
+        if (saveBtn) {
+            console.log('[Time-MG Twin] 触发宿主原生保存按钮:', saveBtn);
+            saveBtn.click();
+        }
+        else if (typeof editComp.handleSubmit === 'function') {
+            console.log('[Time-MG Twin] 调用 editComp.handleSubmit("save")');
+            editComp.handleSubmit('save');
+        }
+        // 5. 自动聚焦并置顶宿主确认对话框
+        setTimeout(() => {
+            const msgBoxes = document.querySelectorAll('.el-message-box__wrapper, .el-dialog__wrapper');
+            msgBoxes.forEach((mb) => {
+                mb.style.zIndex = '10000001';
+                const confirmBtn = mb.querySelector('.el-message-box__btns button.el-button--primary, .el-dialog__footer button.el-button--primary');
+                if (confirmBtn) {
+                    confirmBtn.focus();
+                }
+            });
+        }, 100);
+        return { successCount, failCount, errors };
+    }
+
+    /**
+     * 考勤工数副驾专属样式
+     */
+    function injectTimeMgStyles() {
+        if (document.getElementById('yn-timemg-styles'))
+            return;
+        const style = document.createElement('style');
+        style.id = 'yn-timemg-styles';
+        style.textContent = `
+        /* 考勤副驾悬浮入口按钮 */
+        #yn-timemg-helper-btn {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            z-index: 999999;
+            background: linear-gradient(135deg, #13c2c2 0%, #08979c 100%);
+            color: #fff;
+            padding: 12px 20px;
+            border-radius: 50px;
+            box-shadow: 0 4px 16px rgba(19, 194, 194, 0.4);
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            user-select: none;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif;
+        }
+        #yn-timemg-helper-btn:hover {
+            transform: translateY(-2px) scale(1.03);
+            box-shadow: 0 8px 24px rgba(19, 194, 194, 0.55);
+            background: linear-gradient(135deg, #36cfc9 0%, #13c2c2 100%);
+        }
+        #yn-timemg-helper-btn .yn-timemg-badge {
+            width: 9px;
+            height: 9px;
+            background-color: #52c41a;
+            border-radius: 50%;
+            display: inline-block;
+            box-shadow: 0 0 6px #52c41a;
+        }
+        #yn-timemg-helper-btn .yn-timemg-badge.offline {
+            background-color: #faad14;
+            box-shadow: 0 0 6px #faad14;
+        }
+
+        /* 模态弹窗遮罩 */
+        #yn-timemg-modal-mask {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: rgba(0, 0, 0, 0.45);
+            backdrop-filter: blur(4px);
+            z-index: 999998;
+            display: none;
+        }
+
+        /* 考勤副驾模态弹窗主容器 (全屏最大化利用 1920*1080 空间) */
+        #yn-timemg-modal {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: calc(100vw - 40px);
+            height: calc(100vh - 40px);
+            background: #ffffff;
+            border-radius: 10px;
+            box-shadow: 0 24px 64px rgba(0, 0, 0, 0.3);
+            z-index: 999999;
+            display: none;
+            flex-direction: column;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif;
+            font-size: 13px;
+            color: #262626;
+        }
+
+        /* 弹窗 Header */
+        .yn-timemg-header {
+            padding: 12px 24px;
+            background: linear-gradient(90deg, #f6ffed 0%, #e6fffb 100%);
+            border-bottom: 1px solid #b5f5ec;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .yn-timemg-header-title {
+            font-size: 16px;
+            font-weight: 700;
+            color: #00474f;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .yn-timemg-header-subtitle {
+            font-size: 12px;
+            font-weight: normal;
+            color: #595959;
+            margin-left: 8px;
+        }
+        .yn-timemg-close-btn {
+            background: none;
+            border: none;
+            font-size: 20px;
+            cursor: pointer;
+            color: #8c8c8c;
+            line-height: 1;
+            padding: 4px 8px;
+            border-radius: 4px;
+            transition: all 0.2s;
+        }
+        .yn-timemg-close-btn:hover {
+            color: #ff4d4f;
+            background: rgba(0,0,0,0.05);
+        }
+
+        /* 顶部操作工具栏 */
+        .yn-timemg-toolbar {
+            padding: 10px 24px;
+            background: #fafafa;
+            border-bottom: 1px solid #f0f0f0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+        .yn-timemg-toolbar-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .yn-timemg-toolbar-right {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .yn-timemg-btn {
+            padding: 7px 16px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            border: 1px solid transparent;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .yn-timemg-btn-primary {
+            background: #13c2c2;
+            color: #fff;
+        }
+        .yn-timemg-btn-primary:hover {
+            background: #08979c;
+        }
+        .yn-timemg-btn-success {
+            background: #52c41a;
+            color: #fff;
+            box-shadow: 0 2px 8px rgba(82, 196, 26, 0.35);
+        }
+        .yn-timemg-btn-success:hover {
+            background: #389e0d;
+        }
+        .yn-timemg-btn-default {
+            background: #fff;
+            color: #595959;
+            border-color: #d9d9d9;
+        }
+        .yn-timemg-btn-default:hover {
+            color: #13c2c2;
+            border-color: #13c2c2;
+        }
+
+        /* 主体内容双栏布局 (左栏 650px 项目对比表, 右栏自适应出勤分配表) */
+        .yn-timemg-body {
+            flex: 1;
+            display: grid;
+            grid-template-columns: 650px 1fr;
+            overflow: hidden;
+            background: #f5f5f5;
+            gap: 1px;
+        }
+
+        .yn-timemg-panel {
+            background: #fff;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .yn-timemg-panel-header {
+            padding: 10px 16px;
+            background: #fafafa;
+            border-bottom: 1px solid #f0f0f0;
+            font-weight: 700;
+            color: #262626;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .yn-timemg-panel-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 0;
+        }
+
+        /* 紧凑项目对比卡片与表格 */
+        .yn-timemg-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+        .yn-timemg-table th {
+            background: #fafafa;
+            color: #595959;
+            font-weight: 600;
+            padding: 8px 6px;
+            border-bottom: 1px solid #e8e8e8;
+            text-align: left;
+            position: sticky;
+            top: 0;
+            z-index: 2;
+            white-space: nowrap;
+        }
+        .yn-timemg-table td {
+            padding: 7px 6px;
+            border-bottom: 1px solid #f0f0f0;
+            color: #262626;
+            vertical-align: middle;
+            white-space: nowrap;
+        }
+        .yn-timemg-table tr:hover td {
+            background: #e6fffb;
+        }
+        .yn-timemg-table tr.holiday td {
+            background: #fafafa;
+            color: #bfbfbf;
+        }
+        .yn-timemg-table tr.is-overflow-row td {
+            background: #fffbe6 !important;
+        }
+
+        /* 标签与徽章 */
+        .yn-timemg-tag {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11.5px;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        .yn-timemg-tag-out {
+            background: #fff7e6;
+            color: #d46b08;
+            border: 1px solid #ffd591;
+        }
+        .yn-timemg-tag-office {
+            background: #f6ffed;
+            color: #389e0d;
+            border: 1px solid #b7eb8f;
+        }
+        .yn-timemg-tag-work {
+            background: #e6f7ff;
+            color: #096dd9;
+            border: 1px solid #91d5ff;
+        }
+        .yn-timemg-tag-holiday {
+            background: #f5f5f5;
+            color: #8c8c8c;
+            border: 1px solid #d9d9d9;
+        }
+        .yn-timemg-badge-overflow {
+            color: #cf1322;
+            font-weight: 700;
+            background: #fff1f0;
+            padding: 1px 6px;
+            border-radius: 3px;
+            border: 1px solid #ffa39e;
+            white-space: nowrap;
+            display: inline-block;
+        }
+
+        /* 进度条与日志 */
+        .yn-timemg-progress-wrap {
+            padding: 10px 24px;
+            background: #fafafa;
+            border-top: 1px solid #f0f0f0;
+            display: none;
+        }
+        .yn-timemg-progress-bar {
+            width: 100%;
+            height: 6px;
+            background: #f0f0f0;
+            border-radius: 3px;
+            overflow: hidden;
+            margin-bottom: 6px;
+        }
+        .yn-timemg-progress-inner {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, #13c2c2 0%, #52c41a 100%);
+            transition: width 0.3s ease;
+        }
+        .yn-timemg-log-text {
+            font-size: 12px;
+            color: #595959;
+        }
+
+        /* 预算不足预警横幅与推荐项目标签 */
+        .yn-timemg-shortfall-alert {
+            margin: 12px 24px 0 24px;
+            padding: 10px 16px;
+            background: #fffbe6;
+            border: 1px solid #ffe58f;
+            border-radius: 8px;
+            color: #d46b08;
+            font-size: 12.5px;
+            line-height: 1.6;
+        }
+        .yn-timemg-shortfall-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 6px;
+        }
+        .yn-timemg-tag-proj {
+            background: #ffffff;
+            border: 1px solid #ffd591;
+            padding: 2px 10px;
+            border-radius: 4px;
+            font-weight: 600;
+            color: #d4380d;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        /* 底部日志控制台 (默认收起，点击展开) */
+        .yn-timemg-footer-console {
+            padding: 6px 20px;
+            background: #fafafa;
+            border-top: 1px solid #f0f0f0;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        #yn-timemg-log-stream {
+            display: none;
+            max-height: 90px;
+            overflow-y: auto;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            font-family: Consolas, Monaco, monospace;
+            font-size: 11px;
+            padding: 6px 10px;
+            border-radius: 4px;
+            line-height: 1.5;
+        }
+
+        /* 确保宿主系统 (Element UI) 弹窗、确认框与提示浮层始终浮现在副驾界面之上 */
+        .el-message-box__wrapper,
+        .el-dialog__wrapper,
+        .el-message,
+        .el-notification,
+        .el-loading-mask,
+        .el-popover,
+        .el-tooltip__popper,
+        .el-select-dropdown,
+        .el-autocomplete-suggestion {
+            z-index: 10000001 !important;
+        }
+        .v-modal {
+            z-index: 10000000 !important;
+        }
+    `;
+        document.head.appendChild(style);
+    }
+
+    /**
+     * 考勤副驾运行日志管理工具 (支持实时输出与一键拷贝)
+     */
+    class AutopilotLogger {
+        static log(level, message) {
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString() + '.' + String(now.getMilliseconds()).padStart(3, '0');
+            const entry = { time: timeStr, level, message };
+            this.logHistory.push(entry);
+            console.log(`[IV-Autopilot] [${entry.time}] [${level}] ${message}`);
+            // 通知所有订阅者
+            this.listeners.forEach(cb => {
+                try {
+                    cb(entry);
+                }
+                catch (e) { }
+            });
+        }
+        static info(msg) { this.log('INFO', msg); }
+        static warn(msg) { this.log('WARN', msg); }
+        static error(msg) { this.log('ERROR', msg); }
+        static success(msg) { this.log('SUCCESS', msg); }
+        static subscribe(cb) {
+            this.listeners.push(cb);
+        }
+        static getFullLogsText() {
+            const header = `=== IVision FSSC Autopilot v4.4.0 执行日志 ===\n生成时间: ${new Date().toLocaleString()}\nURL: ${window.location.href}\n----------------------------------------\n`;
+            const body = this.logHistory.map(l => `[${l.time}] [${l.level}] ${l.message}`).join('\n');
+            return header + body;
+        }
+        static async copyLogsToClipboard() {
+            const fullText = this.getFullLogsText();
+            try {
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    await navigator.clipboard.writeText(fullText);
+                    return true;
+                }
+            }
+            catch (e) { }
+            // 备用方案
+            try {
+                const ta = document.createElement('textarea');
+                ta.value = fullText;
+                ta.style.position = 'fixed';
+                ta.style.left = '-9999px';
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+                return true;
+            }
+            catch (e) {
+                return false;
+            }
+        }
+    }
+    AutopilotLogger.logHistory = [];
+    AutopilotLogger.listeners = [];
+
+    /**
+     * 构造考勤工数副驾的主模态框与悬浮入口
+     */
+    function createTimeMgModalDOM(state) {
+        if (document.getElementById('yn-timemg-helper-btn'))
+            return;
+        // 1. 悬浮按钮
+        const btn = document.createElement('div');
+        btn.id = 'yn-timemg-helper-btn';
+        btn.innerHTML = `
+        <span class="yn-timemg-badge"></span>
+        <span>⏱️ 考勤工数副驾</span>
+    `;
+        document.body.appendChild(btn);
+        // 2. 模态框遮罩
+        const mask = document.createElement('div');
+        mask.id = 'yn-timemg-modal-mask';
+        document.body.appendChild(mask);
+        // 3. 模态框主体
+        const modal = document.createElement('div');
+        modal.id = 'yn-timemg-modal';
+        const activeYM = detectActiveYearAndMonth();
+        const currentYear = state.selectedYear || activeYM.year;
+        const currentMonth = state.selectedMonth || activeYM.month;
+        state.selectedYear = currentYear;
+        state.selectedMonth = currentMonth;
+        modal.innerHTML = `
+        <!-- 头部 Header -->
+        <div class="yn-timemg-header">
+            <div class="yn-timemg-header-title">
+                <span>⏱️ 爱模考勤工数极速分配副驾</span>
+                <span class="yn-timemg-header-subtitle">time-mg.huge-vision.com | 09:00~17:30 标准基准 & 门禁智能推断</span>
+            </div>
+            <button class="yn-timemg-close-btn" id="yn-timemg-modal-close" title="关闭">✕</button>
+        </div>
+
+        <!-- 顶部工具栏 -->
+        <div class="yn-timemg-toolbar">
+            <div class="yn-timemg-toolbar-left">
+                <label style="font-weight:600; color:#595959;">考勤年月：</label>
+                <input type="number" id="yn-timemg-input-year" value="${currentYear}" style="width:72px; padding:4px 8px; border:1px solid #d9d9d9; border-radius:4px; font-size:13px;" />
+                <span style="color:#8c8c8c;">年</span>
+                <input type="number" id="yn-timemg-input-month" min="1" max="12" value="${parseInt(currentMonth, 10)}" style="width:52px; padding:4px 8px; border:1px solid #d9d9d9; border-radius:4px; font-size:13px;" />
+                <span style="color:#8c8c8c;">月</span>
+                <button class="yn-timemg-btn yn-timemg-btn-primary" id="yn-timemg-btn-sync">🔄 同步考勤与项目数据</button>
+                <button class="yn-timemg-btn yn-timemg-btn-default" id="yn-timemg-btn-recalc">⚡ 智能重算分配</button>
+            </div>
+            <div class="yn-timemg-toolbar-right">
+                <button class="yn-timemg-btn yn-timemg-btn-success" id="yn-timemg-btn-autofill">💾 一键填报并保存考勤 (Twin Client)</button>
+            </div>
+        </div>
+
+        <!-- 主体双栏区域 -->
+        <div class="yn-timemg-body">
+            <!-- 左栏: 项目工时预实对比表 -->
+            <div class="yn-timemg-panel">
+                <div class="yn-timemg-panel-header">
+                    <span>📊 项目工时预实对比表</span>
+                    <span id="yn-timemg-proj-summary" style="font-size:11.5px; font-weight:normal; color:#8c8c8c;">0 个项目</span>
+                </div>
+                <div class="yn-timemg-panel-content">
+                    <table class="yn-timemg-table">
+                        <thead>
+                            <tr>
+                                <th style="width:68px; text-align:center;">允许超额</th>
+                                <th style="width:85px;">项目编号</th>
+                                <th style="width:48px; text-align:right;">预计</th>
+                                <th style="width:46px; text-align:right;">已填</th>
+                                <th style="width:52px; text-align:right;">拟分</th>
+                                <th style="width:92px; text-align:right;">超额/剩余</th>
+                                <th>项目名称</th>
+                            </tr>
+                        </thead>
+                        <tbody id="yn-timemg-proj-tbody">
+                            <tr>
+                                <td colspan="7" style="text-align:center; padding:30px; color:#8c8c8c;">
+                                    点击上方【🔄 同步考勤与项目数据】开始
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 右栏: 考勤一览明细与分配预览 -->
+            <div class="yn-timemg-panel">
+                <div class="yn-timemg-panel-header">
+                    <span>📅 出勤日工时分配预览 (09:00 ~ 17:30)</span>
+                    <span id="yn-timemg-plan-summary" style="font-size:11.5px; font-weight:normal; color:#8c8c8c;">0 天工作日</span>
+                </div>
+                <div class="yn-timemg-panel-content">
+                    <table class="yn-timemg-table">
+                        <thead>
+                            <tr>
+                                <th style="width:34px; text-align:center;">#</th>
+                                <th style="width:62px;">日期</th>
+                                <th style="width:108px; text-align:center;">类型</th>
+                                <th style="width:105px; text-align:center;">打卡记录</th>
+                                <th style="width:155px; text-align:center;">出勤时间</th>
+                                <th style="width:58px; text-align:center;">地点</th>
+                                <th style="width:88px;">项目编号</th>
+                                <th style="max-width:240px;">项目名称</th>
+                                <th style="width:75px; text-align:center;">状态</th>
+                            </tr>
+                        </thead>
+                        <tbody id="yn-timemg-plan-tbody">
+                            <tr>
+                                <td colspan="9" style="text-align:center; padding:40px; color:#8c8c8c;">
+                                    暂无分配数据。请点击上方【🔄 同步考勤与项目数据】！
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- 底部进度条 -->
+        <div class="yn-timemg-progress-wrap" id="yn-timemg-progress-wrap">
+            <div class="yn-timemg-progress-bar">
+                <div class="yn-timemg-progress-inner" id="yn-timemg-progress-inner"></div>
+            </div>
+            <div class="yn-timemg-log-text" id="yn-timemg-log-text">准备就绪</div>
+        </div>
+
+        <!-- 底部实时运行日志控制台与一键复制 -->
+        <div class="yn-timemg-footer-console">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <button id="yn-timemg-btn-togglelog" style="background:none; border:none; color:#595959; font-size:12px; font-weight:600; cursor:pointer; display:inline-flex; align-items:center; gap:6px; padding:2px 0; user-select:none;">
+                    <span>📝 运行与调试日志</span>
+                    <span id="yn-timemg-log-count" style="font-weight:normal; color:#8c8c8c; font-size:11px;">(0 条记录)</span>
+                    <span id="yn-timemg-log-arrow" style="font-size:11px; color:#096dd9;">▾ 点击展开</span>
+                </button>
+                <button class="yn-timemg-btn yn-timemg-btn-default" id="yn-timemg-btn-copylog" style="padding:2px 10px; font-size:11.5px; height:24px; display:flex; align-items:center; gap:4px;">
+                    📋 复制完整执行日志
+                </button>
+            </div>
+            <div id="yn-timemg-log-stream">
+                <div style="color:#6a9955;">// ⏱️ 爱模考勤工数副驾日志就绪...</div>
+            </div>
+        </div>
+    `;
+        document.body.appendChild(modal);
+        // 绑定日志展开/收起切换
+        const toggleLogBtn = document.getElementById('yn-timemg-btn-togglelog');
+        const streamEl = document.getElementById('yn-timemg-log-stream');
+        const arrowEl = document.getElementById('yn-timemg-log-arrow');
+        if (toggleLogBtn && streamEl && arrowEl) {
+            toggleLogBtn.addEventListener('click', () => {
+                const isHidden = streamEl.style.display === 'none' || !streamEl.style.display;
+                if (isHidden) {
+                    streamEl.style.display = 'block';
+                    arrowEl.innerText = '▴ 点击收起';
+                }
+                else {
+                    streamEl.style.display = 'none';
+                    arrowEl.innerText = '▾ 点击展开';
+                }
+            });
+        }
+        // 订阅全局日志流
+        let logCount = 0;
+        AutopilotLogger.subscribe(entry => {
+            const stream = document.getElementById('yn-timemg-log-stream');
+            const countEl = document.getElementById('yn-timemg-log-count');
+            if (!stream)
+                return;
+            logCount++;
+            if (countEl)
+                countEl.innerText = `(${logCount} 条记录)`;
+            const line = document.createElement('div');
+            const color = entry.level === 'ERROR' ? '#f14c4c' : (entry.level === 'WARN' ? '#cca700' : (entry.level === 'SUCCESS' ? '#73c991' : '#9cdcfe'));
+            line.innerHTML = `<span style="color:#6e7681;">[${entry.time}]</span> <span style="color:${color}; font-weight:600;">[${entry.level}]</span> ${entry.message}`;
+            stream.appendChild(line);
+            stream.scrollTop = stream.scrollHeight;
+        });
+    }
+    /**
+     * 渲染左侧项目预实对比表 (显示拟分工时与超额/剩余量)
+     */
+    function renderTimeMgExpProjects(projects, state, onToggleOverflow) {
+        const tbody = document.getElementById('yn-timemg-proj-tbody');
+        const summaryEl = document.getElementById('yn-timemg-proj-summary');
+        if (!tbody)
+            return;
+        if (projects.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; padding:30px; color:#8c8c8c;">未获取到项目预实对比数据</td></tr>`;
+            if (summaryEl)
+                summaryEl.innerText = '0 个项目';
+            return;
+        }
+        if (summaryEl) {
+            const totalExp = projects.reduce((sum, p) => sum + parseFloat(p.expWH || '0'), 0).toFixed(2);
+            summaryEl.innerText = `共 ${projects.length} 个项目 (总预计 ${totalExp}h)`;
+        }
+        tbody.innerHTML = '';
+        projects.forEach(p => {
+            const exp = parseFloat(p.expWH || '0');
+            const act = parseFloat(p.workingHours || '0');
+            // 计算该项目在当月分配计划中的总拟分工时 (不含历史已填写行)
+            const allocatedWh = (state?.allocatedPlans || [])
+                .filter(plan => plan.isWorkDay && plan.pjNo === p.pjNo && plan.status !== '已填写')
+                .reduce((sum, plan) => sum + (plan.timeWH || 0), 0);
+            const totalPostFill = parseFloat((act + allocatedWh).toFixed(2));
+            const isAllowed = state && state.allowedOverflowPjNos ? state.allowedOverflowPjNos.includes(p.pjNo) : false;
+            let diffHtml = '';
+            if (totalPostFill > exp) {
+                const overHours = (totalPostFill - exp).toFixed(2);
+                diffHtml = `<span class="yn-timemg-badge-overflow" title="超出预计预算 ${overHours}h">超 +${overHours}h</span>`;
+            }
+            else if (totalPostFill === exp) {
+                diffHtml = `<span style="color:#52c41a; font-weight:600; white-space:nowrap;">余 0.00h</span>`;
+            }
+            else {
+                const remainHours = (exp - totalPostFill).toFixed(2);
+                diffHtml = `<span style="color:#fa8c16; font-weight:600; white-space:nowrap;">余 ${remainHours}h</span>`;
+            }
+            const tr = document.createElement('tr');
+            if (isAllowed)
+                tr.className = 'is-overflow-row';
+            tr.innerHTML = `
+            <td style="text-align:center; padding:6px 2px;">
+                <input type="checkbox" class="yn-timemg-cb-overflow" data-pjno="${p.pjNo}" ${isAllowed ? 'checked' : ''} style="cursor:pointer; width:15px; height:15px; accent-color:#096dd9; vertical-align:middle;" title="勾选后允许【${p.pjNo}】超出预算分摊缺口工时" />
+            </td>
+            <td style="font-weight:700; color:#096dd9; font-family:monospace; font-size:12px;">${p.pjNo}</td>
+            <td style="text-align:right; font-weight:600; color:#262626;">${p.expWH}h</td>
+            <td style="text-align:right; color:#52c41a; font-weight:600;">${p.workingHours}h</td>
+            <td style="text-align:right;">
+                <strong style="color:${allocatedWh > 0 ? '#096dd9' : '#8c8c8c'};">${allocatedWh > 0 ? `${allocatedWh.toFixed(2)}h` : '-'}</strong>
+            </td>
+            <td style="text-align:right;">
+                ${diffHtml}
+            </td>
+            <td style="color:#595959; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:180px;" title="${p.name}">
+                ${p.name}
+            </td>
+        `;
+            tbody.appendChild(tr);
+        });
+        // 绑定复选框变更事件
+        tbody.querySelectorAll('.yn-timemg-cb-overflow').forEach((cb) => {
+            cb.addEventListener('change', () => {
+                const pjNo = cb.getAttribute('data-pjno');
+                const checked = cb.checked;
+                if (onToggleOverflow)
+                    onToggleOverflow(pjNo, checked);
+            });
+        });
+    }
+    /**
+     * 宿主页面数据加载后即时自动计算并渲染工时缺口 Badge，并实时监听宿主月份切换
+     */
+    function autoInitHostCollapseBadge() {
+        let isWatching = false;
+        const calcAndApply = () => {
+            const allEls = Array.from(document.querySelectorAll('*'));
+            let editComp = null;
+            for (const el of allEls) {
+                const v = el.__vue__;
+                if (v && v.hotSettings && Array.isArray(v.hotSettings.data) && Array.isArray(v.expWhs)) {
+                    editComp = v;
+                    break;
+                }
+            }
+            if (editComp && editComp.expWhs.length > 0 && editComp.hotSettings.data.length > 0) {
+                // 绑定 Vue 响应式监听 (仅需绑定一次)
+                if (!isWatching && typeof editComp.$watch === 'function') {
+                    isWatching = true;
+                    editComp.$watch('attendance.ym', () => {
+                        setTimeout(() => calcAndApply(), 300);
+                    });
+                    editComp.$watch(() => editComp.hotSettings && editComp.hotSettings.data, () => {
+                        setTimeout(() => calcAndApply(), 300);
+                    });
+                    editComp.$watch(() => editComp.expWhs, () => {
+                        setTimeout(() => calcAndApply(), 300);
+                    });
+                }
+                const expProjects = editComp.expWhs.map((item) => {
+                    const exp = parseFloat(item.expWH || '0');
+                    const act = parseFloat(item.workingHours || '0');
+                    return {
+                        pjNo: item.pjNo || '',
+                        name: item.name || '',
+                        expWH: item.expWH || '0.00',
+                        workingHours: item.workingHours || '0.00',
+                        remainWH: Math.max(0, parseFloat((exp - act).toFixed(2))),
+                        pjInfoID: item.pjInfoID || '',
+                        pjgID: item.pjgID || null,
+                        flgPJG: item.flgPJG || '2',
+                        department: item.department || ''
+                    };
+                });
+                const detailDays = editComp.hotSettings.data.map((item) => ({
+                    ymd: item.ymd || '',
+                    objYMD: item.objYMD || null,
+                    showDate: item.showDate || '',
+                    month: item.month || '',
+                    date: item.date || '',
+                    weekDate: Number(item.weekDate || 0),
+                    dtDayType: Number(item.dtDayType || 1),
+                    onDutyStatus: String(item.onDutyStatus || '1'),
+                    inTime: item.inTime || null,
+                    outTime: item.outTime || null,
+                    fromDt: item.fromDt || null,
+                    toDt: item.toDt || null,
+                    timeWH: item.timeWH || null,
+                    pjNo: item.pjNo || null,
+                    name: item.name || null,
+                    flgOut: item.flgOut || null,
+                    flgOutShow: item.flgOutShow || null,
+                    whFormID: item.whFormID || null,
+                    whFormDetailID: item.whFormDetailID || null,
+                    dtAppStatus: item.dtAppStatus || null,
+                    applyFlowStatus: item.applyFlowStatus || null,
+                    department: item.department || null,
+                    memo: item.memo || null
+                }));
+                const plans = computeProjectAllocationPlan(expProjects, detailDays);
+                const shortfall = calculateBudgetShortfall(expProjects, detailDays, plans);
+                updateCollapseHeaderShortfallBadge(shortfall);
+                return true;
+            }
+            return false;
+        };
+        // 初始快速轮询检测挂载
+        let attempts = 0;
+        const timer = setInterval(() => {
+            attempts++;
+            if (calcAndApply() || attempts > 20) {
+                clearInterval(timer);
+            }
+        }, 800);
+        // 建立 DOM 日期选择器变化监听，确保即使未触发 Vue watch 也能即时响应月份切换
+        const dpInput = document.querySelector('.el-date-editor--month input, .el-date-editor input');
+        if (dpInput) {
+            dpInput.addEventListener('change', () => {
+                setTimeout(() => calcAndApply(), 500);
+            });
+        }
+        // 监听全局前一月/后一月按钮点击
+        document.addEventListener('click', (e) => {
+            const target = e.target;
+            if (target && (target.closest('.el-date-picker') || target.closest('.el-picker-panel') || target.closest('.el-month-table') || target.closest('.el-date-editor') || target.classList.contains('el-icon-d-arrow-left') || target.classList.contains('el-icon-d-arrow-right'))) {
+                setTimeout(() => calcAndApply(), 600);
+            }
+        });
+    }
+    /**
+     * 向宿主页面折叠面板表头注入/更新预算工时缺口红字提示
+     */
+    function updateCollapseHeaderShortfallBadge(shortfall) {
+        try {
+            const titleEl = document.querySelector('#projectCompare .collapse-title') ||
+                Array.from(document.querySelectorAll('.collapse-title'))
+                    .find(el => (el.textContent || '').includes('项目工时预实对比'));
+            if (!titleEl)
+                return;
+            let badge = document.getElementById('yn-timemg-collapse-shortfall-badge');
+            if (!badge) {
+                badge = document.createElement('span');
+                badge.id = 'yn-timemg-collapse-shortfall-badge';
+                titleEl.appendChild(badge);
+            }
+            const deficit = shortfall ? (shortfall.monthShortfallHours || shortfall.shortfallHours) : 0;
+            if (shortfall && deficit > 0) {
+                badge.style.cssText = `
+                display: inline-flex;
+                align-items: center;
+                gap: 4px;
+                color: #cf1322;
+                background: #fff1f0;
+                border: 1px solid #ffa39e;
+                font-size: 12px;
+                font-weight: 700;
+                padding: 2px 8px;
+                border-radius: 10px;
+                margin-left: 12px;
+                line-height: 1.2;
+                vertical-align: middle;
+                box-shadow: 0 1px 3px rgba(207, 19, 34, 0.12);
+            `;
+                badge.innerHTML = `⚠️ 当月项目工时缺口: ${deficit.toFixed(2)}h (总预算 ${shortfall.totalMonthBudget.toFixed(2)}h / 出勤需求 ${shortfall.totalMonthHours.toFixed(2)}h)`;
+            }
+            else if (shortfall) {
+                const surplus = parseFloat(Math.max(0, shortfall.totalMonthBudget - shortfall.totalMonthHours).toFixed(2));
+                badge.style.cssText = `
+                display: inline-flex;
+                align-items: center;
+                gap: 4px;
+                color: #389e0d;
+                background: #f6ffed;
+                border: 1px solid #b7eb8f;
+                font-size: 12px;
+                font-weight: 600;
+                padding: 2px 8px;
+                border-radius: 10px;
+                margin-left: 12px;
+                line-height: 1.2;
+                vertical-align: middle;
+                box-shadow: 0 1px 3px rgba(56, 158, 13, 0.12);
+            `;
+                badge.innerHTML = `✓ 当月项目工时预算充足 (富余 ${surplus.toFixed(2)}h | 总预算 ${shortfall.totalMonthBudget.toFixed(2)}h / 出勤需求 ${shortfall.totalMonthHours.toFixed(2)}h)`;
+            }
+        }
+        catch (e) { }
+    }
+    /**
+     * 渲染右侧考勤一览与分配方案预览表
+     */
+    function renderTimeMgPlans(plans) {
+        const tbody = document.getElementById('yn-timemg-plan-tbody');
+        const summaryEl = document.getElementById('yn-timemg-plan-summary');
+        if (!tbody)
+            return;
+        if (plans.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; padding:40px; color:#8c8c8c;">暂无分配计划</td></tr>`;
+            if (summaryEl)
+                summaryEl.innerText = '0 天工作日';
+            return;
+        }
+        const workPlans = plans.filter(p => p.isWorkDay);
+        const uniqueWorkDays = new Set(workPlans.map(p => p.ymd)).size;
+        const totalAllocatedHours = workPlans.filter(p => Boolean(p.pjNo)).reduce((sum, p) => sum + (p.timeWH || 0), 0).toFixed(2);
+        const shortfallHours = workPlans.filter(p => !p.pjNo).reduce((sum, p) => sum + (p.timeWH || 0), 0).toFixed(2);
+        if (summaryEl) {
+            if (parseFloat(shortfallHours) > 0) {
+                summaryEl.innerHTML = `共 ${uniqueWorkDays} 个出勤日 (已分配项目: <strong style="color:#096dd9;">${totalAllocatedHours}h</strong>, 预算不足缺口: <strong style="color:#fa8c16;">${shortfallHours}h</strong>)`;
+            }
+            else {
+                summaryEl.innerText = `共 ${uniqueWorkDays} 个出勤日 (${workPlans.length} 条记录, 已分配 ${totalAllocatedHours}h)`;
+            }
+        }
+        tbody.innerHTML = '';
+        plans.forEach((plan, idx) => {
+            const tr = document.createElement('tr');
+            if (!plan.isWorkDay) {
+                tr.className = 'holiday';
+            }
+            else if (plan.totalSegmentsInDay && plan.totalSegmentsInDay > 1) {
+                tr.style.backgroundColor = '#fafafa';
+            }
+            const inOutDisplay = (plan.inTime || plan.outTime) ? `
+            <div style="font-size:11px; font-family:monospace; color:#595959;">
+                ${plan.outTime ? plan.outTime.substring(11, 16) : '--:--'} ~ ${plan.inTime ? plan.inTime.substring(11, 16) : '--:--'}
+            </div>
+        ` : `<span style="color:#bfbfbf; font-size:11px;">(无门禁记录)</span>`;
+            const locationTag = plan.isWorkDay ? `
+            <span class="yn-timemg-tag ${plan.isOut ? 'yn-timemg-tag-out' : 'yn-timemg-tag-office'}" title="${plan.locationReason}">
+                ${plan.locationName}
+            </span>
+        ` : `<span style="color:#bfbfbf;">-</span>`;
+            let typeTag = `<span class="yn-timemg-tag yn-timemg-tag-holiday">休假</span>`;
+            if (plan.isWorkDay) {
+                if (plan.totalSegmentsInDay && plan.totalSegmentsInDay > 1) {
+                    typeTag = `<span class="yn-timemg-tag" style="background:#fff0f6; color:#c41d7f; border:1px solid #ffadd2;" title="该出勤日由多项目拼凑">🧩 拼凑 ${(plan.segmentIndex ?? 0) + 1}/${plan.totalSegmentsInDay}</span>`;
+                }
+                else {
+                    typeTag = `<span class="yn-timemg-tag yn-timemg-tag-work">出勤日</span>`;
+                }
+            }
+            const timeDisplay = plan.isWorkDay ? `
+            <div>
+                <span style="font-weight:600; color:#262626;">${plan.startTime}~${plan.endTime}</span>
+                <span style="font-size:11px; color:#fa8c16; font-weight:600; margin-left:4px;">(${plan.timeWH}h)</span>
+            </div>
+        ` : `<span style="color:#bfbfbf;">-</span>`;
+            let statusHtml = `<span style="color:#8c8c8c;">${plan.status}</span>`;
+            if (plan.status === '成功') {
+                statusHtml = `<span style="color:#52c41a; font-weight:600;">✓ 成功</span>`;
+            }
+            else if (plan.status === '失败') {
+                statusHtml = `<span style="color:#ff4d4f; font-weight:600;">✗ 失败</span>`;
+            }
+            else if (plan.status === '已填写') {
+                statusHtml = `<span style="color:#096dd9; font-weight:600; background:#e6f7ff; border:1px solid #91d5ff; border-radius:3px; padding:1px 5px; font-size:11px;">已存在</span>`;
+            }
+            else if (plan.status === '就绪') {
+                if (!plan.pjNo) {
+                    statusHtml = `<span style="color:#d46b08; font-weight:600; background:#fffbe6; border:1px solid #ffe58f; border-radius:3px; padding:1px 5px; font-size:11px;">预算缺口</span>`;
+                }
+                else {
+                    statusHtml = `<span style="color:#fa8c16; font-weight:600;">待回填</span>`;
+                }
+            }
+            const pjNoHtml = plan.pjNo ? `
+            <strong style="color:#096dd9;">${plan.pjNo}</strong>
+        ` : (plan.isWorkDay ? `<span style="color:#fa8c16; font-weight:600; font-size:12px;">⚠️ 待补项目</span>` : `<span style="color:#bfbfbf;">-</span>`);
+            const pjNameHtml = plan.pjName ? `
+            <div style="color:#595959; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:240px;" title="${plan.pjName}">${plan.pjName}</div>
+        ` : (plan.isWorkDay ? `<span style="color:#d46b08; font-size:11.5px; font-style:italic;">(工时缺口，可在左表勾选或手动填报)</span>` : `<span style="color:#bfbfbf;">-</span>`);
+            tr.innerHTML = `
+            <td style="text-align:center; color:#8c8c8c;">${idx + 1}</td>
+            <td style="font-weight:600; white-space:nowrap;">${plan.showDate}</td>
+            <td style="text-align:center;">${typeTag}</td>
+            <td style="text-align:center;">${inOutDisplay}</td>
+            <td style="text-align:center;">${timeDisplay}</td>
+            <td style="text-align:center;">${locationTag}</td>
+            <td>${pjNoHtml}</td>
+            <td>${pjNameHtml}</td>
+            <td style="text-align:center;">${statusHtml}</td>
+        `;
+            tbody.appendChild(tr);
+        });
+    }
+
+    /**
+     * 现代浮动 Toast 消息通知组件 (替代阻塞式 alert 弹窗)
+     */
+    function showToast(type, message, duration = 3500) {
+        // 1. 先尝试利用宿主 Vue Element-UI $message (如果存在)
+        try {
+            const appVue = document.querySelector('#app')?.__vue__;
+            if (appVue && typeof appVue.$message === 'function') {
+                appVue.$message({
+                    type: type,
+                    message: message,
+                    duration: duration,
+                    showClose: true
+                });
+                return;
+            }
+        }
+        catch (e) { }
+        // 2. 独立高优先级 Floating Toast 容器
+        let container = document.getElementById('yn-toast-container');
+        if (!container) {
+            container = document.createElement('div');
+            container.id = 'yn-toast-container';
+            container.style.cssText = `
+            position: fixed;
+            top: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 99999999;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            pointer-events: none;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif;
+        `;
+            document.body.appendChild(container);
+        }
+        const toast = document.createElement('div');
+        const colorMap = {
+            success: { bg: '#f6ffed', border: '#b7eb8f', text: '#389e0d', icon: '✅', shadow: 'rgba(82, 196, 26, 0.2)' },
+            warning: { bg: '#fffbe6', border: '#ffe58f', text: '#d46b08', icon: '⚠️', shadow: 'rgba(250, 140, 22, 0.2)' },
+            error: { bg: '#fff1f0', border: '#ffa39e', text: '#cf1322', icon: '❌', shadow: 'rgba(245, 34, 45, 0.2)' },
+            info: { bg: '#e6f7ff', border: '#91d5ff', text: '#096dd9', icon: 'ℹ️', shadow: 'rgba(24, 144, 255, 0.2)' }
+        };
+        const cfg = colorMap[type] || colorMap.info;
+        toast.style.cssText = `
+        background: ${cfg.bg};
+        border: 1px solid ${cfg.border};
+        color: ${cfg.text};
+        box-shadow: 0 4px 16px ${cfg.shadow};
+        padding: 10px 18px;
+        border-radius: 8px;
+        font-size: 13.5px;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        max-width: 600px;
+        word-break: break-word;
+        pointer-events: auto;
+        opacity: 0;
+        transform: translateY(-12px);
+        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    `;
+        toast.innerHTML = `
+        <span style="font-size: 16px;">${cfg.icon}</span>
+        <span style="white-space: pre-wrap; line-height: 1.4;">${message}</span>
+    `;
+        container.appendChild(toast);
+        // 触发动画
+        requestAnimationFrame(() => {
+            toast.style.opacity = '1';
+            toast.style.transform = 'translateY(0)';
+        });
+        // 自动消失
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateY(-12px)';
+            setTimeout(() => {
+                if (toast.parentElement)
+                    toast.parentElement.removeChild(toast);
+            }, 300);
+        }, duration);
+    }
+
     // ==========================================
     // 1. 全局状态单例
     // ==========================================
@@ -1076,6 +2974,10 @@
     function detectPageMode() {
         const url = window.location.href;
         const decodedUrl = decodeURIComponent(url);
+        // 0. 【考勤工数系统】页面特征检测 (与元年完全独立)
+        if (window.location.hostname.includes('time-mg.huge-vision.com') || url.includes('time-mg.huge-vision.com')) {
+            return 'TIME_MG';
+        }
         // 1. 【经费报销单页】特征检测
         const isBillPage = (decodedUrl.includes('menuName=经费报销单') ||
             decodedUrl.includes('menuName=报销单') ||
@@ -1155,6 +3057,23 @@
                 STATE.eicds = getH('eicds');
             if (getH('v'))
                 STATE.v = getH('v');
+            if (getH('X-CSRF-TOKEN') || getH('x-csrf-token')) {
+                if (!STATE.timeMg) {
+                    const now = new Date();
+                    STATE.timeMg = {
+                        selectedYear: String(now.getFullYear()),
+                        selectedMonth: String(now.getMonth() + 1).padStart(2, '0'),
+                        csrfToken: '',
+                        expProjects: [],
+                        detailDays: [],
+                        allocatedPlans: [],
+                        isProcessing: false,
+                        lastSyncTime: ''
+                    };
+                }
+                STATE.timeMg.csrfToken = getH('X-CSRF-TOKEN') || getH('x-csrf-token');
+                updateTimeMgTokenStatus();
+            }
             updateTokenStatus();
         };
         const handleInterceptedResponse = (url, jsonText) => {
@@ -2418,8 +4337,266 @@
                 btnSave.addEventListener('click', executeBatchSave);
         }
     }
+    // ==========================================
+    // 9. 模式 C: 考勤工数系统 (time-mg.huge-vision.com) 核心逻辑与事件
+    // ==========================================
+    function updateTimeMgTokenStatus() {
+        const badge = document.querySelector('#yn-timemg-helper-btn .yn-timemg-badge');
+        const csrf = getCsrfToken(STATE.timeMg);
+        if (badge) {
+            badge.className = `yn-timemg-badge ${csrf ? '' : 'offline'}`;
+        }
+    }
+    function initTimeMgSystem() {
+        const activeYM = detectActiveYearAndMonth();
+        if (!STATE.timeMg) {
+            STATE.timeMg = {
+                selectedYear: activeYM.year,
+                selectedMonth: activeYM.month,
+                csrfToken: getCsrfToken(),
+                expProjects: [],
+                detailDays: [],
+                allocatedPlans: [],
+                isProcessing: false,
+                lastSyncTime: ''
+            };
+        }
+        else {
+            STATE.timeMg.selectedYear = activeYM.year;
+            STATE.timeMg.selectedMonth = activeYM.month;
+        }
+        injectTimeMgStyles();
+        createTimeMgModalDOM(STATE.timeMg);
+        bindTimeMgEvents();
+        updateTimeMgTokenStatus();
+        autoInitHostCollapseBadge();
+    }
+    let timeMgEventsBound = false;
+    function bindTimeMgEvents() {
+        if (timeMgEventsBound)
+            return;
+        timeMgEventsBound = true;
+        const btn = document.getElementById('yn-timemg-helper-btn');
+        const modal = document.getElementById('yn-timemg-modal');
+        const mask = document.getElementById('yn-timemg-modal-mask');
+        const closeBtn = document.getElementById('yn-timemg-modal-close');
+        const btnSync = document.getElementById('yn-timemg-btn-sync');
+        const btnRecalc = document.getElementById('yn-timemg-btn-recalc');
+        const btnAutofill = document.getElementById('yn-timemg-btn-autofill');
+        const btnCopyLog = document.getElementById('yn-timemg-btn-copylog');
+        const yearInput = document.getElementById('yn-timemg-input-year');
+        const monthInput = document.getElementById('yn-timemg-input-month');
+        if (!btn || !modal)
+            return;
+        const openModal = async () => {
+            // 打开模态框时，优先嗅探宿主页面当前正在展示的最新年月
+            const activeYM = detectActiveYearAndMonth();
+            if (yearInput)
+                yearInput.value = activeYM.year;
+            if (monthInput)
+                monthInput.value = String(parseInt(activeYM.month, 10));
+            let monthChanged = false;
+            if (STATE.timeMg) {
+                monthChanged = (STATE.timeMg.selectedYear !== activeYM.year) || (STATE.timeMg.selectedMonth !== activeYM.month);
+                STATE.timeMg.selectedYear = activeYM.year;
+                STATE.timeMg.selectedMonth = activeYM.month;
+                if (monthChanged) {
+                    STATE.timeMg.expProjects = [];
+                    STATE.timeMg.detailDays = [];
+                    STATE.timeMg.allocatedPlans = [];
+                }
+            }
+            modal.style.display = 'flex';
+            if (mask)
+                mask.style.display = 'block';
+            updateTimeMgTokenStatus();
+            if (STATE.timeMg && (STATE.timeMg.expProjects.length === 0 || monthChanged)) {
+                await syncTimeMgData();
+            }
+        };
+        const closeModal = () => {
+            modal.style.display = 'none';
+            if (mask)
+                mask.style.display = 'none';
+        };
+        btn.addEventListener('click', openModal);
+        if (mask)
+            mask.addEventListener('click', closeModal);
+        if (closeBtn)
+            closeBtn.addEventListener('click', closeModal);
+        if (btnSync)
+            btnSync.addEventListener('click', () => syncTimeMgData());
+        if (btnRecalc)
+            btnRecalc.addEventListener('click', () => recalcTimeMgAllocation());
+        if (btnAutofill)
+            btnAutofill.addEventListener('click', () => executeTimeMgAutofill());
+        if (btnCopyLog) {
+            btnCopyLog.addEventListener('click', async () => {
+                const ok = await AutopilotLogger.copyLogsToClipboard();
+                if (ok) {
+                    showToast('success', '📋 完整运行日志已成功复制到剪贴板！');
+                }
+                else {
+                    showToast('error', '❌ 复制失败，请手动选择日志文本复制。');
+                }
+            });
+        }
+        if (yearInput) {
+            yearInput.addEventListener('change', () => {
+                if (STATE.timeMg)
+                    STATE.timeMg.selectedYear = yearInput.value;
+            });
+        }
+        if (monthInput) {
+            monthInput.addEventListener('change', () => {
+                if (STATE.timeMg)
+                    STATE.timeMg.selectedMonth = String(monthInput.value).padStart(2, '0');
+            });
+        }
+    }
+    function handleToggleOverflow(pjNo, checked) {
+        if (!STATE.timeMg)
+            return;
+        const set = new Set(STATE.timeMg.allowedOverflowPjNos || []);
+        if (checked)
+            set.add(pjNo);
+        else
+            set.delete(pjNo);
+        STATE.timeMg.allowedOverflowPjNos = Array.from(set);
+        const plans = computeProjectAllocationPlan(STATE.timeMg.expProjects, STATE.timeMg.detailDays, STATE.timeMg.allowedOverflowPjNos);
+        STATE.timeMg.allocatedPlans = plans;
+        renderTimeMgExpProjects(STATE.timeMg.expProjects, STATE.timeMg, handleToggleOverflow);
+        renderTimeMgPlans(plans);
+        const assignedDays = plans.filter(p => p.isWorkDay && p.pjNo).length;
+        AutopilotLogger.info(`已更新项目超额配置：${pjNo} (${checked ? '允许超预算' : '不超预算'})，当前已分摊出勤日: ${assignedDays} 天`);
+        showToast('info', checked ? `已允许【${pjNo}】超出预算吸收缺口工时` : `已取消【${pjNo}】超预算分摊`, 2500);
+    }
+    async function syncTimeMgData() {
+        if (!STATE.timeMg)
+            return;
+        const yearInput = document.getElementById('yn-timemg-input-year');
+        const monthInput = document.getElementById('yn-timemg-input-month');
+        const btnSync = document.getElementById('yn-timemg-btn-sync');
+        const y = yearInput ? yearInput.value : STATE.timeMg.selectedYear;
+        const m = monthInput ? String(monthInput.value).padStart(2, '0') : STATE.timeMg.selectedMonth;
+        STATE.timeMg.selectedYear = y;
+        STATE.timeMg.selectedMonth = m;
+        if (btnSync) {
+            btnSync.disabled = true;
+            btnSync.innerText = '⏳ 正在同步...';
+        }
+        AutopilotLogger.info(`开始同步 ${y}年${m}月 考勤与项目预实工时数据...`);
+        try {
+            await syncHostMonth(y, m);
+            const [expProjects, detailDays] = await Promise.all([
+                fetchExpWHInfoApi(y, m, STATE.timeMg),
+                fetchDetailWHInfoApi(y, m, STATE.timeMg)
+            ]);
+            STATE.timeMg.expProjects = expProjects;
+            STATE.timeMg.detailDays = detailDays;
+            AutopilotLogger.success(`数据拉取完成：获取到 ${expProjects.length} 个项目预实对比项，${detailDays.length} 天考勤明细`);
+            // 执行智能分配 (支持勾选超预算项目)
+            const plans = computeProjectAllocationPlan(expProjects, detailDays, STATE.timeMg.allowedOverflowPjNos || []);
+            STATE.timeMg.allocatedPlans = plans;
+            // 计算预算工时缺口
+            const shortfall = calculateBudgetShortfall(expProjects, detailDays, plans);
+            STATE.timeMg.budgetShortfall = shortfall;
+            updateCollapseHeaderShortfallBadge(shortfall);
+            renderTimeMgExpProjects(expProjects, STATE.timeMg, handleToggleOverflow);
+            renderTimeMgPlans(plans);
+            const workDays = plans.filter(p => p.isWorkDay);
+            const assignedHours = workDays.filter(p => Boolean(p.pjNo)).reduce((s, p) => s + (p.timeWH || 0), 0);
+            AutopilotLogger.success(`智能工数分配完成：${workDays.length} 个出勤日，已分配工时 ${assignedHours.toFixed(2)}h`);
+            if (shortfall.shortfallHours > 0) {
+                showToast('info', `✅ 成功同步！当月出勤需求 ${shortfall.totalRequiredHours}h，预算缺口 ${shortfall.shortfallHours}h。可在左侧勾选允许超出的项目，或保持缺口留空。`, 5000);
+            }
+            else {
+                showToast('success', `✅ 成功同步 ${y}年${m}月 数据！共 ${expProjects.length} 个项目，已自动完成分配。`, 4000);
+            }
+        }
+        catch (err) {
+            AutopilotLogger.error(`同步失败: ${err.message}`);
+            showToast('error', `❌ 同步失败: ${err.message}，请检查登录状态或网络`, 5000);
+        }
+        finally {
+            if (btnSync) {
+                btnSync.disabled = false;
+                btnSync.innerText = '🔄 同步考勤与项目数据';
+            }
+        }
+    }
+    function recalcTimeMgAllocation() {
+        if (!STATE.timeMg)
+            return;
+        if (STATE.timeMg.expProjects.length === 0 || STATE.timeMg.detailDays.length === 0) {
+            showToast('warning', '请先点击【🔄 同步考勤与项目数据】获取当月考勤！');
+            return;
+        }
+        AutopilotLogger.info('正在重新试算工数分配方案...');
+        const plans = computeProjectAllocationPlan(STATE.timeMg.expProjects, STATE.timeMg.detailDays, STATE.timeMg.allowedOverflowPjNos || []);
+        STATE.timeMg.allocatedPlans = plans;
+        const shortfall = calculateBudgetShortfall(STATE.timeMg.expProjects, STATE.timeMg.detailDays, plans);
+        STATE.timeMg.budgetShortfall = shortfall;
+        updateCollapseHeaderShortfallBadge(shortfall);
+        renderTimeMgExpProjects(STATE.timeMg.expProjects, STATE.timeMg, handleToggleOverflow);
+        renderTimeMgPlans(plans);
+        AutopilotLogger.success('智能工数分配已重新刷新！');
+        showToast('info', '⚡ 智能工数分配已刷新！');
+    }
+    async function executeTimeMgAutofill() {
+        if (!STATE.timeMg || STATE.timeMg.allocatedPlans.length === 0) {
+            showToast('warning', '请先同步数据并生成分配方案！');
+            return;
+        }
+        STATE.timeMg.allocatedPlans.filter(p => p.isWorkDay);
+        const existingDays = STATE.timeMg.allocatedPlans.filter(p => p.status === '已填写');
+        const toFillDays = STATE.timeMg.allocatedPlans.filter(p => p.status === '就绪');
+        const outCount = toFillDays.filter(p => p.isOut).length;
+        const officeCount = toFillDays.length - outCount;
+        const shortfall = STATE.timeMg.budgetShortfall;
+        AutopilotLogger.info(`准备执行孪生客户端填报：保留已有 ${existingDays.length} 条，装载待填 ${toFillDays.length} 条 (外出 ${outCount} 天, 公司 ${officeCount} 天)...`);
+        const progressWrap = document.getElementById('yn-timemg-progress-wrap');
+        const progressInner = document.getElementById('yn-timemg-progress-inner');
+        const logText = document.getElementById('yn-timemg-log-text');
+        const btnAutofill = document.getElementById('yn-timemg-btn-autofill');
+        progressWrap.style.display = 'block';
+        btnAutofill.disabled = true;
+        btnAutofill.innerText = '⏳ 正在填报并保存...';
+        const res = await saveAttendanceTwinClient(STATE.timeMg.allocatedPlans, STATE.timeMg, (idx, total, msg) => {
+            const percent = Math.round((idx / total) * 100);
+            progressInner.style.width = `${percent}%`;
+            logText.innerText = `[${idx}/${total}] ${msg}`;
+            AutopilotLogger.info(`[进度 ${idx}/${total}] ${msg}`);
+        });
+        progressInner.style.width = '100%';
+        btnAutofill.disabled = false;
+        btnAutofill.innerText = '💾 一键填报并保存考勤 (Twin Client)';
+        renderTimeMgPlans(STATE.timeMg.allocatedPlans);
+        if (res.failCount === 0) {
+            logText.innerText = `✅ 全部 ${res.successCount} 条记录填报并生效保存！`;
+            AutopilotLogger.success(`🎉 填报成功完成：全部 ${res.successCount} 条记录已装载并触发生效保存！`);
+            let toastMsg = `🎉 全部 ${res.successCount} 条出勤记录已成功装载并触发生效保存！`;
+            if (shortfall && shortfall.shortfallHours > 0) {
+                toastMsg += `\n（注：缺口 ${shortfall.shortfallHours}h 的行项目编号已留空，请按需手动选择项目）`;
+            }
+            showToast('success', toastMsg, 6000);
+        }
+        else {
+            logText.innerText = `⚠️ 填报完成：成功 ${res.successCount} 条，失败 ${res.failCount} 条`;
+            AutopilotLogger.warn(`填报部分异常：成功 ${res.successCount} 条，失败 ${res.failCount} 条。详情: ${res.errors.join('; ')}`);
+            showToast('warning', `⚠️ 填报完成：成功 ${res.successCount} 条，失败 ${res.failCount} 条`, 5000);
+        }
+    }
     function checkAndMount() {
+        if (typeof window !== 'undefined' && window.top !== window.self)
+            return;
         const mode = detectPageMode();
+        if (mode === 'TIME_MG') {
+            STATE.pageMode = mode;
+            initTimeMgSystem();
+            console.log(`[IVision FSSC Autopilot v4.4.0] Mounted successfully in [TIME_MG] mode.`);
+            return;
+        }
         if (mode && mode !== 'UNKNOWN') {
             STATE.pageMode = mode;
             extractUrlParams();
@@ -2427,7 +4604,7 @@
             createModalDOM(STATE);
             bindEvents();
             updateTokenStatus();
-            console.log(`[IVision FSSC Autopilot v4.3.0] Mounted successfully in [${mode}] mode.`);
+            console.log(`[IVision FSSC Autopilot v4.4.0] Mounted successfully in [${mode}] mode.`);
         }
     }
     window.addEventListener('DOMContentLoaded', checkAndMount);
@@ -2438,7 +4615,7 @@
     }
     // 轮询检查避免 Vue 异步路由渲染遗漏
     setInterval(() => {
-        if (!document.getElementById('yn-batch-helper-btn')) {
+        if (!document.getElementById('yn-batch-helper-btn') && !document.getElementById('yn-timemg-helper-btn')) {
             checkAndMount();
         }
     }, 1500);
