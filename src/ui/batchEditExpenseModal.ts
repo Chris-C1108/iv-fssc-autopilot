@@ -16,6 +16,14 @@ import {
 import { searchProjectList, fetchLoginUserInfo } from '../services/applicationService';
 import { getInvoicePoolGlobalState } from '../services/invoicePoolDomService';
 import { isLlmConfigured, callDirectLlmJson } from '../services/llmService';
+import {
+    extractTripSkeleton,
+    dispatchInferenceChannels,
+    mergeInferenceResults,
+    detectTypeCategory,
+    getGroupCategory,
+    isUnknownTypeGroup
+} from '../services/inferenceService';
 
 declare const unsafeWindow: any;
 
@@ -333,6 +341,13 @@ function groupExpenseRows(rows: ExpenseRecordExportRow[]): ExpenseRecordGroup[] 
                 const isTier1 = /北京|上海|广州|深圳/.test(c);
                 dyn.cityType = isTier1 ? '境内-北上广深' : '境内-其他';
             }
+            // 若接口中未带回超标说明，尝试通过宿主 DOM/React Fiber 穿透探测
+            if (!dyn.overStandardDescription) {
+                const hostOverDesc = extractOverStandardFromHostDom(g.expenseRecordId);
+                if (hostOverDesc) {
+                    dyn.overStandardDescription = hostOverDesc;
+                }
+            }
         } else if (activeCat === 'TAXI') {
             if (!dyn.startAddress && inv0?.stationGetOn) dyn.startAddress = inv0.stationGetOn;
             if (!dyn.endAddress && inv0?.stationGetOff) dyn.endAddress = inv0.stationGetOff;
@@ -345,6 +360,59 @@ function groupExpenseRows(rows: ExpenseRecordExportRow[]): ExpenseRecordGroup[] 
     }
 
     return Array.from(groupMap.values());
+}
+
+/**
+ * 从宿主页面的 DOM 或 React Fiber 实例中穿透探测已填写的超标说明
+ */
+function extractOverStandardFromHostDom(recordId: string, doc?: Document): string {
+    if (typeof document === 'undefined') return '';
+    const docs = [document];
+    if (typeof window !== 'undefined' && window.top && window.top.document && !docs.includes(window.top.document)) {
+        docs.push(window.top.document);
+    }
+    if (doc && !docs.includes(doc)) {
+        docs.push(doc);
+    }
+
+    const isMeaningful = (s: any): boolean => {
+        if (!s || typeof s !== 'string') return false;
+        const clean = s.trim();
+        return clean.length > 0 && clean !== 'true' && clean !== 'false' && clean !== '是' && clean !== '否' && clean !== '[object Object]';
+    };
+
+    for (const d of docs) {
+        try {
+            const rowEls = Array.from(d.querySelectorAll(`tr, [data-row-key*="${recordId}"], [class*="ant-table-row"]`));
+            for (const row of rowEls) {
+                const reactKey = Object.keys(row).find(k => k.startsWith('__react'));
+                if (reactKey) {
+                    let curr = (row as any)[reactKey];
+                    while (curr) {
+                        const props = curr.memoizedProps;
+                        const data = props?.data || props?.item || props?.record || props?.expenseRecord;
+                        if (data && (data.expenseRecordId === recordId || data.id === recordId)) {
+                            const candidates = [
+                                data.overStandardDescription,
+                                data.overStandardReason,
+                                data.overStandardDesc,
+                                data.OVER_STANDARD_DESCRIPTION,
+                                data.OVER_STANDARD_REASON,
+                                data.exceedStandardDescription,
+                                data.rowDatas?.OVER_STANDARD_DESCRIPTION?.value,
+                                data.rowDatas?.OVER_STANDARD_DESCRIPTION
+                            ];
+                            for (const c of candidates) {
+                                if (isMeaningful(c)) return String(c).trim();
+                            }
+                        }
+                        curr = curr.return;
+                    }
+                }
+            }
+        } catch (e) {}
+    }
+    return '';
 }
 
 /**
@@ -872,17 +940,6 @@ export function getExpenseTypeEmoji(name: string, code?: string): string {
     return ''; // Vercel 设计规范：避免花哨卡通 Emoji 堆砌，采用纯净排版
 }
 
-function detectTypeCategory(typeId: string, typeName: string): 'HOTEL' | 'FLIGHT' | 'TRAIN' | 'TAXI' | 'MOBILE' | 'OTHER' {
-    const s = `${typeName || ''} ${typeId || ''}`.toLowerCase();
-    if (s.includes('住宿') || s.includes('酒店') || s.includes('zsf') || typeId === '0356c4e2b72de1653e55bb00bc610001') return 'HOTEL';
-    if (s.includes('飞机') || s.includes('航空') || s.includes('jnc') || typeId === '035671613fdde1653e55bb00bc610000') return 'FLIGHT';
-    if (s.includes('火车') || s.includes('高铁') || s.includes('hcp') || typeId === '0356c4c2b14de1653e55bb00bc610000') return 'TRAIN';
-    if (s.includes('出租') || s.includes('taxi') || s.includes('czc') || s.includes('市内交通') || s.includes('snj') ||
-        typeId === '0356c4cef03345af7f1906ec05cc0000' || typeId === '0356c529e72de1653e55bb00bc610001') return 'TAXI';
-    if (s.includes('手机') || s.includes('员工手机') || s.includes('通信') || s.includes('txf') || typeId === '0356c577f8ede1653e55bb00bc610001') return 'MOBILE';
-    return 'OTHER';
-}
-
 function escapeHtml(str: any): string {
     if (str === undefined || str === null) return '';
     return String(str)
@@ -892,34 +949,80 @@ function escapeHtml(str: any): string {
         .replace(/"/g, '&quot;');
 }
 
-function getGroupCategory(group: ExpenseRecordGroup): 'HOTEL' | 'FLIGHT' | 'TRAIN' | 'TAXI' | 'MOBILE' | 'OTHER' {
-    return detectTypeCategory(
-        group.newExpenseTypeId || group.expenseTypeId,
-        group.newExpenseTypeName || group.expenseTypeName
-    );
+/**
+ * 解析各种格式的日期为时间戳（支持 YYYY-MM-DD, MM/DD/YYYY, YYYY/MM/DD 等）
+ */
+function parseDateToTimestamp(dateStr?: string): number {
+    if (!dateStr) return NaN;
+    const clean = String(dateStr).trim();
+    // 1. 标准 YYYY-MM-DD / YYYY/MM/DD / YYYY.MM.DD
+    const m1 = clean.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+    if (m1) {
+        return new Date(Number(m1[1]), Number(m1[2]) - 1, Number(m1[3])).getTime();
+    }
+    // 2. 美式 MM/DD/YYYY
+    const m2 = clean.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
+    if (m2) {
+        return new Date(Number(m2[3]), Number(m2[1]) - 1, Number(m2[2])).getTime();
+    }
+    return new Date(clean).getTime();
+}
+
+export interface HotelPricingDetail {
+    nights: number;
+    rooms: number;
+    totalRoomNights: number;
+    unitPrice: number;
+    standardLimit: number;
+    isOverStandard: boolean;
+    formulaText: string;
 }
 
 /**
- * 判断住宿费记录是否超出标准 (一线城市 ¥800/晚, 其他城市 ¥700/晚)
+ * 测算住宿费详细单价指标 (严格根据 入住天数 × 房间数 = 总间夜数 测算单价)
  */
-export function isHotelGroupOverStandard(group: ExpenseRecordGroup): boolean {
+export function getHotelPricingDetail(group: ExpenseRecordGroup): HotelPricingDetail | null {
     const cat = getGroupCategory(group);
-    if (cat !== 'HOTEL') return false;
+    if (cat !== 'HOTEL') return null;
     const dyn = group.dynamicFields || {};
     const checkIn = dyn.checkInDate;
     const checkOut = dyn.checkOutDate;
     const amount = Number(group.expenseAmount || 0);
-    if (!checkIn || !checkOut || amount <= 0) return false;
+    if (!checkIn || !checkOut || amount <= 0) return null;
 
-    const d1 = new Date(checkIn).getTime();
-    const d2 = new Date(checkOut).getTime();
-    if (isNaN(d1) || isNaN(d2) || d2 <= d1) return false;
+    const d1 = parseDateToTimestamp(checkIn);
+    const d2 = parseDateToTimestamp(checkOut);
+    if (isNaN(d1) || isNaN(d2) || d2 <= d1) return null;
+
     const nights = Math.max(1, Math.round((d2 - d1) / (1000 * 60 * 60 * 24)));
+    const rooms = Math.max(1, Number(dyn.roomNum) || 1);
+    const totalRoomNights = Math.max(1, nights * rooms);
+
     const city = (dyn.city || '').replace(/市|区|县/g, '').trim();
     const isTier1 = /北京|上海|广州|深圳/.test(city);
     const standardLimit = isTier1 ? 800 : 700;
-    const unitPrice = amount / nights;
-    return unitPrice > standardLimit;
+    const unitPrice = Math.round((amount / totalRoomNights) * 100) / 100;
+    const isOverStandard = unitPrice > standardLimit;
+
+    const formulaText = `${nights}晚 × ${rooms}间 = ${totalRoomNights}间夜，单价 ¥${unitPrice.toFixed(2)}/间夜 (总额 ¥${amount} ÷ ${totalRoomNights}间夜)，标准限额 ¥${standardLimit}/间夜 (${isTier1 ? '一线城市' : '其他城市'})`;
+
+    return {
+        nights,
+        rooms,
+        totalRoomNights,
+        unitPrice,
+        standardLimit,
+        isOverStandard,
+        formulaText
+    };
+}
+
+/**
+ * 判断住宿费记录是否超出标准 (按 天数 × 房间数 = 间夜数 测算单价：一线城市 ¥800/间夜, 其他城市 ¥700/间夜)
+ */
+export function isHotelGroupOverStandard(group: ExpenseRecordGroup): boolean {
+    const detail = getHotelPricingDetail(group);
+    return detail ? detail.isOverStandard : false;
 }
 
 /**
@@ -1144,12 +1247,15 @@ function renderDynamicFieldCellHtml(group: ExpenseRecordGroup, col: ColumnDef, s
     let cellTitle = isCityTypeCol ? `住宿城市类型 · 依据出差城市自动联动 (北上广深: 境内-北上广深 ¥800/晚, 其他: 境内-其他 ¥700/晚): ${val || '待录入出差城市'}` : titleText;
 
     if (isOverStandardCol) {
+        const detail = getHotelPricingDetail(group);
         if (isHotelOver) {
             placeholderText = '超标必填 (自主填写或点击📋拷贝)';
-            cellTitle = '⚠️ 住宿费已超标：超标说明为必填项！请自主输入理由，或点击右侧 📋 拷贝“费用说明”';
+            cellTitle = `⚠️ 住宿费已超标：${detail ? detail.formulaText : ''}！超标说明为必填项，请自主输入理由，或点击右侧 📋 拷贝“费用说明”`;
         } else {
             placeholderText = '未超标(选填)';
-            cellTitle = '超标说明 · 系统测算未超标，无需填写';
+            cellTitle = detail
+                ? `超标说明 · 系统测算未超标: ${detail.formulaText}`
+                : '超标说明 · 系统测算未超标，无需填写';
         }
     }
 
@@ -2351,15 +2457,6 @@ function extractFlightNumFromText(text: string): string | null {
 }
 
 /**
- * 判断费用分组是否为未识别类型 / 未分类 / OTHER
- */
-function isUnknownTypeGroup(group: ExpenseRecordGroup): boolean {
-    const typeId = group.newExpenseTypeId || group.expenseTypeId;
-    const typeName = group.newExpenseTypeName || group.expenseTypeName;
-    return !typeId || typeId === 'UNIDENTIFIED' || typeName === '未知类型' || getGroupCategory(group) === 'OTHER';
-}
-
-/**
  * 一键 AI 智能推断专属必填字段 (二层推断：规则优先 + 大模型跨单据深度推断)
  */
 async function handleAiInference(container: HTMLElement, itineraryText?: string) {
@@ -2690,404 +2787,44 @@ async function handleAiInference(container: HTMLElement, itineraryText?: string)
         });
 
         if (groupsWithMissingFields.length > 0 && isLlmConfigured()) {
-            // 提炼客观出行证据链（仅保留有出行/发票线索的票据作为背景上下文，去除冗余空字段，大幅缩减 prompt 体积）
-            const tripTickets = modalState.groups
-                .filter(g => {
-                    const cat = getGroupCategory(g);
-                    return ['FLIGHT', 'TRAIN', 'HOTEL', 'TAXI'].includes(cat) || Boolean(g.invoices[0]?.stationGetOn || g.invoices[0]?.salesName);
-                })
-                .map(g => {
-                    const cat = getGroupCategory(g);
-                    const inv0 = g.invoices[0];
-                    const taxiInv = g.invoices.find(inv => inv.timeGetOn || inv.timeGetOff || inv.stationGetOn || inv.stationGetOff) || inv0;
-                    const obj: any = {
-                        id: g.expenseRecordId,
-                        type: cat,
-                        typeName: g.newExpenseTypeName || g.expenseTypeName,
-                        amount: g.expenseAmount,
-                        bizDate: g.businessDate,
-                        invDate: g.earliestInvoiceDate
-                    };
-                    if (taxiInv?.stationGetOn) obj.stationOn = taxiInv.stationGetOn;
-                    if (taxiInv?.stationGetOff) obj.stationOff = taxiInv.stationGetOff;
-                    if (taxiInv?.timeGetOn) obj.timeGetOn = taxiInv.timeGetOn;
-                    if (taxiInv?.timeGetOff) obj.timeGetOff = taxiInv.timeGetOff;
-                    if (taxiInv?.departureDate) obj.departureDate = taxiInv.departureDate;
-                    if (taxiInv?.trainNo) obj.trainOrFlightNo = taxiInv.trainNo;
-                    if (taxiInv?.salesName) obj.salesName = taxiInv.salesName;
-                    if (taxiInv?.remarks) obj.remarks = taxiInv.remarks;
-                    if (g.dynamicFields?.hotelName) obj.hotelName = g.dynamicFields.hotelName;
-                    if (g.dynamicFields?.city) obj.city = g.dynamicFields.city;
-                    if (g.dynamicFields?.checkInDate) obj.checkInDate = g.dynamicFields.checkInDate;
-                    if (g.dynamicFields?.checkOutDate) obj.checkOutDate = g.dynamicFields.checkOutDate;
-                    if (g.dynamicFields?.flightFromCity) obj.flightFromCity = g.dynamicFields.flightFromCity;
-                    if (g.dynamicFields?.flightToCity) obj.flightToCity = g.dynamicFields.flightToCity;
-                    if (g.dynamicFields?.flightNum) obj.flightNum = g.dynamicFields.flightNum;
-                    if (g.dynamicFields?.trainFromStation) obj.trainFromStation = g.dynamicFields.trainFromStation;
-                    if (g.dynamicFields?.trainToStation) obj.trainToStation = g.dynamicFields.trainToStation;
-                    return obj;
-                });
-
-            const itinerarySection = itineraryText ? `
-【用户权威出差排期日程与行程补充说明 (Ground Truth)】：
-以下是用户提供的真实出差排期日程与补充提示词，作为最高优先级客观事实依据，请与发票及费用记录进行精准对齐与实体解析：
-\`\`\`
-${itineraryText}
-\`\`\`
-
-【基于排期表与补充说明的核心对齐与实体解析指引 (Entity Resolution)】：
-1. 飞机票 (FLIGHT)：
-   - 重点对比排期表中交通工具为「飞机」的移动波次、起止地，或用户在补充说明中提供的机票航线与金额线索，将日期、出发地、目的地与飞机票记录精准对齐；
-   - 候选字段：flightStartDate (YYYY-MM-DD), flightEndDate (YYYY-MM-DD), flightFromCity, flightToCity, flightNum (若有)。
-2. 火车票 (TRAIN)：
-   - 对比排期表中的移动波次、日期、车站与金额对齐；
-   - 候选字段：trainStartDate (YYYY-MM-DD), trainEndDate (YYYY-MM-DD), trainFromStation, trainToStation。
-3. 住宿费 (HOTEL)：
-   - 对比发票销售方（酒店名称/分店/城市）与排期表中的「住宿酒店」和「目标省市」，精准定位该笔住宿发票对应的行程波次；
-   - 提取排期表中该酒店入住的起始日期作为入住日期 (checkInDate)，离店日期作为离开日期 (checkOutDate)；
-   - 严禁误用发票开票日期作为入住日期！以排期表实际起止日期为准；
-   - 提取城市名称为 city（如：天津市、广州市、大连市等）；
-   - 【酒店商业品牌解析】：优先使用排期表中的具体酒店商业品牌名称（如‘美悦酒店’、‘广州黄埔璀璨酒店’、‘上引国际酒店’、‘亚朵酒店’、‘全季酒店’），严禁只填发票开票物业/管理公司抬头（如‘广州锦澜轩酒店管理’）！
-4. 出租车 (TAXI) 【时空轨迹闭环推理与实体解析去代称核心指引】：
-   - 出租车发票通常无票面起止地点，大模型必须结合当天的**大交通时刻与枢纽（飞机起降时刻/高铁到发时刻及对应机场火车站）**、**当天的住宿酒店**以及**打车具体时间 (timeGetOn / timeGetOff)**，展开精准时空轨迹闭环推理：
-     a. **大交通出发首日 (去程日)**：
-        - 在大交通出发前（早间/提前 1~2 小时打车，如出发前赴机场/高铁站）：始发地为「住所」，目的地为当天的出发交通枢纽（如「上海虹桥机场」、「上海浦东机场」或「上海虹桥站」）；
-        - 在大交通到达后（如航班降落天津后打车，或高铁抵达合肥后打车）：始发地为到达交通枢纽（如「天津滨海机场」或「合肥南站」），目的地为排期表中当天入住的具体酒店（如「全季酒店(天津津南新城新国家会展中心店)」或「合肥滨湖云谷金融城亚朵酒店」）；
-     b. **大交通返程末日 (回程日)**：
-        - 在返程大交通出发前（如外地回程航班起飞前打车）：始发地为当天退房的酒店，目的地为离开的外地交通枢纽（如「天津滨海机场」或外地火车站）；
-        - 在返程大交通到达常驻地后（如晚间航班落地上海后打车，或高铁抵达上海虹桥后打车）：始发地为到达交通枢纽（如「上海虹桥机场」、「上海浦东机场」或「上海虹桥站」），目的地为「住所」；
-     c. **在途常驻出差日 (非大交通往返日)**：
-        - 白天或晚间外出：始发地与目的地在当天入住酒店与「客户现场」之间流转（如晚间打车推断为「客户现场」➔ 当天入住酒店）；
-     d. **实体解析去代称铁律**：
-        - 严禁直接输出“酒店”、“机场”、“车站”、“Home”等模糊代称！必须结合排期表具体化为真实酒店名称、真实机场高铁站名或「住所」；
-        - 若用户在发票备注中写了口语化简写（如 "Home-机场"、"酒店-客户现场" 等），同样根据上述规则解析为具体实体名称。
-   - 候选字段：startAddress (始发地), endAddress (目的地)。
-` : '';
-
-            const systemPrompt = `你是由 Google DeepMind 与 IVision 研发的元年云 FSSC 费用记录高可信智能推断专家。
-根据用户同批次出差的所有费用记录（包含往返机票、高铁车票、住宿发票、出租车行程等上下文）以及用户提供的权威出差日程排期表与补充说明，推断指定费用记录缺失的专属必填字段，并将未识别类型（needTypeInference: true）智能归类补齐。
-${itinerarySection}
-【系统标准费用类型及专属必填字段规范对照表】：
-1. 飞机票（航空券）
-   - targetExpenseTypeId: "035671613fdde1653e55bb00bc610000"
-   - targetExpenseTypeName: "飞机票（航空券）"
-   - 专属必填字段：flightStartDate (YYYY-MM-DD), flightEndDate (YYYY-MM-DD), flightFromCity (出发城市), flightToCity (到达城市), flightNum (航班号，往返双程需填如 CZ6534/CZ6523)
-2. 火车公交车票 （電車Bus代）
-   - targetExpenseTypeId: "0356c4c2b14de1653e55bb00bc610000"
-   - targetExpenseTypeName: "火车公交车票 （電車Bus代）"
-   - 专属必填字段：trainStartDate (YYYY-MM-DD), trainEndDate (YYYY-MM-DD), trainFromStation (出发站), trainToStation (到达站)
-3. 住宿费（宿泊代）
-   - targetExpenseTypeId: "0356c4e2b72de1653e55bb00bc610001"
-   - targetExpenseTypeName: "住宿费（宿泊代）"
-   - 专属必填字段：checkInDate (YYYY-MM-DD), checkOutDate (YYYY-MM-DD), city (城市名), hotelName (酒店商业品牌), roomNum (数字，默认1)
-4. 出租车（taxi）
-   - targetExpenseTypeId: "0356c4cef03345af7f1906ec05cc0000"
-   - targetExpenseTypeName: "出租车（taxi）"
-   - 专属必填字段：startAddress (始发具体据点，去代称), endAddress (到达具体据点，去代称)
-5. 通信传真费（通信代）
-   - targetExpenseTypeId: "0356c4f6701345af7f1906ec05cc0000"
-   - targetExpenseTypeName: "通信传真费（通信代）"
-   - 专属必填字段：billMonth (账期月份，YYYY-MM)
-6. 交通费-其他(その他）
-   - targetExpenseTypeId: "0356c529e72de1653e55bb00bc610001"
-   - targetExpenseTypeName: "交通费-其他(その他）"
-   - 专属必填字段：startAddress, endAddress
-
-【核心铁律与约束】：
-1. 「高可信度与时空闭环原则」：
-   - 飞机票、火车票与住宿费必须严格基于排期表与真实发票证据链精准对齐；
-   - 出租车行程必须充分利用打车时间 (timeGetOn / timeGetOff) 与大交通班次时刻、酒店入离店日程进行时空闭环推理（去程站到店、回程店到站、常驻地往返住所），完成合理的起止地推断；
-   - 仅当完全没有任何排期线索与时间线索时，才放弃输出该字段。
-2. 「往返机票/双航班号铁律」：
-   - 若单张发票涵盖往返双程机票（例如说明、文件名或排期中提到“上海-大连往返机票 1746 CZ6534/CZ6523”或包含去程与回程两个航班），flightNum 必须完整保留并填写往返两个航班号，用正斜杠连接，例如：“CZ6534/CZ6523”！严禁只截取单程，严禁遗漏！
-3. 「未识别费用类型智能归类与必填字段一并补齐铁律」：
-   - 若记录标记为 needTypeInference: true（或类型为未知类型/UNIDENTIFIED），大模型必须综合该记录金额、发票销售方、备注、文件名及排期行程，判定属于上述哪种标准费用类型。
-   - 必须在对象中输出对应的 targetExpenseTypeId 与 targetExpenseTypeName，同时在 fields 字典中一并输出该费用类型所要求的专属必填字段！
-4. 「发票开票日期 ≠ 出差行程日期」：
-   - 飞机票、住宿发票的开票日期很可能是出差结束后才开出的，严禁机械地把发票开票日期当成入住或起程日期！以排期表与补充说明中的实际行程日期为准。
-5. 「出租车与酒店实体解析去代称」：
-   - 严禁在 startAddress / endAddress 中输出模糊代称词（如“酒店”、“客户现场”、“Home”、“机场”），必须解析为真实据点实体！
-6. 「极简稀疏输出 (Sparse JSON) 铁律」：
-   - 仅对能确信推断出的字段输出键值，严禁输出值为 null 的字段！
-   - 严禁输出 reason、思考过程或任何多余文字！
-   - 若某笔记录无任何字段可确信推断，直接不要将其放入 inferences 数组中。
-
-JSON 输出格式严格遵循：
-{
-  "inferences": [
-    {
-      "id": "对应 recordsNeedingInference 中的 id",
-      "targetExpenseTypeId": "若为未知类型补齐则输出此项标准 ID，否则省略",
-      "targetExpenseTypeName": "若为未知类型补齐则输出此项标准名称，否则省略",
-      "fields": {
-        "checkInDate": "YYYY-MM-DD",
-        "checkOutDate": "YYYY-MM-DD",
-        "city": "城市名",
-        "hotelName": "酒店商业品牌名",
-        "startAddress": "始发地据点",
-        "endAddress": "目的地据点",
-        "flightStartDate": "YYYY-MM-DD",
-        "flightEndDate": "YYYY-MM-DD",
-        "flightFromCity": "城市名",
-        "flightToCity": "城市名",
-        "flightNum": "航班号 (单程如 CZ6534，往返双程如 CZ6534/CZ6523)",
-        "trainStartDate": "YYYY-MM-DD",
-        "trainEndDate": "YYYY-MM-DD",
-        "trainFromStation": "车站名",
-        "trainToStation": "车站名",
-        "billMonth": "YYYY-MM",
-        "roomNum": 1
-      }
-    }
-  ]
-}`;
-
+            // ====================================================================
+            // 第二层：分通道 LLM 深度推断 (v4.38.0 时空骨架 + 瀑布式分流架构)
+            // 
+            // 架构设计：
+            //   1. extractTripSkeleton: 将全量票据 JSON (~8,000 Token) 压缩为纯文本时间线 (~500 Token)
+            //   2. dispatchInferenceChannels: 两阶段瀑布式分通道执行
+            //      阶段 1: Channel B (住宿+大交通) + Channel C (未知类型) 并行 → 增强骨架
+            //      阶段 2: Channel A (出租车) 使用增强骨架执行（确保酒店名/枢纽站信息完整）
+            //   3. mergeInferenceResults: 统一回填 dynamicFields + 联动重算
+            // ====================================================================
             if (aiBtn) {
-                aiBtn.innerHTML = `<span class="spinner"></span> 正在全量智能推断 (${groupsWithMissingFields.length} 笔记录)...`;
+                aiBtn.innerHTML = `<span class="spinner"></span> 正在分析 ${groupsWithMissingFields.length} 笔费用记录...`;
             }
 
-            const userPrompt = JSON.stringify({
-                isTrip: modalState.isTrip,
-                projectName: modalState.projectName || undefined,
-                proxyPersonName: modalState.proxyPersonName || undefined,
-                customRemark: modalState.customRemark || undefined,
-                contextTickets: tripTickets,
-                recordsNeedingInference: groupsWithMissingFields.map(g => {
-                    const inv0 = g.invoices[0];
-                    const isUnknown = isUnknownTypeGroup(g);
-                    const cat = isUnknown ? 'UNKNOWN' : getGroupCategory(g);
-                    const taxiInv = g.invoices.find(inv => inv.timeGetOn || inv.timeGetOff || inv.stationGetOn || inv.stationGetOff) || inv0;
-                    const rec: any = {
-                        id: g.expenseRecordId,
-                        type: cat,
-                        typeName: g.newExpenseTypeName || g.expenseTypeName,
-                        amount: g.expenseAmount,
-                        bizDate: g.businessDate,
-                        invDate: g.earliestInvoiceDate
-                    };
-                    if (isUnknown) rec.needTypeInference = true;
-                    if (taxiInv?.salesName) rec.salesName = taxiInv.salesName;
-                    if (taxiInv?.remarks) rec.remarks = taxiInv.remarks;
-                    if (taxiInv?.fileName) rec.fileName = taxiInv.fileName;
-                    if (taxiInv?.stationGetOn) rec.stationGetOn = taxiInv.stationGetOn;
-                    if (taxiInv?.stationGetOff) rec.stationGetOff = taxiInv.stationGetOff;
-                    if (taxiInv?.timeGetOn) rec.timeGetOn = taxiInv.timeGetOn;
-                    if (taxiInv?.timeGetOff) rec.timeGetOff = taxiInv.timeGetOff;
-                    if (taxiInv?.departureDate) rec.departureDate = taxiInv.departureDate;
-                    if (taxiInv?.trainNo) rec.trainOrFlightNo = taxiInv.trainNo;
-                    const missing = Object.entries({
-                        checkInDate: !g.dynamicFields?.checkInDate,
-                        checkOutDate: !g.dynamicFields?.checkOutDate,
-                        city: !g.dynamicFields?.city,
-                        hotelName: !g.dynamicFields?.hotelName || g.inferredFields?.['dynHotel'] === 'rule',
-                        startAddress: isPlaceholderAddr(g.dynamicFields?.startAddress),
-                        endAddress: isPlaceholderAddr(g.dynamicFields?.endAddress),
-                        flightStartDate: !g.dynamicFields?.flightStartDate,
-                        flightEndDate: !g.dynamicFields?.flightEndDate,
-                        flightFromCity: !g.dynamicFields?.flightFromCity,
-                        flightToCity: !g.dynamicFields?.flightToCity,
-                        flightNum: !g.dynamicFields?.flightNum,
-                        trainStartDate: !g.dynamicFields?.trainStartDate,
-                        trainEndDate: !g.dynamicFields?.trainEndDate,
-                        trainFromStation: !g.dynamicFields?.trainFromStation,
-                        trainToStation: !g.dynamicFields?.trainToStation,
-                        billMonth: !g.dynamicFields?.billMonth
-                    }).filter(([_, isMiss]) => isMiss).map(([k]) => k);
-                    if (missing.length > 0) rec.missingFields = missing;
-                    return rec;
-                })
-            });
+            const tripSkeleton = extractTripSkeleton(modalState.groups, itineraryText);
+            AutopilotLogger.info(`[AiInference] 时空骨架已提取 (${tripSkeleton.length} 字符), 待推断 ${groupsWithMissingFields.length} 笔`);
 
-            const llmRes = await callDirectLlmJson<{
-                inferences?: Array<{
-                    id?: string;
-                    expenseRecordId?: string;
-                    targetExpenseTypeId?: string;
-                    targetExpenseTypeName?: string;
-                    fields?: Record<string, any>;
-                    confidence?: string;
-                }>;
-            }>(systemPrompt, userPrompt, undefined, 180000);
-
-            if (llmRes.success && llmRes.data?.inferences) {
-                for (const inf of llmRes.data.inferences) {
-                    const recId = inf.id || inf.expenseRecordId;
-                    if (!recId || !inf.fields) continue;
-                    const targetG = modalState.groups.find(x => x.expenseRecordId === recId);
-                    if (targetG) {
-                        targetG.dynamicFields = targetG.dynamicFields || {};
-                        targetG.inferredFields = targetG.inferredFields || {};
-                        let filledThisGroup = false;
-
-                        // 0. 未识别类型补齐
-                        if (inf.targetExpenseTypeId && inf.targetExpenseTypeName) {
-                            targetG.newExpenseTypeId = inf.targetExpenseTypeId;
-                            targetG.newExpenseTypeName = inf.targetExpenseTypeName;
-                            targetG.inferredFields['expenseType'] = 'llm';
-                            filledThisGroup = true;
-                            llmInferredCount++;
-                        }
-
-                        const effectiveCat = getGroupCategory(targetG);
-
-                        // 1. 住宿费专属字段
-                        if (inf.fields.checkInDate) {
-                            targetG.dynamicFields.checkInDate = inf.fields.checkInDate;
-                            targetG.inferredFields['dynCheckIn'] = 'llm';
-                            targetG.inferredFields['checkInDate'] = 'llm';
-                            // 住宿费业务日期自动同步为推断出的实际入住日期
-                            if (effectiveCat === 'HOTEL') {
-                                targetG.newBusinessDate = inf.fields.checkInDate;
-                                targetG.inferredFields['businessDate'] = 'llm';
-                            }
-                            filledThisGroup = true;
-                            llmInferredCount++;
-                        }
-                        if (inf.fields.checkOutDate) {
-                            targetG.dynamicFields.checkOutDate = inf.fields.checkOutDate;
-                            targetG.inferredFields['dynCheckOut'] = 'llm';
-                            targetG.inferredFields['checkOutDate'] = 'llm';
-                            filledThisGroup = true;
-                            llmInferredCount++;
-                        }
-                        if (inf.fields.city) {
-                            targetG.dynamicFields.city = inf.fields.city;
-                            targetG.inferredFields['dynCity'] = 'llm';
-                            targetG.inferredFields['city'] = 'llm';
-                            const c = String(inf.fields.city).replace(/市|区|县/g, '').trim();
-                            const isTier1 = /北京|上海|广州|深圳/.test(c);
-                            targetG.dynamicFields.cityType = isTier1 ? '境内-北上广深' : '境内-其他';
-                            targetG.inferredFields['dynCityType'] = 'rule';
-                            targetG.inferredFields['cityType'] = 'rule';
-                            filledThisGroup = true;
-                            llmInferredCount++;
-                        }
-                        if (inf.fields.hotelName) {
-                            targetG.dynamicFields.hotelName = inf.fields.hotelName;
-                            targetG.inferredFields['dynHotel'] = 'llm';
-                            targetG.inferredFields['hotelName'] = 'llm';
-                            filledThisGroup = true;
-                            llmInferredCount++;
-                        }
-                        if (inf.fields.roomNum !== undefined) {
-                            targetG.dynamicFields.roomNum = Number(inf.fields.roomNum) || 1;
-                            targetG.inferredFields['dynRoomNum'] = 'llm';
-                            targetG.inferredFields['roomNum'] = 'llm';
-                            filledThisGroup = true;
-                            llmInferredCount++;
-                        }
-
-                        // 2. 出租车始发到达
-                        if (inf.fields.startAddress) {
-                            targetG.dynamicFields.startAddress = inf.fields.startAddress;
-                            targetG.inferredFields['dynAddrFrom'] = 'llm';
-                            targetG.inferredFields['startAddress'] = 'llm';
-                            filledThisGroup = true;
-                            llmInferredCount++;
-                        }
-                        if (inf.fields.endAddress) {
-                            targetG.dynamicFields.endAddress = inf.fields.endAddress;
-                            targetG.inferredFields['dynAddrTo'] = 'llm';
-                            targetG.inferredFields['endAddress'] = 'llm';
-                            filledThisGroup = true;
-                            llmInferredCount++;
-                        }
-
-                        // 3. 飞机票专属字段
-                        if (inf.fields.flightStartDate) {
-                            targetG.dynamicFields.flightStartDate = inf.fields.flightStartDate;
-                            targetG.inferredFields['dynStartDate'] = 'llm';
-                            targetG.inferredFields['flightStartDate'] = 'llm';
-                            // 飞机票业务日期自动同步为推断出的实际起程日期
-                            if (effectiveCat === 'FLIGHT') {
-                                targetG.newBusinessDate = inf.fields.flightStartDate;
-                                targetG.inferredFields['businessDate'] = 'llm';
-                            }
-                            filledThisGroup = true;
-                            llmInferredCount++;
-                        }
-                        if (inf.fields.flightEndDate) {
-                            targetG.dynamicFields.flightEndDate = inf.fields.flightEndDate;
-                            targetG.inferredFields['dynEndDate'] = 'llm';
-                            targetG.inferredFields['flightEndDate'] = 'llm';
-                            filledThisGroup = true;
-                            llmInferredCount++;
-                        }
-                        if (inf.fields.flightFromCity) {
-                            targetG.dynamicFields.flightFromCity = inf.fields.flightFromCity;
-                            targetG.inferredFields['dynFrom'] = 'llm';
-                            targetG.inferredFields['flightFromCity'] = 'llm';
-                            filledThisGroup = true;
-                            llmInferredCount++;
-                        }
-                        if (inf.fields.flightToCity) {
-                            targetG.dynamicFields.flightToCity = inf.fields.flightToCity;
-                            targetG.inferredFields['dynTo'] = 'llm';
-                            targetG.inferredFields['flightToCity'] = 'llm';
-                            filledThisGroup = true;
-                            llmInferredCount++;
-                        }
-                        if (inf.fields.flightNum) {
-                            targetG.dynamicFields.flightNum = inf.fields.flightNum;
-                            targetG.inferredFields['dynTransitNo'] = 'llm';
-                            targetG.inferredFields['flightNum'] = 'llm';
-                            filledThisGroup = true;
-                            llmInferredCount++;
-                        }
-
-                        // 4. 火车票专属字段
-                        if (inf.fields.trainStartDate) {
-                            targetG.dynamicFields.trainStartDate = inf.fields.trainStartDate;
-                            targetG.inferredFields['dynStartDate'] = 'llm';
-                            targetG.inferredFields['trainStartDate'] = 'llm';
-                            // 火车票业务日期自动同步为推断出的实际起程日期
-                            if (effectiveCat === 'TRAIN') {
-                                targetG.newBusinessDate = inf.fields.trainStartDate;
-                                targetG.inferredFields['businessDate'] = 'llm';
-                            }
-                            filledThisGroup = true;
-                            llmInferredCount++;
-                        }
-                        if (inf.fields.trainEndDate) {
-                            targetG.dynamicFields.trainEndDate = inf.fields.trainEndDate;
-                            targetG.inferredFields['dynEndDate'] = 'llm';
-                            targetG.inferredFields['trainEndDate'] = 'llm';
-                            filledThisGroup = true;
-                            llmInferredCount++;
-                        }
-                        if (inf.fields.trainFromStation) {
-                            targetG.dynamicFields.trainFromStation = inf.fields.trainFromStation;
-                            targetG.inferredFields['dynFrom'] = 'llm';
-                            targetG.inferredFields['trainFromStation'] = 'llm';
-                            filledThisGroup = true;
-                            llmInferredCount++;
-                        }
-                        if (inf.fields.trainToStation) {
-                            targetG.dynamicFields.trainToStation = inf.fields.trainToStation;
-                            targetG.inferredFields['dynTo'] = 'llm';
-                            targetG.inferredFields['trainToStation'] = 'llm';
-                            filledThisGroup = true;
-                            llmInferredCount++;
-                        }
-
-                        // 5. 通信费专属字段
-                        if (inf.fields.billMonth) {
-                            targetG.dynamicFields.billMonth = inf.fields.billMonth;
-                            targetG.inferredFields['dynBillMonth'] = 'llm';
-                            targetG.inferredFields['billMonth'] = 'llm';
-                            filledThisGroup = true;
-                            llmInferredCount++;
-                        }
-
-                        if (filledThisGroup) {
-                            targetG.newDescription = computeFormattedDescription(modalState, targetG);
-                            modalState.selectedRecordIds.add(targetG.expenseRecordId);
-                        }
-                    }
+            const inferenceResults = await dispatchInferenceChannels(
+                groupsWithMissingFields,
+                modalState.groups,
+                tripSkeleton,
+                itineraryText,
+                (status) => {
+                    if (aiBtn) aiBtn.innerHTML = `<span class="spinner"></span> ${status}`;
                 }
-            } else if (!llmRes.success) {
-                AutopilotLogger.warn(`[AiInference] 大模型推断未成功: ${llmRes.error}`);
-                showToast('warning', `大模型提示: ${llmRes.error || '未返回有效推断结果'}`);
+            );
+
+            llmInferredCount = mergeInferenceResults(
+                modalState.groups,
+                inferenceResults,
+                modalState.selectedRecordIds
+            );
+
+            // 对被 LLM 推断更新的记录重新计算格式化描述
+            for (const g of modalState.groups) {
+                if (modalState.selectedRecordIds.has(g.expenseRecordId) && g.inferredFields && Object.values(g.inferredFields).includes('llm')) {
+                    g.newDescription = computeFormattedDescription(modalState, g);
+                }
             }
         }
 
@@ -3973,16 +3710,27 @@ function bindEvents(container: HTMLElement, doc: Document) {
                         }
                     }
                     if (['dynCity', 'dynCheckIn', 'dynCheckOut', 'dynRoomNum'].includes(dynKey) && getGroupCategory(group) === 'HOTEL') {
-                        if (isHotelGroupOverStandard(group)) {
-                            const tr = input.closest('tr');
-                            const overInp = tr?.querySelector<HTMLInputElement>('input[data-dynkey="dynOverStandard"]');
-                            const overTd = overInp?.closest('td');
-                            const currentOverVal = (group.dynamicFields?.overStandardDescription || '').trim();
+                        const isOver = isHotelGroupOverStandard(group);
+                        const detail = getHotelPricingDetail(group);
+                        const tr = input.closest('tr');
+                        const overInp = tr?.querySelector<HTMLInputElement>('input[data-dynkey="dynOverStandard"]');
+                        const overTd = overInp?.closest('td');
+                        const currentOverVal = (group.dynamicFields?.overStandardDescription || '').trim();
+
+                        if (isOver) {
+                            overTd?.classList.add('yn-bem-dyn-cell-over-standard');
                             if (!currentOverVal) {
                                 overTd?.classList.add('yn-bem-dyn-cell-empty');
                                 if (overInp) overInp.placeholder = '超标必填 (自主填写或点击📋拷贝)';
                             }
-                            showToast('warning', '⚠️ 检测到住宿费单价超出城市限额，超标说明为必填项！请在表格中自主输入理由或点击 📋 拷贝“费用说明”。', 6000);
+                            if (overTd && detail) overTd.title = `⚠️ 住宿费已超标：${detail.formulaText}！超标说明为必填项`;
+                            showToast('warning', `⚠️ 检测到住宿费单价超出城市限额 (${detail?.formulaText || ''})，超标说明为必填项！`, 6000);
+                        } else {
+                            // 由超标变为未超标：立即清除警示红框并恢复正常状态
+                            overTd?.classList.remove('yn-bem-dyn-cell-empty');
+                            overTd?.classList.remove('yn-bem-dyn-cell-over-standard');
+                            if (overInp) overInp.placeholder = '未超标(选填)';
+                            if (overTd && detail) overTd.title = `超标说明 · 系统测算未超标: ${detail.formulaText}`;
                         }
                     }
                     modalState.selectedRecordIds.add(recordId);
