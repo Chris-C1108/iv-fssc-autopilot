@@ -1,23 +1,54 @@
 # 交接文档归档目录 (Handoff Documents)
 
 > **目录路径**：`docs/handoff/`  
-> **使用规范**：每次使用 `/handoff` 指令时，生成的阶段性交接文档必须归档至此目录，命名格式为 `handoff_YYYYMMDD.md`。
+> **使用规范**：每次使用阶段性交接或发布时，生成的交接文档必须归档至此目录，命名格式严格遵循 `handoff_YYYYMMDD_hhmmss.md`（按时间戳持久化记录，严禁单日覆盖）。
 
 ---
 
 ## 1. 归档规则
 
-1. **命名格式**：`handoff_YYYYMMDD.md`（如 `handoff_20260817.md`）；
-2. **最新交接**：始终保持最新的 handoff 文档记录当前最新状态；
+1. **命名格式**：`handoff_YYYYMMDD_hhmmss.md`（如 `handoff_20260907_173500.md`）；
+2. **唯一性与不可变性**：每次交接生成独立时间戳文件，忠实记录演进历史，禁止在已有文档上直接覆盖；
 3. **内容涵盖**：
    - 当前完成的工作与功能清单；
    - 关键架构决策与 API 变更；
-   - 推荐新 Agent 调用的技能 (Suggested Skills)；
+   - 验证矩阵与交付产物；
    - 严禁包含真实 Token 或个人私密敏感信息。
 
 ---
 
 ## 2. 历次交接记录
 
-- [handoff_20260901.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260901.md) —— v4.4.6 爱模考勤工数系统全链路打通、孪生客户端架构、宿主月份双向同步引擎与富余工时动态呈现。
-- [handoff_20260817.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260817.md) —— v4.3.0 极速模式架构、报销单持久化保存机制及三阶段全链路打通。
+- [handoff_20260910_181500.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260910_181500.md) —— **v4.36.8** 攻克出租车打车始发地/目的地时空轨迹闭环智能推断；解决出租车无站点但有分钟级乘车时间（`timeGetOn`/`timeGetOff`）被前端抽取层丢弃导致大模型缺失时间维度的根本缺陷；打通发票多张合并（过路费+出租车）下出租车时间动态定位管道；System Prompt 深度注入【时空轨迹闭环推理认知指引】（去程出发前住所赴机场/高铁站、外地到达后赴酒店、回程出发前酒店赴机场/火车站、常驻地落地后赴住所、常驻日常驻地流转、实体解析去代称铁律）；生产环境全量 119 笔费用记录实机验证，8月10日-8月20日全部出租车起止地 100% 精准闭环，红框必填清零。
+- [handoff_20260910_174500.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260910_174500.md) —— **v4.36.7** 纠偏：彻底清剿硬编码超标假理由，实现用户完全自主决定/拷贝超标说明与双层刚性守卫闭环；源码中 100% 清除所有兜底假理由；未超标显示选填不标红，超标且未填写时红框必填警示且保持空值；大表格配置一键拷贝微按钮（`📋`）供快速复制本行费用说明；保存前置刚性拦截（`btnSaveAll`）未填超标说明记录，弹窗报警并平滑滚动高亮定位；传输层阻断违规写库；生产环境实机验证通过。
+- [handoff_20260910_173500.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260910_173500.md) —— **v4.36.6** 住宿费超标合规理由自动注入与 Toast 提示一键拷贝“费用说明”；大表格新增「超标说明」专属列（`dynOverStandard`）与一键拷贝微按钮（`📋`）；未超标时优雅显示选填提示不标红，超标时自动注入合规理由（`'项目出差业务需要，就近入住'`）；专属必填字段弹窗（`openRowDynamicModal`）标注超标必填警示与配置 `[📋 拷贝费用说明]` 快捷按钮；日期/城市/房间数修改实时联动测算超标；批量保存时后端守卫回退与底部 Toast 友好引导用户自定义输入或拷贝费用说明；生产环境实机走查验证通过。
+- [handoff_20260910_172500.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260910_172500.md) —— **v4.36.5** 攻克“版本不一致”与“超标说明必填”双重拦截，费用批量保存完美闭环；修复类型变更初始化时 `version: 0` 覆盖数据库真实最新版本号导致乐观锁冲突缺陷；解决多间房住宿费单价超标（>¥700）触发 `OVER_STANDARD_DESCRIPTION` 必填时的后端刚性拦截，注入自动合规兜底理由；删除业务预设中突兀的 `[外驻+人名]`，升级并默认使用 `[当前社员名]-[项目号]` 规范说明并自动清洗真实社员名（`陈浩`）；彻底清理底部反人类的筛选外提示；真实生产环境（`ync37.yuanian.com`）全链路实机验证，单据 100% 成功持久化入库并自动刷新回显。
+- [handoff_20260910_142000.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260910_142000.md) —— **v4.36.1** AI 智能推断精进与表格筛选全选交互重构；往返机票往返双航班号提取与推断（如 `CZ6534/CZ6523`）落地与防项目号（如 `X2607-001`）干扰防御；未识别费用类型（UNIDENTIFIED）及其专属必填字段智能纳管与一并补齐；工业级表格交互规范重构：有筛选时全选/快捷操作严格限定在筛选视图内（杜绝污染全表不可见行）；批量操作作用域隔离安全守卫（批量应用、业务日期同步、AI 智能推断在筛选态严格仅作用于当前筛选结果内的勾选项，彻底杜绝隐藏行被意外覆盖篡改）；快捷操作联动（全不选在筛选态仅取消筛选内勾选、反选在筛选集内反转并保留筛选外状态）；表头复选框半选（`indeterminate`）精准联动；底部状态栏实时透明化提示 `(当前筛选: X 笔)`、`[当前筛选内已选 Y 笔]` 与 `⚠️ 筛选外有 Z 笔被选 (点击仅保留筛选内)`；全局搜索穿透支持 `dynamicFields` 检索；真实生产环境全量 64 笔数据端到端验证通过。
+- [handoff_20260910_124500.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260910_124500.md) —— **v4.34.9** 火车票字段系统契约真相揭秘与必填误报根治；官方接口逆向证实「火车公交车票（電車Bus代）」费用主体无车次（TRAIN_NUM）字段（仅包含出发地、到达地、出发日期、到达日期，车次仅为发票明细票面属性）；列名从歧义的 `航班/车次` 修正为飞机专属 `航班号`；剔除 `TRAIN` 对 `dynTransitNo` 的适用关联，火车票行优雅显示 `-`，彻底消除红框误报与“必填”强阻；清理无效的 `TRAIN_NUM` 写入与 AI 推断绑定；实机全量走查验证 48 笔费用预警数归零（`正常 (48) | 预警 (0)`）。
+- [handoff_20260910_122500.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260910_122500.md) —— **v4.34.8** 批量修改费用弹窗重新打开时已保存动态字段丢失重置与回显穿透攻克；攻克已入库字段在弹窗重开时被 `fetchExpenseRecordsWithInvoiceDetails` 数据抽取层无意丢弃和 `groupExpenseRows` 空值硬编码覆盖的严重缺陷；落地全量已保存字段逆向提取器 `extractSavedDynamicFields`；数据模型 `ExpenseRecordExportRow` 挂载已入库动态字段；弹窗聚合层优先继承入库字段，仅对空缺项执行 OCR 兜底；实机 48 笔费用真实数据验证：住宿费入离店日期/城市/酒店名、飞机票起止站/车次、出租车起止地 100% 完整无损回显，彻底消除红框误报。
+- [handoff_20260909_153700.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260909_153700.md) —— **v4.33.0** 费用记录批量修改保存发票丢失严重缺陷攻克（修复 `initExpenseRecordWithTypeApi` 空传参抹除发票契约漏洞，注入安全兜底护盾，保持 `UPDATE` 覆写已有草稿）；单元格直接就地修改（费用业务日期 `<input type="date">`、费用类型下拉选单与发票特征智能推导、始发地/目的地/服务商文本输入实时双向绑定）；单行专属必填字段编辑浮层与报销类型动态重绘联动；复选框按住 Shift 键区间快速全选；构建打包与全套实机走查验证通过。
+- [handoff_20260909_105600.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260909_105600.md) —— **v4.25.0** 发票夹批量生成费用记录（两批次：同期合并 + 平台默认逐条生成）；彻底解决此前表单级保存接口 `validateAndSaveExpenseRecord` 报“无法判断支出类型/必填项缺失”导致 49 笔保存失败的根因；逆向分析发现平台原生生成底层契约：`POST /fssc/standbyInvoiceController/batchExpenseCheck`（批量换取标准草稿 VO 列表）➔ `POST /fssc/expenseClaim/expenseRecord/initAndSaveExpenseRecordData`（直接入库为 `NO_REIMBURSE` 草稿，绕过前端校验）；实现原生多发票合并（在 `expenseRecordInvoiceVOList` 挂载多个发票，后端自动求和与累加张数）；实现宿主原生 HTTP 客户端动态萃取（`getNativeHttp`），彻底杜绝自建 fetch 缺失 `eicds`/`v` 签名报“登录失效”；实机全量 UAT 验证：53 张发票一键生成，4 笔同期出租车+过路费成功合并，45 笔单发票逐条生成，49/49 笔 100% 成功入库，0 失败。
+- [handoff_20260909_020000.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260909_020000.md) —— **v4.23.2** 发票夹未使用发票全量生成费用与同期过路费合并/独立双轨 A2UI 交互决策体系；攻克发票夹 React Table Fiber 销售方列错位导致的住宿专票被误判为出租车缺陷；落地通用 `getColumnValue` 动态解析销方；实现通用同期过路费智能绑定/独立双轨状态机（三态：未决/合并/独立）；A2UI 动态渲染双分支询问告警卡 `❓ 发现有出租车发票同期的过路费是否合并生成？` 与一键切换；端到端实机验证 51 张未使用发票自动规划与点击合并后收敛为 47 笔费用记录 100% 验收通过。
+- [handoff_20260909_012000.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260909_012000.md) —— **v4.22.0** 过路费/铁路发票标红误报彻底修复与宿主默认大分页(50/100/200)效率优化；扩充交通客票通行白名单彻底消除“缺销方品名”伪告警；操作列【修改】按钮严格三态视觉分级（阻断红/警示橙/合规蓝）；Ant Design 分页器 React Fiber 原生升档驱动，页面初次加载自动呈现 100 条/页大分页；顶层工具栏新增 `每页 [20] [50] [100] [200]` 秒级切换与 `localStorage` 偏好记忆持久化。
+- [handoff_20260909_011000.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260909_011000.md) —— **v4.21.4** 发票夹真实详情接口纠偏（`/fssc/bo/bodata/getBoDataAndTemplateWF`）与开票日期异常精准校验；攻克发票夹出租车发票因旧接口无效误报乘车时间缺失缺陷；实机验证 12 张出租车发票中 11 张自动恢复乘车时间，仅精准标出唯一 1 张缺失发票；开票日期严重偏离当前年份（超期 2 年以上，如 2002 年）自动原位标注 `⚠️ 年份存疑` 并支持多维度徽标独立并存；实机 UAT 与过滤全量通过。
+- [handoff_20260909_002600.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260909_002600.md) —— **v4.21.2** 多 Iframe 穿透扫描锁死锁排查与 `@allFrames` 增强；攻克系统外壳多业务 Iframe（出差申请与发票夹）并存时全局 `isScanning` 互斥锁误将发票夹 iframe 阻断跳过的严重 Bug；重构为 `WeakSet<Document>` 独立文档锁；强化 `isInvoicePoolDoc` 与 `parseTableColumnMapping` 发票特征防伪过滤；顶层增加动态 Iframe 挂载监听与 2 秒保活巡检；油猴 Banner 补充 `@allFrames true`；实机全量穿透识别 35 笔问题发票走查通过。
+- [handoff_20260909_001600.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260909_001600.md) —— **v4.21.1** 发票夹发票深度字段穿透校验与乘车时间智能标注；攻克发票夹外部列表无法识别出租车上下车时间缺失痛点；基于 React Fiber 底层数据主键解析与多源鉴权凭据自适应管道，实现后台并发静默预取与全局发票详情缓存；列表类型列原位注入 `⚠️ 缺乘车时间` 紧凑徽标并联动操作列【修改】；打开发票查看/编辑弹窗自动注入黄色警示横幅与空时间输入框黄色高亮，并提供原图对照修改指引；体检胶囊与「仅看残缺」筛选全面支持深度缺失发票；实机走查 100% 验收通过。
+- [handoff_20260908_235900.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260908_235900.md) —— **v4.21.0** 发票夹发票完整性智能校验引擎（金额/日期/号码合规性）与零回流防抖动治理；攻克 MutationObserver 自死锁高频重绘（抽搐抖动）、Ant Design Vue 双表/三表（主表+左固定+右固定）行高撑破（Height Desync 挤压错位）与 rc-overflow 动态宽度冲突；实机像素级对齐验证通过（`maxDiff = 0`，锁定 36px 原生行高）。
+- [handoff_20260908_184800.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260908_184800.md) —— **v4.20.1** 攻克发票夹“已生成费用但在费用中找不到/重新上传发票冲突”底层四重死锁；定位并使用 BO 通用底座接口 (`POST /fssc/bo/bodata/deleteBoByBoMainId`) 彻底物理粉碎 4 笔僵尸发票；`deleteInvoiceBOListApi` 落地自动降级自愈增强；Rollup 静音 `@__PURE__` 刷屏警告与禁用混淆极速构建（耗时从 1m37s 降至 8.1s，提速 12 倍）。
+- [handoff_20260908_180000.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260908_180000.md) —— **v4.20.0** 智能副驾 Agentic 交互套件全面落地：实时等待状态指示器与秒表、随时按钮终止 AI 输出 (`AbortController` 级联取消与局部内容保留)、用户历史消息就地内联编辑重发与大模型多轮会话记忆精准截断回滚、常见 Agentic 功能（一键复制与状态反馈、助手重试、性能指标徽章、自适应多行输入框、快捷键体系）；实机全套 UAT 验证通过。
+- [handoff_20260908_173500.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260908_173500.md) —— **v4.19.0** 智能副驾大模型原生 SSE 增量流式输出 (Streaming Response) 与 markstream-react 沉浸式 Markdown 渲染引擎全面落地；攻克油猴单文件 IIFE 动态 Import 代码分割冲突与 Rollup 编译报错；真实环境全流程打字机动效、复杂财务表格与嵌套无序列表渲染端到端 UAT 验证通过。
+- [handoff_20260908_165500.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260908_165500.md) —— **v4.18.5** 攻克住宿费“出差城市必填”根本原因与 DIM_CITY 维表主键读取陷阱（`match.key` / `match.data.objectId`）；实现 Agentic 费用记录错误主动体检与闭环自愈修复（`fssc_audit_expense_record_errors` & `fssc_auto_fix_expense_record_errors`）；实机端到端全量自愈验证，48 笔费用记录 100% 校验清零合规。
+- [handoff_20260908_162500.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260908_162500.md) —— **v4.18.3** 攻克住宿费 5 大必填项（单价、入住/离店日期、出差城市、住宿区分）缺失报错与端到端智能补齐；落地 A2UI 关联项目输入框实时联动宿主维表模糊检索与动态下拉回填；明确 Agent 智能纠错与 HITL 人在回路入库确认边界。
+- [handoff_20260908_143700.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260908_143700.md) —— **v4.17.0** 清剿确定性代码越权篡改（Usurpation）、全面落实反硬编码（Anti-Hardcoding）铁律、集成四大模块全生命周期 WebMCP CRUD 工具集并强化世界常识提示词。
+- [handoff_20260908_142600.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260908_142600.md) —— **v4.16.7** 全流程全接口实机逆向验证、四大模块全量 CRUD 完备性闭环、底层 HTTP 传输层安全拦截守卫与【禁止自动提交铁律】全栈刚性落地。
+- [handoff_20260907_191000.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260907_191000.md) —— **v4.12.0** 攻克出差申请旅程明细入库丢失（模板未初始化字段 `ensureRowField` 与 16 位 ISO 日期格式）、旅程标签人名重复去除、四项费用计算逻辑全透明化披露、差异化起止行程推断（李建勇 7/21 出发、陈浩 8/20 提前返程）、历史申请单自动交叉比对与防重预警。
+- [handoff_20260907_184500.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260907_184500.md) —— **v4.11.2** 攻克 Gemini 工具调用轮次耗尽（`maxRounds = 6` 截断）导致的“啥也没输出”异常；扩容最大轮次至 15 轮、引导 Prompt 禁止过度串行查询维表，并建立 UI 启发式兜底守卫确保方案决策卡片与审批闸门 100% 渲染。
+- [handoff_20260907_183500.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260907_183500.md) —— **v4.11.1** 对齐真实填报记录 (`ync37.yuanian.com-002-经费报销单页-真实填报-new.har`) 落地同行外驻人员（成勇、李建勇）统提合报全员预算测算与人员标注规范，彻底根除草稿模板未初始字段 `Cannot set properties of undefined (setting 'value')` 入库异常。
+- [handoff_20260907_181000.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260907_181000.md) —— **v4.11.0** 出差判定核心双重规约（有住宿即为出差、同一目的地多次往返严格独立单据）、活动日程时间轴往返闭环智能切分引擎（7周7轮全量梳理无遗漏）、酒店与调研据点全景透视呈现。
+- [handoff_20260907_180000.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260907_180000.md) —— **v4.10.0** A2UI 预算归属交互决策卡片（部门日常 vs 研发/实施项目）、防抖动态项目维表模糊检索框、同名人员消歧评分算法与正社员报销人严格锚定。
+- [handoff_20260907_173500.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260907_173500.md) —— **v4.9.1** 出差规划方案全景透视 Artifact 看板、零截断卡片展开收起交互胶囊、申请人括号标签清洗与登录人自适应、缺项目时科目联动容灾保护、真实错误诊断与透明化。
+- [handoff_20260907_170000.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260907_170000.md) —— **v4.9.0** 出差申请正社员统提（合并外驻出差预算）与旅程明细多行人员标注规约落地，出差驾驶舱统提/独立双模式无缝切换。
+- [handoff_20260907_153000.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260907_153000.md) —— **v4.8.1** 全局悬浮副驾坞（Flexbox 弹性栈物理零重叠、拖拽记忆与胶囊折叠、SPA 路由劫持代理与 Iframe 穿透挂载守卫）。
+- [handoff_20260907_120000.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260907_120000.md) —— **v4.8.0** 攻克 Gemini 503 网关超载异常（Canvas 等比压缩、指数退避重试）、升级 DeepSeek Harness 风格 Trajectory 运行日志全量可溯源系统、全仓零硬编码安全审计。
+- [handoff_20260901.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260901.md) —— **v4.4.6** 爱模考勤工数系统全链路打通、孪生客户端架构、宿主月份双向同步引擎与富余工时动态呈现。
+- [handoff_20260817.md](file:///d:/01_Development/yuannian_batch_test/docs/handoff/handoff_20260817.md) —— **v4.3.0** 极速模式架构、报销单持久化保存机制及三阶段全链路打通。

@@ -153,3 +153,52 @@ export function parseBillDataStructure(billData: any): { billRows: BillRowItem[]
 
     return { billRows, billTags: tagsMap };
 }
+
+/**
+ * 批量删除出差申请单或报销单草稿 (仅限未提交状态)
+ */
+export async function deleteBillByBillMainIdsApi(
+    billMainIds: string[],
+    state: GlobalState
+): Promise<any> {
+    if (!billMainIds || billMainIds.length === 0) return { success: true };
+    const payload = { billMainIds };
+    const res = await apiRequest(
+        '/fssc/bill/billdata/deleteBillByBillMainIds',
+        'POST',
+        payload,
+        state
+    );
+    if (res.success) {
+        return res;
+    }
+    throw new Error(res.message || '删除单据草稿失败');
+}
+
+/**
+ * 从未报销费用记录批量生成报销单草稿（commit: false，仅保存草稿入库，绝不提交审批）
+ */
+export async function createBillDataAndTemplateByExpenseIdListApi(
+    billDefineId: string,
+    expenseRecordIds: string[],
+    state: GlobalState
+): Promise<any> {
+    if (!expenseRecordIds || expenseRecordIds.length === 0) {
+        throw new Error('未选择任何待报销费用记录');
+    }
+    const payload = {
+        billDefineId,
+        expenseRecordIds
+    };
+    const res = await apiRequest(
+        '/fssc/expenseClaim/billData/createBillDataAndTemplateByExpenseIdList',
+        'POST',
+        payload,
+        state
+    );
+    if (res.success && res.data) {
+        return res.data;
+    }
+    throw new Error(res.message || '生成报销单草稿失败');
+}
+

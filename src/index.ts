@@ -1,8 +1,9 @@
-import { GlobalState, PageMode, InvoiceItem } from './types/state';
-import { BUDGET_CONSTANTS, EXPENSE_TYPES, MENU_DICTIONARY } from './config/constants';
-import { normalizeDate, computePreviousMonthPeriod } from './utils/date';
+import { GlobalState, PageMode, InvoiceItem, ExpensePlanOptions } from './types/state';
+import { BUDGET_CONSTANTS, EXPENSE_TYPES, ALL_EXPENSE_TYPE_LIST, MENU_DICTIONARY } from './config/constants';
+import { normalizeDate, computePreviousMonthPeriod, computePeriod } from './utils/date';
 import { mapConcurrent } from './utils/concurrency';
 import { searchDimProjectApi } from './services/projectService';
+import { inferSmartExpensePlan } from './services/commuteService';
 import {
     prepareBillSceneVO,
     changeBillFieldValueApi,
@@ -17,8 +18,11 @@ import {
     initExpenseRecordWithTypeApi,
     createDraftExpenseRecordFromInvoiceApi,
     saveFinalExpenseRecordApi,
-    getInvoiceDetailByDataIdApi
+    saveSingleExpenseItemApi,
+    getInvoiceDetailByDataIdApi,
+    loadAllInvoicesAndExpenses
 } from './services/expenseService';
+import { fetchLoginUserInfo } from './services/applicationService';
 import { injectStyles } from './ui/styles';
 import { createModalDOM } from './ui/modal';
 import { fetchExpWHInfoApi, fetchDetailWHInfoApi, getCsrfToken, detectActiveYearAndMonth } from './services/timeMgService';
@@ -34,6 +38,12 @@ import {
 } from './ui/timeMgModal';
 import { showToast } from './utils/toast';
 import { AutopilotLogger } from './utils/logger';
+import { startSessionKeepalive } from './services/sessionKeepaliveService';
+import { createApplicationLauncherBtn } from './ui/applicationModal';
+import { createWebMcpLauncherBtn } from './ui/webmcpModal';
+import { initWebMcpSystem } from './services/webmcpService';
+import { initInvoicePoolDomService } from './services/invoicePoolDomService';
+import { initExpenseRecordDomService } from './services/expenseRecordDomService';
 
 // ==========================================
 // 1. 全局状态单例
@@ -70,6 +80,8 @@ const STATE: GlobalState = {
 
     isProcessing: false
 };
+
+(window as any).__fssc_state = STATE;
 
 // ==========================================
 // 2. 页面模式识别与白名单检测
@@ -114,6 +126,17 @@ function detectPageMode(): PageMode {
     );
     if (isExpenseRecord) return 'EXPENSE';
 
+    // 4. 【出差申请单 / 申请单视图】页面特征检测
+    const isApplicationPage = (
+        url.includes('#billViewShowPage') ||
+        decodedUrl.includes('menuName=申请单') ||
+        url.includes('viewCode=V_MYAPPLICATION') ||
+        url.includes('sheetCodes=[S_WFQD,S_WCYD]') ||
+        url.includes('billDefineId=0355cf627fede1653e55bb00bc610001') ||
+        url.includes('56dcfd90a5bf11e8a1a103bb1accbe1b')
+    );
+    if (isApplicationPage) return 'APPLICATION';
+
     return 'UNKNOWN';
 }
 
@@ -147,8 +170,8 @@ function updateTokenStatus() {
 // ==========================================
 function initInterceptor() {
     extractUrlParams();
-    STATE.loginToken = STATE.loginToken || sessionStorage.getItem('LoginToken') || localStorage.getItem('LoginToken') || sessionStorage.getItem('token') || '';
-    STATE.ecsToken = sessionStorage.getItem('EcsToken') || localStorage.getItem('EcsToken') || '';
+    STATE.loginToken = STATE.loginToken || (typeof sessionStorage !== 'undefined' ? (sessionStorage.getItem('ecs_TOKEN') || sessionStorage.getItem('LoginToken') || sessionStorage.getItem('token')) : '') || (typeof localStorage !== 'undefined' ? (localStorage.getItem('ecs_TOKEN') || localStorage.getItem('LoginToken') || localStorage.getItem('console_TOKEN')) : '') || '';
+    STATE.ecsToken = STATE.ecsToken || (typeof sessionStorage !== 'undefined' ? (sessionStorage.getItem('ecs_token') || sessionStorage.getItem('EcsToken')) : '') || (typeof localStorage !== 'undefined' ? (localStorage.getItem('ecs_token') || localStorage.getItem('EcsToken')) : '') || '';
 
     const captureHeaders = (headers: any) => {
         if (!headers) return;
@@ -180,6 +203,24 @@ function initInterceptor() {
         updateTokenStatus();
     };
 
+    const captureRequestBody = (url: string, data: any) => {
+        if (!data || typeof data !== 'string') return;
+        try {
+            const body = JSON.parse(data);
+            const uid = body.loginUserId || body.applicantId || body.userId;
+            if (uid && typeof uid === 'string' && uid.length >= 10) {
+                if (STATE.applicantId !== uid) {
+                    STATE.applicantId = uid;
+                    if (!STATE.currentUser) {
+                        STATE.currentUser = { userId: uid, userName: '当前用户' };
+                    } else {
+                        STATE.currentUser.userId = uid;
+                    }
+                }
+            }
+        } catch (e) { }
+    };
+
     const handleInterceptedResponse = (url: string, jsonText: string) => {
         try {
             if (url.includes('/fssc/bill/billdata/getBillDataAndTemplateByBillMainId') ||
@@ -197,6 +238,32 @@ function initInterceptor() {
                     STATE.billRows = parsedStructure.billRows;
                     STATE.billTags = parsedStructure.billTags;
                     renderBillTable();
+                }
+            } else if (url.includes('/fssc/bill/queryUserCardAndIconByUserId')) {
+                const parsed = JSON.parse(jsonText);
+                if (parsed && parsed.data) {
+                    const u = parsed.data;
+                    STATE.currentUser = {
+                        userId: u.userId || STATE.applicantId,
+                        userName: u.userName || '当前用户',
+                        userCode: u.userCode || u.loginName || '',
+                        email: u.email || ''
+                    };
+                    STATE.applicantId = STATE.currentUser.userId;
+                }
+            } else if (url.includes('/fssc/expenseClaim/expenseRecord/getExpenseRecordListBySearchVO')) {
+                const parsed = JSON.parse(jsonText);
+                const items = (parsed && parsed.data) ? (parsed.data.list || parsed.data.expenseRecordList) : null;
+                if (items && items.length > 0) {
+                    STATE.lastInterceptedExpenseRecords = items;
+                    AutopilotLogger.info(`[Interceptor] 成功拦截并缓存 ${items.length} 笔宿主费用记录`);
+                }
+            } else if (url.includes('/fssc/bo/boQuery/getBOQueryDataList')) {
+                const parsed = JSON.parse(jsonText);
+                const list = parsed?.data?.pageInfoBOQueryRowDataList?.list || parsed?.data?.boQueryRowDataList || parsed?.data?.rowDatas;
+                if (list && list.length > 0) {
+                    STATE.lastInterceptedInvoicePool = list;
+                    AutopilotLogger.info(`[Interceptor] 成功拦截并缓存 ${list.length} 笔发票池数据`);
                 }
             }
         } catch (e) { }
@@ -218,7 +285,8 @@ function initInterceptor() {
         return rawSetRequestHeader.apply(this, arguments as any);
     };
 
-    XMLHttpRequest.prototype.send = function (this: any) {
+    XMLHttpRequest.prototype.send = function (this: any, data: any) {
+        if (data) captureRequestBody(this._url, data);
         this.addEventListener('load', () => {
             if (this.responseText && this._url) {
                 handleInterceptedResponse(this._url, this.responseText);
@@ -233,11 +301,21 @@ function initInterceptor() {
             if (args[1] && args[1].headers) {
                 captureHeaders(args[1].headers);
             }
+            if (args[1] && args[1].body) {
+                const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url ? args[0].url : '');
+                captureRequestBody(url, args[1].body);
+            }
         } catch (e) { }
         const resp = await rawFetch.apply(this, args as any);
         try {
             const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url ? args[0].url : '');
-            if (url && (url.includes('getBillDataAndTemplateByBillMainId') || url.includes('fieldValueChange'))) {
+            if (url && (
+                url.includes('getBillDataAndTemplateByBillMainId') ||
+                url.includes('fieldValueChange') ||
+                url.includes('queryUserCardAndIconByUserId') ||
+                url.includes('getExpenseRecordListBySearchVO') ||
+                url.includes('getBOQueryDataList')
+            )) {
                 const cloned = resp.clone();
                 cloned.text().then(txt => handleInterceptedResponse(url, txt));
             }
@@ -247,6 +325,8 @@ function initInterceptor() {
 }
 
 initInterceptor();
+// 启动后台会话保活守护进程 (每 2.5 分钟保活一次，彻底杜绝长时间编辑导致的“登录失效”)
+startSessionKeepalive(STATE, 150000);
 
 // ==========================================
 // 4. 辅助函数
@@ -261,25 +341,6 @@ function normalizeTime(t: any): string {
     return clean;
 }
 
-function computePeriod(dateStr: string, isCommunication = false): string {
-    if (!dateStr) return '';
-    const cleanDate = normalizeDate(dateStr);
-    if (cleanDate.length >= 7) {
-        const parts = cleanDate.split('-');
-        let year = parseInt(parts[0], 10);
-        let month = parseInt(parts[1], 10);
-
-        if (isCommunication) {
-            month -= 1;
-            if (month < 1) {
-                month = 12;
-                year -= 1;
-            }
-        }
-        return `${year}-${String(month).padStart(2, '0')}`;
-    }
-    return '';
-}
 
 function detectInvoiceType(invVO: any = {}, expenseItem: any = {}, rowDatas: any = {}): 'TAXI' | 'COMMUNICATION' {
     const seller = (invVO.salesName || invVO.seller || '').toLowerCase();
@@ -804,92 +865,37 @@ async function executeBatchBillBudgetUpdateFallback(targetIndices: number[]) {
 // 7. 模式 A: 发票夹与费用记录表格渲染与数据流
 // ==========================================
 function executeSmartCommuteInference(showNotice = true) {
-    const company = ((document.getElementById('yn-quick-company') as HTMLInputElement)?.value || 'IVISION').trim();
-    const customer = ((document.getElementById('yn-quick-customer') as HTMLInputElement)?.value || 'CMP').trim();
-    const customDesc = ((document.getElementById('yn-quick-taxi-desc') as HTMLInputElement)?.value || '').trim();
+    const tripTypeSelect = document.getElementById('yn-quick-trip-type') as HTMLSelectElement;
+    const compInput = document.getElementById('yn-quick-company') as HTMLInputElement;
+    const custInput = document.getElementById('yn-quick-customer') as HTMLInputElement;
+    const hotelInput = document.getElementById('yn-quick-hotel') as HTMLInputElement;
+    const stationInput = document.getElementById('yn-quick-station') as HTMLInputElement;
+    const projInput = document.getElementById('yn-quick-project') as HTMLInputElement;
+    const proxyInput = document.getElementById('yn-quick-proxy') as HTMLInputElement;
 
-    const visibleIndices = STATE.invoices
-        .map((row, idx) => ({ row, idx }))
-        .filter(({ row }) => STATE.activeGroup === 'ALL' || row.type === STATE.activeGroup)
-        .map(({ idx }) => idx);
+    const options: ExpensePlanOptions = {
+        tripType: (tripTypeSelect?.value || 'AUTO') as any,
+        companyName: compInput?.value.trim() || 'IVISION',
+        customerName: custInput?.value.trim() || 'CMP',
+        hotelName: hotelInput?.value.trim() || '',
+        stationOrAirport: stationInput?.value.trim() || '机场/高铁站',
+        projectName: projInput?.value.trim() || '',
+        proxyPersonName: proxyInput?.value.trim() || ''
+    };
 
-    let targetIndices = visibleIndices.filter(idx => STATE.selectedIndices.has(idx));
-    if (targetIndices.length === 0) targetIndices = visibleIndices;
-
-    const taxiIndices = targetIndices.filter(idx => STATE.invoices[idx] && STATE.invoices[idx].type === 'TAXI');
-    if (taxiIndices.length === 0) {
-        if (showNotice) alert('当前分组下未找到出租车发票！');
-        return;
-    }
-
-    const dateGroups: Record<string, number[]> = {};
-    taxiIndices.forEach(idx => {
-        const row = STATE.invoices[idx];
-        const dt = normalizeDate(row.invoiceDate || '') || '未知日期';
-        if (!dateGroups[dt]) dateGroups[dt] = [];
-        dateGroups[dt].push(idx);
-    });
-
-    let filledCount = 0;
-    const uncertainDates: string[] = [];
-
-    Object.keys(dateGroups).forEach(dt => {
-        const dayIndices = dateGroups[dt];
-        dayIndices.sort((i1, i2) => normalizeTime(STATE.invoices[i1].timeGetOn).localeCompare(normalizeTime(STATE.invoices[i2].timeGetOn)));
-
-        if (dayIndices.length === 2) {
-            const idx1 = dayIndices[0];
-            const idx2 = dayIndices[1];
-            STATE.invoices[idx1].startAddress = company;
-            STATE.invoices[idx1].endAddress = customer;
-            if (customDesc) STATE.invoices[idx1].description = customDesc;
-            STATE.invoices[idx2].startAddress = customer;
-            STATE.invoices[idx2].endAddress = company;
-            if (customDesc) STATE.invoices[idx2].description = customDesc;
-            filledCount += 2;
-        } else if (dayIndices.length === 1) {
-            const idx1 = dayIndices[0];
-            const hour = parseInt(normalizeTime(STATE.invoices[idx1].timeGetOn).split(':')[0]) || 0;
-            if (hour < 14) {
-                STATE.invoices[idx1].startAddress = company;
-                STATE.invoices[idx1].endAddress = customer;
-            } else {
-                STATE.invoices[idx1].startAddress = customer;
-                STATE.invoices[idx1].endAddress = company;
-            }
-            if (customDesc) STATE.invoices[idx1].description = customDesc;
-            filledCount += 1;
-        } else {
-            const firstIdx = dayIndices[0];
-            const lastIdx = dayIndices[dayIndices.length - 1];
-            STATE.invoices[firstIdx].startAddress = company;
-            STATE.invoices[firstIdx].endAddress = customer;
-            if (customDesc) STATE.invoices[firstIdx].description = customDesc;
-            STATE.invoices[lastIdx].startAddress = customer;
-            STATE.invoices[lastIdx].endAddress = company;
-            if (customDesc) STATE.invoices[lastIdx].description = customDesc;
-            for (let k = 1; k < dayIndices.length - 1; k++) {
-                const midIdx = dayIndices[k];
-                STATE.invoices[midIdx].startAddress = '';
-                STATE.invoices[midIdx].endAddress = '';
-                if (customDesc) STATE.invoices[midIdx].description = customDesc;
-            }
-            filledCount += 2;
-            uncertainDates.push(dt);
-        }
-    });
-
+    const plan = inferSmartExpensePlan(STATE.invoices, options);
+    STATE.expensePlan = plan;
     renderInvoiceTable();
+
     if (showNotice) {
-        let msg = `✅ 智能推断完成！已自动为 ${filledCount} 条出租车行程填入往返地点：\n` +
-                  `• 公司基准: ${company}\n• 拜访客户: ${customer}\n` +
-                  `• 行程规则: 当天第1程【${company} ➔ ${customer}】，第2程【${customer} ➔ ${company}】`;
-        if (uncertainDates.length > 0) {
-            msg += `\n\n⚠️ 注意：以下日期包含 3 笔以上打车记录，中间行程已留空：\n${uncertainDates.join(', ')}`;
+        let msg = plan.summaryText;
+        if (plan.missingFields.length > 0) {
+            msg += `\n\n💡 建议补充: ${plan.missingFields.join('、')}`;
         }
         alert(msg);
     }
 }
+
 
 async function fetchAllPendingData() {
     const btnFetch = document.getElementById('yn-btn-fetch-all') as HTMLButtonElement;
@@ -900,175 +906,20 @@ async function fetchAllPendingData() {
     }
 
     try {
-        const loaded: InvoiceItem[] = [];
-        const processedRecordIds = new Set<string>();
-        const processedInvoiceDataIds = new Set<string>();
-        const processedInvoiceNos = new Set<string>();
-
-        const poolList = await queryInvoicePoolListApi(STATE);
-        const poolInvoices = await mapConcurrent(poolList, 8, async (pItem: any) => {
-            const dataId = pItem.boSourceRowId || (pItem.datas && pItem.datas.ID ? pItem.datas.ID.value : '');
-            if (!dataId) return null;
-            try {
-                const invDetail = await getInvoiceDetailByDataIdApi(dataId, STATE);
-                return { dataId, invDetail, pItem };
-            } catch (e) { return null; }
-        });
-
-        const invoiceOcrMap = new Map<string, any>();
-        poolInvoices.forEach(item => {
-            if (!item || !item.invDetail) return;
-            const inv = item.invDetail;
-            if (inv.invoiceNo) invoiceOcrMap.set(inv.invoiceNo, inv);
-            if (item.dataId) invoiceOcrMap.set(item.dataId, inv);
-            if (inv.invoiceDate && inv.amountTax !== undefined) {
-                invoiceOcrMap.set(`${normalizeDate(inv.invoiceDate)}_${inv.amountTax}`, inv);
-            }
-        });
-
-        const recordList = await queryExpenseRecordListApi(STATE);
-        const parsedRecords = await mapConcurrent(recordList, 8, async (item: any) => {
-            const recId = item.expenseRecordId;
-            if (!recId) return null;
-            try {
-                const ruleData = await getExpenseTypeRuleAndRowDatasApi(recId, item.expenseTypeId || 'UNIDENTIFIED', STATE);
-                const rowDatas = ruleData.rowDatas || {};
-                const v = ruleData.version || 1;
-
-                let invVO: any = {};
-                const invListField = rowDatas.expenseRecordInvoiceList;
-                if (invListField && invListField.value && invListField.value.length > 0) {
-                    invVO = invListField.value[0].invoiceVO || {};
-                }
-
-                let matchedInv: any = null;
-                if (invVO.invoiceNo && invoiceOcrMap.has(invVO.invoiceNo)) matchedInv = invoiceOcrMap.get(invVO.invoiceNo);
-                else if (invVO.invoiceDataId && invoiceOcrMap.has(invVO.invoiceDataId)) matchedInv = invoiceOcrMap.get(invVO.invoiceDataId);
-                else if (item.businessDate && item.amountObj) {
-                    const key = `${normalizeDate(item.businessDate)}_${item.amountObj.amount}`;
-                    if (invoiceOcrMap.has(key)) matchedInv = invoiceOcrMap.get(key);
-                }
-
-                if (matchedInv) {
-                    if (!invVO.timeGetOn && matchedInv.timeGetOn) invVO.timeGetOn = matchedInv.timeGetOn;
-                    if (!invVO.timeGetOff && matchedInv.timeGetOff) invVO.timeGetOff = matchedInv.timeGetOff;
-                    if (!invVO.mileage && matchedInv.mileage) invVO.mileage = matchedInv.mileage;
-                    if (!invVO.salesName && (matchedInv.salesName || matchedInv.seller)) invVO.salesName = matchedInv.salesName || matchedInv.seller;
-                    if (!invVO.seller && (matchedInv.seller || matchedInv.salesName)) invVO.seller = matchedInv.seller || matchedInv.salesName;
-                    if (!invVO.invoiceNo && matchedInv.invoiceNo) invVO.invoiceNo = matchedInv.invoiceNo;
-                    if (!invVO.invoiceCode && matchedInv.invoiceCode) invVO.invoiceCode = matchedInv.invoiceCode;
-                    if (matchedInv.invoiceDataId) invVO.invoiceDataId = matchedInv.invoiceDataId;
-                }
-
-                let attachList: any[] = [];
-                if (rowDatas.expenseRecordAttachmentList && rowDatas.expenseRecordAttachmentList.value) {
-                    attachList = rowDatas.expenseRecordAttachmentList.value;
-                }
-
-                const type = detectInvoiceType(invVO, item, rowDatas);
-                const isComm = type === 'COMMUNICATION';
-                const rawDate = invVO.invoiceDate || (item.businessDate ? item.businessDate.split(' ')[0] : '');
-                const invDate = normalizeDate(rawDate);
-                const amt = item.amountObj ? item.amountObj.amount : (invVO.amountTax || 0);
-
-                let cleanPeriod = '';
-                const existingPeriod = (rowDatas.F_ZY_DEF_001 ? rowDatas.F_ZY_DEF_001.value : '').replace(/^期间[：:]\s*/, '').trim();
-                cleanPeriod = (existingPeriod && existingPeriod.length === 7) ? existingPeriod : computePeriod(invDate, isComm);
-
-                return {
-                    expenseRecordId: recId,
-                    version: v,
-                    invoiceVO: invVO,
-                    invoiceNo: invVO.invoiceNo || '',
-                    invoiceCode: invVO.invoiceCode || '',
-                    invoiceDate: invDate,
-                    timeGetOn: normalizeTime(invVO.timeGetOn),
-                    timeGetOff: normalizeTime(invVO.timeGetOff),
-                    mileage: invVO.mileage ? `${invVO.mileage}km` : '',
-                    amount: amt,
-                    type: type,
-                    startAddress: rowDatas.START_ADDRESS ? (rowDatas.START_ADDRESS.value || '') : '',
-                    endAddress: rowDatas.END_ADDRESS ? (rowDatas.END_ADDRESS.value || '') : '',
-                    description: item.description || (rowDatas.DESCRIPTION ? rowDatas.DESCRIPTION.value || '' : ''),
-                    period: cleanPeriod,
-                    attachments: attachList,
-                    status: (item.expenseTypeName && item.expenseTypeName !== 'None') ? '成功' : '就绪'
-                } as InvoiceItem;
-            } catch (e) {
-                const invDate = normalizeDate(item.businessDate ? item.businessDate.split(' ')[0] : '');
-                return {
-                    expenseRecordId: recId,
-                    version: item.version || 1,
-                    invoiceVO: {},
-                    invoiceNo: '',
-                    invoiceCode: '',
-                    invoiceDate: invDate,
-                    timeGetOn: '',
-                    timeGetOff: '',
-                    mileage: '',
-                    amount: item.amountObj ? item.amountObj.amount : 0,
-                    type: 'TAXI',
-                    startAddress: '',
-                    endAddress: '',
-                    description: item.description || '',
-                    period: computePeriod(invDate, false),
-                    attachments: [],
-                    status: '就绪'
-                } as InvoiceItem;
-            }
-        });
-
-        parsedRecords.forEach(r => {
-            if (r) {
-                loaded.push(r);
-                if (r.expenseRecordId) processedRecordIds.add(r.expenseRecordId);
-                if (r.invoiceVO && r.invoiceVO.invoiceDataId) processedInvoiceDataIds.add(r.invoiceVO.invoiceDataId);
-                if (r.invoiceNo) processedInvoiceNos.add(r.invoiceNo);
-            }
-        });
-
-        poolInvoices.forEach(item => {
-            if (!item || !item.invDetail) return;
-            const invDetail = item.invDetail;
-            const dataId = item.dataId;
-            const invNo = invDetail.invoiceNo || '';
-
-            if (processedInvoiceDataIds.has(dataId) || (invNo && processedInvoiceNos.has(invNo))) return;
-
-            const invDate = normalizeDate(invDetail.invoiceDate || '');
-            const amt = invDetail.amountTax !== undefined ? invDetail.amountTax : 0;
-            const type = detectInvoiceType(invDetail, {}, {});
-            const isComm = type === 'COMMUNICATION';
-
-            loaded.push({
-                expenseRecordId: '',
-                version: 1,
-                boDataId: dataId,
-                invoiceVO: invDetail,
-                invoiceNo: invNo,
-                invoiceCode: invDetail.invoiceCode || '',
-                invoiceDate: invDate,
-                timeGetOn: normalizeTime(invDetail.timeGetOn),
-                timeGetOff: normalizeTime(invDetail.timeGetOff),
-                mileage: invDetail.mileage ? `${invDetail.mileage}km` : '',
-                amount: amt,
-                type: type,
-                startAddress: '',
-                endAddress: '',
-                description: '',
-                period: computePeriod(invDate, isComm),
-                attachments: [],
-                status: '待流转'
-            });
-        });
-
-        STATE.invoices = sortInvoices(loaded);
+        await fetchLoginUserInfo(STATE);
+        const sorted = await loadAllInvoicesAndExpenses(STATE);
+        STATE.invoices = sorted;
         STATE.selectedIndices.clear();
         STATE.invoices.forEach((_, idx) => STATE.selectedIndices.add(idx));
         executeSmartCommuteInference(false);
         renderInvoiceTable();
 
-        alert(`✅ 成功同步全部 ${STATE.invoices.length} 笔待报销记录！已全量补全乘车时间与里程。`);
+        const invalidInvoices = STATE.invoices.filter(r => r.isValidInvoice === false);
+        if (invalidInvoices.length > 0) {
+            alert(`⚠️ 成功同步 ${STATE.invoices.length} 笔记录，但发现 ${invalidInvoices.length} 张发票缺少必要字段（如OCR未识别金额为0元、开票日期缺失等）！\n已为您标红显示，建议先在发票夹中修改补齐后再流转记费用。`);
+        } else {
+            alert(`✅ 成功同步全部 ${STATE.invoices.length} 笔待报销记录！发票关键字段全部完备，已全量补全乘车时间与里程。`);
+        }
     } catch (err: any) {
         alert(`同步失败: ${err.message}`);
     } finally {
@@ -1086,22 +937,35 @@ function renderInvoiceTable() {
     const tbody = document.getElementById('yn-table-tbody');
     const countInfo = document.getElementById('yn-select-count-info');
     const btnSave = document.getElementById('yn-btn-batch-save');
-    const grp = STATE.activeGroup;
+    const grp = STATE.activeGroup as any;
 
     if (!thead || !tbody) return;
 
-    const taxiCount = STATE.invoices.filter(r => r.type === 'TAXI').length;
+    const taxiCount = STATE.invoices.filter(r => r.type === 'TAXI' || r.type === 'TRIP_TAXI').length;
+    const flightTrainCount = STATE.invoices.filter(r => r.type === 'FLIGHT' || r.type === 'TRAIN').length;
+    const hotelCount = STATE.invoices.filter(r => r.type === 'HOTEL').length;
     const commCount = STATE.invoices.filter(r => r.type === 'COMMUNICATION').length;
+
     const countTaxiEl = document.getElementById('yn-count-taxi');
+    const countFlightTrainEl = document.getElementById('yn-count-flight-train');
+    const countHotelEl = document.getElementById('yn-count-hotel');
     const countCommEl = document.getElementById('yn-count-comm');
     const countAllEl = document.getElementById('yn-count-all');
+
     if (countTaxiEl) countTaxiEl.innerText = String(taxiCount);
+    if (countFlightTrainEl) countFlightTrainEl.innerText = String(flightTrainCount);
+    if (countHotelEl) countHotelEl.innerText = String(hotelCount);
     if (countCommEl) countCommEl.innerText = String(commCount);
     if (countAllEl) countAllEl.innerText = String(STATE.invoices.length);
 
     const visibleIndices: number[] = [];
     STATE.invoices.forEach((row, idx) => {
-        if (grp === 'ALL' || row.type === grp) visibleIndices.push(idx);
+        if (grp === 'ALL') visibleIndices.push(idx);
+        else if (grp === 'TAXI' && (row.type === 'TAXI' || row.type === 'TRIP_TAXI')) visibleIndices.push(idx);
+        else if (grp === 'FLIGHT_TRAIN' && (row.type === 'FLIGHT' || row.type === 'TRAIN')) visibleIndices.push(idx);
+        else if (grp === 'HOTEL' && row.type === 'HOTEL') visibleIndices.push(idx);
+        else if (grp === 'COMMUNICATION' && row.type === 'COMMUNICATION') visibleIndices.push(idx);
+        else if (row.type === grp) visibleIndices.push(idx);
     });
 
     let selectedInView = 0;
@@ -1109,60 +973,35 @@ function renderInvoiceTable() {
         if (STATE.selectedIndices.has(idx)) selectedInView++;
     });
 
-    const grpName = grp === 'TAXI' ? '出租车' : (grp === 'COMMUNICATION' ? '通信费' : '全部');
+    const grpLabelMap: Record<string, string> = {
+        TAXI: '出租车/交通',
+        FLIGHT_TRAIN: '飞机/高铁',
+        HOTEL: '住宿费',
+        COMMUNICATION: '通信费',
+        ALL: '全部记录'
+    };
+    const grpName = grpLabelMap[grp] || '全部';
     if (countInfo) countInfo.innerText = `当前【${grpName}】已勾选 ${selectedInView} / ${visibleIndices.length} 行 (总计 ${STATE.invoices.length} 笔)`;
     if (btnSave) btnSave.innerText = `🚀 批量保存当前【${grpName}】已勾选记录 (${selectedInView} 条)`;
 
-    if (grp === 'TAXI') {
-        thead.innerHTML = `
-            <tr>
-                <th style="width:36px; text-align:center;"><input type="checkbox" id="yn-th-select-all" /></th>
-                <th style="width:36px;">#</th>
-                <th style="width:105px;">报销分类</th>
-                <th style="width:90px;">发票日期</th>
-                <th style="width:145px;">乘车时间 (上车 ~ 下车)</th>
-                <th style="width:65px;">里程</th>
-                <th style="width:70px;">金额</th>
-                <th style="width:115px;">出发地</th>
-                <th style="width:32px; text-align:center;"></th>
-                <th style="width:115px;">到达地</th>
-                <th style="width:125px;">目的说明(选填)</th>
-                <th style="width:90px;">发票号码</th>
-                <th style="width:55px; text-align:center;">状态</th>
-            </tr>
-        `;
-    } else if (grp === 'COMMUNICATION') {
-        thead.innerHTML = `
-            <tr>
-                <th style="width:36px; text-align:center;"><input type="checkbox" id="yn-th-select-all" /></th>
-                <th style="width:36px;">#</th>
-                <th style="width:105px;">报销分类</th>
-                <th style="width:90px;">发票日期</th>
-                <th style="width:75px;">金额</th>
-                <th style="width:120px;">发生年月 / 期间</th>
-                <th style="width:130px;">目的说明(选填)</th>
-                <th style="width:180px;">账单 PDF 附件</th>
-                <th style="width:90px;">发票号码</th>
-                <th style="width:55px; text-align:center;">状态</th>
-            </tr>
-        `;
-    } else {
-        thead.innerHTML = `
-            <tr>
-                <th style="width:36px; text-align:center;"><input type="checkbox" id="yn-th-select-all" /></th>
-                <th style="width:36px;">#</th>
-                <th style="width:105px;">报销分类</th>
-                <th style="width:90px;">发票日期</th>
-                <th style="width:130px;">乘车时间</th>
-                <th style="width:70px;">金额</th>
-                <th style="width:95px;">出发地</th>
-                <th style="width:95px;">到达地</th>
-                <th style="width:105px;">目的说明</th>
-                <th style="width:100px;">期间年月</th>
-                <th style="width:55px; text-align:center;">状态</th>
-            </tr>
-        `;
-    }
+    thead.innerHTML = `
+        <tr>
+            <th style="width:36px; text-align:center;"><input type="checkbox" id="yn-th-select-all" /></th>
+            <th style="width:36px; text-align:center;">#</th>
+            <th style="width:130px;">费用类别 (15类)</th>
+            <th style="width:90px;">发票日期</th>
+            <th style="width:135px;">乘车/行程时间</th>
+            <th style="width:60px; text-align:center;">里程</th>
+            <th style="width:75px; text-align:right;">金额</th>
+            <th style="width:110px;">出发地 / 酒店</th>
+            <th style="width:28px; text-align:center;"></th>
+            <th style="width:110px;">到达地</th>
+            <th style="width:150px;">费用说明 (含外驻/项目)</th>
+            <th style="width:90px;">期间</th>
+            <th style="width:90px;">发票号码</th>
+            <th style="width:55px; text-align:center;">状态</th>
+        </tr>
+    `;
 
     const thSelectAll = document.getElementById('yn-th-select-all') as HTMLInputElement;
     if (thSelectAll) {
@@ -1187,58 +1026,49 @@ function renderInvoiceTable() {
         const isSelected = STATE.selectedIndices.has(realIdx);
         const tr = document.createElement('tr');
         if (isSelected) tr.className = 'selected';
+        if (row.isModified) tr.style.background = '#f0fdf4';
+        if (row.isValidInvoice === false) tr.style.background = '#fff1f0';
 
         const typeSelectorHtml = `
-            <select class="yn-type-select ${row.type === 'COMMUNICATION' ? 'type-comm' : 'type-taxi'}" data-idx="${realIdx}" data-field="type">
-                <option value="TAXI" ${row.type === 'TAXI' ? 'selected' : ''}>🚕 出租车</option>
-                <option value="COMMUNICATION" ${row.type === 'COMMUNICATION' ? 'selected' : ''}>📱 通信费</option>
+            <select class="yn-type-select" data-idx="${realIdx}" data-field="type" style="font-size:11.5px; padding:2px 4px; border-radius:4px; border:1px solid #d9d9d9; width:100%;">
+                ${ALL_EXPENSE_TYPE_LIST.map(t => {
+                    const isSel = (row.expenseTypeId && row.expenseTypeId === t.id) || (row.type === t.category);
+                    return `<option value="${t.category}" data-id="${t.id}" data-code="${t.code}" ${isSel ? 'selected' : ''}>${t.icon} ${t.label}</option>`;
+                }).join('')}
             </select>
         `;
 
-        if (grp === 'TAXI') {
-            tr.innerHTML = `
-                <td style="text-align:center;"><input type="checkbox" class="yn-row-check" data-idx="${realIdx}" ${isSelected ? 'checked' : ''} /></td>
-                <td style="color:#8c8c8c; text-align:center;">${rowNum + 1}</td>
-                <td>${typeSelectorHtml}</td>
-                <td><input type="date" data-idx="${realIdx}" data-field="invoiceDate" value="${row.invoiceDate || ''}" style="font-size:11.5px;" /></td>
-                <td><div class="yn-time-badge"><span class="yn-time-highlight">${row.timeGetOn || '--:--'}</span> ~ <span class="yn-time-highlight">${row.timeGetOff || '--:--'}</span></div></td>
-                <td style="color:#595959; font-size:11.5px; text-align:center;">${row.mileage || '-'}</td>
-                <td><span style="font-weight:600; color:#fa8c16;">¥${parseFloat(String(row.amount || 0)).toFixed(2)}</span></td>
-                <td><input type="text" data-idx="${realIdx}" data-field="startAddress" value="${row.startAddress || ''}" placeholder="如: IVISION" /></td>
-                <td style="text-align:center;"><button class="yn-swap-btn" data-idx="${realIdx}">⇄</button></td>
-                <td><input type="text" data-idx="${realIdx}" data-field="endAddress" value="${row.endAddress || ''}" placeholder="如: CMP" /></td>
-                <td><input type="text" data-idx="${realIdx}" data-field="description" value="${row.description || ''}" placeholder="选填" /></td>
-                <td><span style="font-family:monospace; color:#595959; font-size:11px;">${row.invoiceNo || '-'}</span></td>
-                <td style="text-align:center;"><span class="yn-status-tag ${row.status === '成功' ? 'yn-status-success' : (row.status === '失败' ? 'yn-status-error' : 'yn-status-pending')}">${row.status || '就绪'}</span></td>
-            `;
-        } else if (grp === 'COMMUNICATION') {
-            tr.innerHTML = `
-                <td style="text-align:center;"><input type="checkbox" class="yn-row-check" data-idx="${realIdx}" ${isSelected ? 'checked' : ''} /></td>
-                <td style="text-align:center; color:#8c8c8c;">${rowNum + 1}</td>
-                <td>${typeSelectorHtml}</td>
-                <td><input type="date" data-idx="${realIdx}" data-field="invoiceDate" value="${row.invoiceDate || ''}" style="font-size:11.5px;" /></td>
-                <td><span style="font-weight:600; color:#fa8c16;">¥${parseFloat(String(row.amount || 0)).toFixed(2)}</span></td>
-                <td><input type="text" data-idx="${realIdx}" data-field="period" value="${row.period || ''}" placeholder="如: 2026-05" /></td>
-                <td><input type="text" data-idx="${realIdx}" data-field="description" value="${row.description || ''}" placeholder="选填" /></td>
-                <td><div class="yn-dropzone" data-idx="${realIdx}"><span class="yn-dropzone-prompt">📎 拖入/选择账单PDF</span><input type="file" multiple accept=".pdf,.jpg,.jpeg,.png" style="display:none;" /></div></td>
-                <td><span style="font-family:monospace; color:#595959; font-size:11px;">${row.invoiceNo || '-'}</span></td>
-                <td style="text-align:center;"><span class="yn-status-tag ${row.status === '成功' ? 'yn-status-success' : (row.status === '失败' ? 'yn-status-error' : 'yn-status-pending')}">${row.status || '就绪'}</span></td>
-            `;
-        } else {
-            tr.innerHTML = `
-                <td style="text-align:center;"><input type="checkbox" class="yn-row-check" data-idx="${realIdx}" ${isSelected ? 'checked' : ''} /></td>
-                <td style="text-align:center; color:#8c8c8c;">${rowNum + 1}</td>
-                <td>${typeSelectorHtml}</td>
-                <td><input type="date" data-idx="${realIdx}" data-field="invoiceDate" value="${row.invoiceDate || ''}" style="font-size:11px;" /></td>
-                <td><div class="yn-time-badge">${row.timeGetOn || '-'} ~ ${row.timeGetOff || '-'}</div></td>
-                <td><span style="font-weight:600; color:#fa8c16;">¥${parseFloat(String(row.amount || 0)).toFixed(2)}</span></td>
-                <td><input type="text" data-idx="${realIdx}" data-field="startAddress" value="${row.startAddress || ''}" ${row.type !== 'TAXI' ? 'disabled' : ''} /></td>
-                <td><input type="text" data-idx="${realIdx}" data-field="endAddress" value="${row.endAddress || ''}" ${row.type !== 'TAXI' ? 'disabled' : ''} /></td>
-                <td><input type="text" data-idx="${realIdx}" data-field="description" value="${row.description || ''}" /></td>
-                <td><input type="text" data-idx="${realIdx}" data-field="period" value="${row.period || ''}" /></td>
-                <td style="text-align:center;"><span class="yn-status-tag ${row.status === '成功' ? 'yn-status-success' : (row.status === '失败' ? 'yn-status-error' : 'yn-status-pending')}">${row.status || '就绪'}</span></td>
-            `;
-        }
+        const isAmtIssue = !row.amount || row.amount <= 0;
+        const isDateIssue = !row.invoiceDate || !row.invoiceDate.match(/^\d{4}[-/]\d{1,2}[-/]\d{1,2}$/);
+        const issuesTooltip = row.validationIssues ? row.validationIssues.map(i => `• ${i.message}`).join('\n') : '';
+
+        tr.innerHTML = `
+            <td style="text-align:center;"><input type="checkbox" class="yn-row-check" data-idx="${realIdx}" ${isSelected ? 'checked' : ''} /></td>
+            <td style="color:#8c8c8c; text-align:center;">${rowNum + 1}</td>
+            <td>${typeSelectorHtml}</td>
+            <td><input type="date" data-idx="${realIdx}" data-field="invoiceDate" value="${row.invoiceDate || ''}" style="font-size:11px; width:100%; ${isDateIssue ? 'border:1px solid #ff4d4f; background:#fff1f0;' : ''}" title="${isDateIssue ? '⚠️ 开票日期缺失或异常' : ''}" /></td>
+            <td><div class="yn-time-badge"><span class="yn-time-highlight">${row.timeGetOn || '--:--'}</span> ~ <span class="yn-time-highlight">${row.timeGetOff || '--:--'}</span></div></td>
+            <td style="color:#595959; font-size:11px; text-align:center;">${row.mileage || '-'}</td>
+            <td style="text-align:right;">
+                ${isAmtIssue
+                    ? `<span style="font-weight:600; color:#cf1322; background:#fff1f0; padding:1px 5px; border-radius:3px; border:1px solid #ffa39e;" title="发票金额未识别或为0">⚠️ ¥0.00</span>`
+                    : `<span style="font-weight:600; color:#fa8c16;">¥${parseFloat(String(row.amount || 0)).toFixed(2)}</span>`
+                }
+                ${row.subInvoices && row.subInvoices.length > 0 ? `<div style="font-size:10px; color:#4338ca; background:#e0e7ff; border-radius:3px; padding:0 3px; display:inline-block; margin-top:2px;" title="已绑定 ${row.subInvoices.length} 张过路费发票(¥${row.tollAmount || 0})">+${row.subInvoices.length}张过路费</div>` : ''}
+            </td>
+            <td><input type="text" data-idx="${realIdx}" data-field="startAddress" value="${row.startAddress || (row.type === 'HOTEL' ? (row.hotelName || '') : '')}" placeholder="${row.type === 'HOTEL' ? '酒店名' : '如: IVISION'}" style="width:100%; font-size:11.5px;" /></td>
+            <td style="text-align:center;"><button class="yn-swap-btn" data-idx="${realIdx}" title="交换起止地" style="padding:1px 4px; font-size:11px;">⇄</button></td>
+            <td><input type="text" data-idx="${realIdx}" data-field="endAddress" value="${row.endAddress || ''}" placeholder="如: CMP" style="width:100%; font-size:11.5px;" /></td>
+            <td><input type="text" data-idx="${realIdx}" data-field="description" value="${row.description || ''}" placeholder="如: [外驻:成勇] X2605-001 CMP" style="width:100%; font-size:11.5px;" /></td>
+            <td><input type="text" data-idx="${realIdx}" data-field="period" value="${row.period || ''}" placeholder="如: 2026-05" style="width:100%; font-size:11px;" /></td>
+            <td><span style="font-family:monospace; color:#595959; font-size:11px;">${row.invoiceNo || '-'}</span></td>
+            <td style="text-align:center;">
+                <span class="yn-status-tag ${row.status === '成功' ? 'yn-status-success' : (row.status === '残缺' || row.isValidInvoice === false || row.status === '失败' ? 'yn-status-error' : 'yn-status-pending')}" title="${issuesTooltip || (row.status || '就绪')}">
+                    ${row.status === '残缺' || row.isValidInvoice === false ? `⚠️ ${row.missingFieldsDesc || '残缺'}` : (row.status || '就绪')}
+                </span>
+            </td>
+        `;
+
         tbody.appendChild(tr);
     });
 
@@ -1258,6 +1088,7 @@ function renderInvoiceTable() {
                 const temp = STATE.invoices[idx].startAddress;
                 STATE.invoices[idx].startAddress = STATE.invoices[idx].endAddress;
                 STATE.invoices[idx].endAddress = temp;
+                STATE.invoices[idx].isModified = true;
                 renderInvoiceTable();
             }
         });
@@ -1268,12 +1099,27 @@ function renderInvoiceTable() {
             const idx = parseInt(e.target.getAttribute('data-idx'));
             const field = e.target.getAttribute('data-field');
             if (field && !isNaN(idx) && STATE.invoices[idx]) {
-                (STATE.invoices[idx] as any)[field] = e.target.value;
+                const row = STATE.invoices[idx];
+                (row as any)[field] = e.target.value;
+                row.isModified = true;
+
                 if (field === 'type') {
-                    const isComm = e.target.value === 'COMMUNICATION';
-                    STATE.invoices[idx].period = computePeriod(STATE.invoices[idx].invoiceDate || '', isComm);
-                    if (!isComm && !STATE.invoices[idx].startAddress) STATE.invoices[idx].startAddress = 'IVISION';
-                    if (!isComm && !STATE.invoices[idx].endAddress) STATE.invoices[idx].endAddress = 'CMP';
+                    const sel = e.target as HTMLSelectElement;
+                    const opt = sel.options[sel.selectedIndex];
+                    const targetId = opt.getAttribute('data-id') || '';
+                    const targetCode = opt.getAttribute('data-code') || '';
+                    const cfg = ALL_EXPENSE_TYPE_LIST.find(t => t.id === targetId);
+
+                    row.type = sel.value as any;
+                    row.expenseTypeId = targetId;
+                    row.expenseTypeCode = targetCode;
+                    row.expenseTypeName = cfg ? cfg.name : '';
+
+                    const isComm = row.type === 'COMMUNICATION';
+                    row.period = computePeriod(row.invoiceDate || '', isComm);
+
+                    if (!isComm && !row.startAddress) row.startAddress = 'IVISION';
+                    if (!isComm && !row.endAddress) row.endAddress = 'CMP';
                     renderInvoiceTable();
                 }
             }
@@ -1282,10 +1128,17 @@ function renderInvoiceTable() {
 }
 
 async function executeBatchSave() {
-    const grp = STATE.activeGroup;
+    const grp = STATE.activeGroup as any;
     const visibleIndices = STATE.invoices
         .map((row, idx) => ({ row, idx }))
-        .filter(({ row }) => grp === 'ALL' || row.type === grp)
+        .filter(({ row }) => {
+            if (grp === 'ALL') return true;
+            if (grp === 'TAXI') return row.type === 'TAXI' || row.type === 'TRIP_TAXI';
+            if (grp === 'FLIGHT_TRAIN') return row.type === 'FLIGHT' || row.type === 'TRAIN';
+            if (grp === 'HOTEL') return row.type === 'HOTEL';
+            if (grp === 'COMMUNICATION') return row.type === 'COMMUNICATION';
+            return row.type === grp;
+        })
         .map(({ idx }) => idx);
 
     const targetIndices = visibleIndices.filter(idx => STATE.selectedIndices.has(idx));
@@ -1312,47 +1165,14 @@ async function executeBatchSave() {
         const row = STATE.invoices[rowIdx];
         const percent = Math.round(((i + 1) / total) * 100);
         progressInner.style.width = `${percent}%`;
-        logText.innerText = `[${i + 1}/${total}] 正在保存: ${row.invoiceNo || '第' + (rowIdx + 1) + '行'}...`;
+        logText.innerText = `[${i + 1}/${total}] 正在保存: ${row.invoiceNo || row.expenseTypeName || '第' + (rowIdx + 1) + '行'}...`;
 
         try {
-            const targetExpenseTypeConfig = row.type === 'COMMUNICATION' ? EXPENSE_TYPES.COMMUNICATION : EXPENSE_TYPES.TAXI;
-            let recordId = row.expenseRecordId;
-            if (!recordId) {
-                recordId = await createDraftExpenseRecordFromInvoiceApi(row.invoiceVO, row.boDataId || row.invoiceVO?.invoiceDataId, STATE);
-                row.expenseRecordId = recordId;
-            }
-
-            const ruleData = await getExpenseTypeRuleAndRowDatasApi(recordId, 'UNIDENTIFIED', STATE);
-            const version = ruleData.version !== undefined ? ruleData.version : 1;
-            const baseRowDatas = ruleData.rowDatas || {};
-
-            const initData = await initExpenseRecordWithTypeApi(recordId, targetExpenseTypeConfig.id, baseRowDatas, STATE);
-            const rowDatas = initData.rowDatas || {};
-
-            const cleanPeriod = (row.period || computePeriod(row.invoiceDate || '', row.type === 'COMMUNICATION')).replace(/^期间[：:]\s*/, '').trim();
-
-            if (row.type === 'TAXI') {
-                if (rowDatas.START_ADDRESS) rowDatas.START_ADDRESS.value = row.startAddress || 'IVISION';
-                if (rowDatas.END_ADDRESS) rowDatas.END_ADDRESS.value = row.endAddress || 'CMP';
-                if (rowDatas.DESCRIPTION) rowDatas.DESCRIPTION.value = row.description ? row.description.trim() : '';
-                if (rowDatas.F_ZY_DEF_001) rowDatas.F_ZY_DEF_001.value = cleanPeriod;
-            } else if (row.type === 'COMMUNICATION') {
-                const yyyy_mm = cleanPeriod.length >= 7 ? cleanPeriod.substring(0, 7) : computePeriod(row.invoiceDate || '', true);
-                if (rowDatas.FLIGHT_START_DATE) rowDatas.FLIGHT_START_DATE.value = `${yyyy_mm}-01 00:00:00`;
-                if (rowDatas.F_ZY_DEF_001) rowDatas.F_ZY_DEF_001.value = yyyy_mm;
-                if (rowDatas.DESCRIPTION) rowDatas.DESCRIPTION.value = row.description ? row.description.trim() : '';
-                if (row.attachments && row.attachments.length > 0) {
-                    rowDatas.expenseRecordAttachmentList = { value: row.attachments };
-                    const firstAtt = row.attachments[0];
-                    if (rowDatas.ATTACH_NAME) rowDatas.ATTACH_NAME.value = (firstAtt.fileName || '账单').replace(/\.[^/.]+$/, "");
-                    if (rowDatas.ATTACH_COUNT) rowDatas.ATTACH_COUNT.value = row.attachments.length;
-                }
-            }
-
-            await saveFinalExpenseRecordApi(recordId, targetExpenseTypeConfig.id, rowDatas, version, STATE);
+            await saveSingleExpenseItemApi(row, STATE);
             row.status = '成功';
+            row.isModified = false;
             successCount++;
-        } catch (err) {
+        } catch (err: any) {
             console.error('Save error on row', rowIdx, err);
             row.status = '失败';
             failCount++;
@@ -1365,6 +1185,7 @@ async function executeBatchSave() {
     logText.innerText = `处理完成！成功: ${successCount} 条，失败: ${failCount} 条。`;
     alert(`批量处理完成！\n成功: ${successCount} 条\n失败: ${failCount} 条\n已成功保存为有效费用明细！`);
 }
+
 
 // ==========================================
 // 8. 事件绑定与初始化挂载
@@ -1513,10 +1334,10 @@ function bindEvents() {
                 STATE.activeGroup = grp;
                 document.querySelectorAll('.yn-tab-btn').forEach(t => t.classList.remove('active'));
                 tab.classList.add('active');
-                const barTaxi = document.getElementById('yn-quick-bar-taxi');
+                const barTrip = document.getElementById('yn-quick-bar-trip');
                 const barComm = document.getElementById('yn-quick-bar-comm');
-                if (barTaxi) barTaxi.style.display = (grp === 'TAXI' || grp === 'ALL') ? 'flex' : 'none';
-                if (barComm) barComm.style.display = grp === 'COMMUNICATION' ? 'flex' : 'none';
+                if (barTrip) barTrip.style.display = (grp === 'COMMUNICATION') ? 'none' : 'flex';
+                if (barComm) barComm.style.display = (grp === 'COMMUNICATION') ? 'flex' : 'none';
                 renderInvoiceTable();
             });
         });
@@ -1529,6 +1350,7 @@ function bindEvents() {
         if (btnSave) btnSave.addEventListener('click', executeBatchSave);
     }
 }
+
 
 // ==========================================
 // 9. 模式 C: 考勤工数系统 (time-mg.huge-vision.com) 核心逻辑与事件
@@ -1807,36 +1629,122 @@ async function executeTimeMgAutofill() {
 }
 
 function checkAndMount() {
-    if (typeof window !== 'undefined' && window.top !== window.self) return;
+    // 智能 iframe 检测：避免在无用隐蔽/微小跟踪 iframe 中挂载
+    if (typeof window !== 'undefined' && window.top !== window.self) {
+        if (window.innerWidth < 250 || window.innerHeight < 200) return;
+
+        // 如果当前 iframe 是发票夹页面，即使不挂载重复的 Dock，也必须启动发票夹 DOM 体检与高亮服务
+        const url = window.location.href;
+        if (url.includes('businessapplication') || url.includes('11ec6dd3fd5cb161bff83bb033997150')) {
+            initInvoicePoolDomService(STATE);
+        }
+
+        try {
+            // 如果顶级窗口同源且已经挂载了全局 Dock，且当前 iframe 并非独立的 FSSC 单据页，避免重复挂载
+            if (window.top && window.top.location.hostname === window.location.hostname) {
+                if (window.top.document.getElementById('autopilot-floating-dock')) {
+                    return;
+                }
+            }
+        } catch {
+            // 跨域受阻，允许在当前窗口正常挂载
+        }
+    }
+
     const mode = detectPageMode();
+    STATE.pageMode = mode;
+    extractUrlParams();
+
+    // 1. 考勤工数系统分支
     if (mode === 'TIME_MG') {
-        STATE.pageMode = mode;
         initTimeMgSystem();
-        console.log(`[IVision FSSC Autopilot v4.4.0] Mounted successfully in [TIME_MG] mode.`);
         return;
     }
-    if (mode && mode !== 'UNKNOWN') {
-        STATE.pageMode = mode;
-        extractUrlParams();
+
+    // 2. 元年云 FSSC / 控制台全景分支
+    const isYuanNian = typeof window !== 'undefined' && (
+        window.location.hostname.includes('yuanian.com') ||
+        mode !== 'UNKNOWN'
+    );
+
+    if (isYuanNian) {
         injectStyles();
+        initWebMcpSystem(STATE);
+
+        // 挂载报销单 / 费用记录 / 发票夹模态框与按需呈现按钮 (进入 Dock)
         createModalDOM(STATE);
         bindEvents();
         updateTokenStatus();
-        console.log(`[IVision FSSC Autopilot v4.4.0] Mounted successfully in [${mode}] mode.`);
+
+        // 挂载出差申请驾驶舱快捷按钮 (进入 Dock)
+        createApplicationLauncherBtn(STATE);
+
+        // 挂载 WebMCP 智能副驾胶囊 (进入 Dock)
+        createWebMcpLauncherBtn(STATE);
+
+        // 启动发票夹发票完整性校验与原生 DOM 高亮服务 (双向保障)
+        initInvoicePoolDomService(STATE);
+
+        // 启动费用记录清单导出与开票行程核对服务
+        initExpenseRecordDomService(STATE);
     }
 }
 
-window.addEventListener('DOMContentLoaded', checkAndMount);
+// 拦截与劫持 SPA 单页应用路由 (Vue Router pushState / replaceState)
+function patchSpaHistoryRouter() {
+    if (typeof window === 'undefined' || (window as any).__autopilot_router_patched) return;
+    (window as any).__autopilot_router_patched = true;
+
+    const rawPush = history.pushState;
+    history.pushState = function(...args) {
+        const res = rawPush.apply(this, args);
+        setTimeout(checkAndMount, 100);
+        return res;
+    };
+
+    const rawReplace = history.replaceState;
+    history.replaceState = function(...args) {
+        const res = rawReplace.apply(this, args);
+        setTimeout(checkAndMount, 100);
+        return res;
+    };
+}
+
+// 监听 DOM 变动守卫，防止 Vue 异步刷新 body 导致 Dock 丢失
+function setupDomObserver() {
+    if (typeof document === 'undefined' || !document.body || (window as any).__autopilot_observer_active) return;
+    (window as any).__autopilot_observer_active = true;
+
+    const observer = new MutationObserver(() => {
+        const isYuanNian = window.location.hostname.includes('yuanian.com');
+        if (isYuanNian) {
+            const hasDock = document.getElementById('autopilot-floating-dock');
+            const hasTripBtn = document.getElementById('autopilot-trip-launcher');
+            const hasWebMcpBtn = document.getElementById('autopilot-webmcp-launcher');
+            if (!hasDock || !hasTripBtn || !hasWebMcpBtn) {
+                checkAndMount();
+            }
+        }
+    });
+
+    observer.observe(document.body, { childList: true, subtree: false });
+}
+
+patchSpaHistoryRouter();
+
+window.addEventListener('DOMContentLoaded', () => {
+    checkAndMount();
+    setupDomObserver();
+});
 window.addEventListener('hashchange', checkAndMount);
 window.addEventListener('popstate', checkAndMount);
 
 if (document.readyState === 'complete' || document.readyState === 'interactive') {
     checkAndMount();
+    setupDomObserver();
 }
 
-// 轮询检查避免 Vue 异步路由渲染遗漏
+// 周期性幂等心跳检查，保障任何突发情况下副驾坞与按钮 100% 在线
 setInterval(() => {
-    if (!document.getElementById('yn-batch-helper-btn') && !document.getElementById('yn-timemg-helper-btn')) {
-        checkAndMount();
-    }
-}, 1500);
+    checkAndMount();
+}, 2000);

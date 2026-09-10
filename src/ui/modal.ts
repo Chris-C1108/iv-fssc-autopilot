@@ -1,17 +1,23 @@
 import { GlobalState } from '../types/state';
 import { MENU_DICTIONARY } from '../config/constants';
+import { mountToDock, updateDockBadge } from './floatingDock';
 
 export function createModalDOM(state: GlobalState): { btn: HTMLElement; modal: HTMLElement; mask: HTMLElement } {
-    let btn = document.getElementById('yn-batch-helper-btn');
-    if (!btn) {
-        btn = document.createElement('button');
-        btn.id = 'yn-batch-helper-btn';
-        document.body.appendChild(btn);
-    }
+    const btnId = 'yn-batch-helper-btn';
+    const btn = mountToDock(btnId, () => {
+        const b = document.createElement('button');
+        b.id = btnId;
+        return b;
+    });
+
+    const shouldShow = state.pageMode === 'BILL' || state.pageMode === 'POOL' || state.pageMode === 'EXPENSE';
+    btn.style.display = shouldShow ? 'flex' : 'none';
+
     btn.innerHTML = `
         <span class="yn-badge ${state.loginToken ? '' : 'offline'}"></span>
         <span>${state.pageMode === 'BILL' ? '⚡ 报销单预算批量修改' : '⚡ 报销批量助手'}</span>
     `;
+    updateDockBadge();
 
     let mask = document.getElementById('yn-modal-mask');
     if (!mask) {
@@ -160,35 +166,57 @@ export function createModalDOM(state: GlobalState): { btn: HTMLElement; modal: H
 
                 <div class="yn-group-tabs">
                     <button class="yn-tab-btn active" data-group="TAXI" id="yn-tab-taxi">
-                        🚕 出租车 (市内交通) <span class="yn-tab-count" id="yn-count-taxi">0</span>
+                        🚕 出租车/交通 <span class="yn-tab-count" id="yn-count-taxi">0</span>
+                    </button>
+                    <button class="yn-tab-btn" data-group="FLIGHT_TRAIN" id="yn-tab-flight-train">
+                        ✈️ 飞机/高铁 <span class="yn-tab-count" id="yn-count-flight-train">0</span>
+                    </button>
+                    <button class="yn-tab-btn" data-group="HOTEL" id="yn-tab-hotel">
+                        🏨 住宿费 <span class="yn-tab-count" id="yn-count-hotel">0</span>
                     </button>
                     <button class="yn-tab-btn" data-group="COMMUNICATION" id="yn-tab-comm">
-                        📱 通信费 (员工手机费) <span class="yn-tab-count" id="yn-count-comm">0</span>
+                        📱 通信费 <span class="yn-tab-count" id="yn-count-comm">0</span>
                     </button>
                     <button class="yn-tab-btn" data-group="ALL" id="yn-tab-all">
-                        📋 全部记录 <span class="yn-tab-count" id="yn-count-all">0</span>
+                        📋 全部记录 (15类) <span class="yn-tab-count" id="yn-count-all">0</span>
                     </button>
                 </div>
 
-                <div class="yn-quick-bar" id="yn-quick-bar-taxi">
-                    <strong>🚕 出租车设定：</strong>
+                <!-- 智能差旅与行程推断设定面板 -->
+                <div class="yn-quick-bar" id="yn-quick-bar-trip" style="flex-wrap: wrap; gap: 8px;">
+                    <strong>🎯 智能行程与分类推断：</strong>
+                    <span>模式: </span>
+                    <select id="yn-quick-trip-type" style="font-weight: bold; color: #1890ff;">
+                        <option value="AUTO">✨ 自动识别 (根据酒店/机票)</option>
+                        <option value="BUSINESS_TRIP">✈️ 异地出差模式 (机场+酒店早出晚归)</option>
+                        <option value="LOCAL_COMMUTE">🏢 市内日常通勤 (公司 ⇄ 客户)</option>
+                    </select>
                     <span>本公司: </span>
-                    <input type="text" id="yn-quick-company" value="IVISION" style="width:85px; font-weight:bold; background:#fafafa;" />
-                    <span>拜访客户名: </span>
-                    <input type="text" id="yn-quick-customer" value="CMP" placeholder="如: CMP" style="width:95px; font-weight:bold;" />
-                    <span>目的说明/项目号: </span>
-                    <input type="text" id="yn-quick-taxi-desc" value="" placeholder="选填：如无需填写可留空" style="width:160px;" />
-                    <button class="yn-btn yn-btn-smart" id="yn-btn-smart-commute">✨ 智能推断早晚往返行程</button>
+                    <input type="text" id="yn-quick-company" value="IVISION" style="width:75px; font-weight:bold; background:#fafafa;" />
+                    <span>拜访客户: </span>
+                    <input type="text" id="yn-quick-customer" value="CMP" placeholder="如: CMP" style="width:85px; font-weight:bold;" />
+                    <span>入住酒店: </span>
+                    <input type="text" id="yn-quick-hotel" value="" placeholder="如: 美悦酒店/亚朵" style="width:110px;" />
+                    <span>机场/车站: </span>
+                    <input type="text" id="yn-quick-station" value="机场/高铁站" style="width:90px;" />
+                    <span>关联项目: </span>
+                    <input type="text" id="yn-quick-project" value="" placeholder="如: X2605-001" style="width:95px;" />
+                    <span>代外驻报销: </span>
+                    <input type="text" id="yn-quick-proxy" value="" placeholder="外驻姓名，如: 成勇" style="width:95px; color:#d46b08; font-weight:600;" />
+                    <button class="yn-btn yn-btn-smart" id="yn-btn-smart-commute" style="font-weight:600; padding:4px 14px;">
+                        ✨ 智能推断全量行程与分类
+                    </button>
                 </div>
 
                 <div class="yn-quick-bar" id="yn-quick-bar-comm" style="display:none;">
-                    <strong>📱 通信费设定：</strong>
+                    <strong>📱 通信费快捷设定：</strong>
                     <span>发生年月/期间: </span>
                     <input type="text" id="yn-quick-comm-period" placeholder="自动计算或输入如: 2026-05" style="width:160px;" />
-                    <span>目的说明/项目号: </span>
+                    <span>费用说明/项目: </span>
                     <input type="text" id="yn-quick-comm-desc" value="" placeholder="选填：可留空" style="width:160px;" />
                     <button class="yn-btn yn-btn-primary" id="yn-btn-apply-comm">⚡ 应用至勾选行</button>
                 </div>
+
 
                 <div class="yn-table-container">
                     <table class="yn-table" id="yn-records-table">

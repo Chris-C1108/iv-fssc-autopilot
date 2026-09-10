@@ -19,16 +19,26 @@ export function isWorkdayDate(dateStr: string): boolean {
 }
 
 export function computePreviousMonthPeriod(dateStr: string): string {
-    const norm = normalizeDate(dateStr);
-    if (!norm) return '';
-    const parts = norm.split('-');
-    if (parts.length < 2) return '';
-    let year = parseInt(parts[0], 10);
-    let month = parseInt(parts[1], 10);
-    month -= 1;
-    if (month === 0) {
-        month = 12;
-        year -= 1;
-    }
-    return `${year}-${String(month).padStart(2, '0')}`;
+    return computePeriod(dateStr, true);
 }
+
+export function computePeriod(dateStr: string, isCommunication = false): string {
+    if (!dateStr) return '';
+    const cleanDate = normalizeDate(dateStr);
+    if (cleanDate.length >= 7) {
+        const parts = cleanDate.split('-');
+        let year = parseInt(parts[0], 10);
+        let month = parseInt(parts[1], 10);
+
+        if (isCommunication) {
+            month -= 1;
+            if (month < 1) {
+                month = 12;
+                year -= 1;
+            }
+        }
+        return `${year}-${String(month).padStart(2, '0')}`;
+    }
+    return '';
+}
+

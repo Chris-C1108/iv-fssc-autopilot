@@ -36,7 +36,7 @@ export class AutopilotLogger {
     }
 
     static getFullLogsText(): string {
-        const header = `=== IVision FSSC Autopilot v4.4.0 执行日志 ===\n生成时间: ${new Date().toLocaleString()}\nURL: ${window.location.href}\n----------------------------------------\n`;
+        const header = `=== IVision FSSC Autopilot v4.36.8 执行日志 ===\n生成时间: ${new Date().toLocaleString()}\nURL: ${window.location.href}\n----------------------------------------\n`;
         const body = this.logHistory.map(l => `[${l.time}] [${l.level}] ${l.message}`).join('\n');
         return header + body;
     }

@@ -1,19 +1,177 @@
+export interface ExpenseTypeDefinition {
+    id: string;
+    code: string;
+    name: string;
+    label: string;
+    category: string;
+    icon: string;
+    iconColor: string;
+    invoiceRequired: boolean;
+}
+
 export const EXPENSE_TYPES = {
+    // 1. 交通/差旅交通
     TAXI: {
         id: '0356c529e72de1653e55bb00bc610001',
+        code: 'DIM_EXP_SNJ_001',
         name: '市内交通费',
-        label: '🚕 出租车 (交通费)',
+        label: '🚕 市内交通费 (日常出租车/网约车)',
+        category: '交通费',
         icon: 'e-private-car-utility-s',
-        iconColor: '#9C61FF'
+        iconColor: '#9C61FF',
+        invoiceRequired: true
     },
+    TRIP_TAXI: {
+        id: '0356c4cef03345af7f1906ec05cc0000',
+        code: 'DIM_EXP_CZC_001',
+        name: '出租车（taxi）',
+        label: '🚕 出租车（taxi · 差旅）',
+        category: '差旅费',
+        icon: 'e-b-t-taxi',
+        iconColor: '#3DBF76',
+        invoiceRequired: true
+    },
+    FLIGHT: {
+        id: '035671613fdde1653e55bb00bc610000',
+        code: 'DIM_EXP_JNC_001',
+        name: '飞机票（航空券）',
+        label: '✈️ 飞机票 (航空券)',
+        category: '差旅费',
+        icon: 'e-plane-ticket',
+        iconColor: '#3DBF76',
+        invoiceRequired: true
+    },
+    TRAIN: {
+        id: '0356c4c2b14de1653e55bb00bc610000',
+        code: 'DIM_EXP_HCP_001',
+        name: '火车公交车票 （電車Bus代）',
+        label: '🚄 火车/公交车票 (電車Bus代)',
+        category: '差旅费',
+        icon: 'e-train',
+        iconColor: '#3DBF76',
+        invoiceRequired: true
+    },
+    TRIP_OTHER_TRAFFIC: {
+        id: '0356c4d862b345af7f1906ec05cc0001',
+        code: 'DIM_EXP_JTF_002',
+        name: '交通费-其他(その他）',
+        label: '🚗 交通费-其他 (その他)',
+        category: '差旅费',
+        icon: 'e-b-t-differential-complement',
+        iconColor: '#3DBF76',
+        invoiceRequired: true
+    },
+
+    // 2. 住宿
+    HOTEL: {
+        id: '0356c4e2b72de1653e55bb00bc610001',
+        code: 'DIM_EXP_ZSF_001',
+        name: '住宿费（宿泊代）',
+        label: '🏨 住宿费 (宿泊代)',
+        category: '差旅费',
+        icon: 'e-expenseclaim-hotel',
+        iconColor: '#3DBF76',
+        invoiceRequired: true
+    },
+
+    // 3. 通信费
     COMMUNICATION: {
         id: '0356c577f8ede1653e55bb00bc610001',
+        code: 'DIM_EXP_TXF_001',
         name: '通信费-员工手机费',
-        label: '📱 通信费 (手机费)',
-        icon: 'e-phone-fee',
-        iconColor: '#2B85FF'
+        label: '📱 通信费 (员工手机费)',
+        category: '其他费用',
+        icon: 'e-mobile-phone-charges',
+        iconColor: '#2B85FF',
+        invoiceRequired: true
+    },
+    COMMUNICATION_FAX: {
+        id: '0356c4f6701345af7f1906ec05cc0000',
+        code: 'DIM_EXP_TXC_001',
+        name: '通信传真费（通信代）',
+        label: '📠 通信传真费 (通信代)',
+        category: '差旅费',
+        icon: 'e-mobile-phone-charges',
+        iconColor: '#3DBF76',
+        invoiceRequired: true
+    },
+
+    // 4. 会议与交际
+    MEETING: {
+        id: '0356c563094345af7f1906ec05cc0001',
+        code: 'DIM_EXP_HYF_001',
+        name: '会议费',
+        label: '☕ 会议费',
+        category: '其他费用',
+        icon: 'e-self-use-conference-fee',
+        iconColor: '#F86574',
+        invoiceRequired: true
+    },
+    ENTERTAINMENT_EXTERNAL: {
+        id: '0356c536aa6345af7f1906ec05cc0001',
+        code: 'DIM_EXP_SWJ_002',
+        name: '社外交际费',
+        label: '🤝 社外交际费',
+        category: '交际费',
+        icon: 'e-train',
+        iconColor: '#F59A45',
+        invoiceRequired: true
+    },
+    ENTERTAINMENT_INTERNAL: {
+        id: '0356c541ccf345af7f1906ec05cc0001',
+        code: 'DIM_EXP_SNJ_002',
+        name: '社内交际费',
+        label: '🍱 社内交际费',
+        category: '交际费',
+        icon: 'e-overtime-meals',
+        iconColor: '#F59A45',
+        invoiceRequired: true
+    },
+    TEAM_BUILDING: {
+        id: '0356c56b795de1653e55bb00bc610001',
+        code: 'DIM_EXP_YBF_001',
+        name: '一般福利费-部门团建',
+        label: '🎉 部门团建 (福利费)',
+        category: '其他费用',
+        icon: 'e-overtime-meals',
+        iconColor: '#F86574',
+        invoiceRequired: true
+    },
+
+    // 5. 培训与综合其他
+    TRAINING: {
+        id: '035d83a77c2de1653e55bb00bc610000',
+        code: 'DIM_EXP_TXF_002',
+        name: '培训费',
+        label: '📚 培训费',
+        category: '其他费用',
+        icon: 'e-mobile-phone-charges',
+        iconColor: '#F86574',
+        invoiceRequired: true
+    },
+    TRIP_OTHER: {
+        id: '0356c50fb32345af7f1906ec05cc0000',
+        code: 'DIM_EXP_CLF_001',
+        name: '差旅费-其他(その他）',
+        label: '🎒 差旅费-其他 (その他)',
+        category: '差旅费',
+        icon: 'e-a-travle-grants-s',
+        iconColor: '#3DBF76',
+        invoiceRequired: true
+    },
+    OTHER: {
+        id: '0356c583e17de1653e55bb00bc610000',
+        code: 'DIM_EXP_QTF_002',
+        name: '其他费用',
+        label: '📦 其他费用',
+        category: '其他费用',
+        icon: 'e-train',
+        iconColor: '#F86574',
+        invoiceRequired: true
     }
 };
+
+export const ALL_EXPENSE_TYPE_LIST: ExpenseTypeDefinition[] = Object.values(EXPENSE_TYPES);
 
 export const MENU_DICTIONARY = {
     accounts: [
@@ -81,5 +239,39 @@ export const BUDGET_CONSTANTS = {
     defaultKhfd: {
         value: '6b8ff07f9ebe11e88b7247d35c1e5077',
         title: '是(YES)'
+    }
+};
+
+export const TRIP_CONSTANTS = {
+    billDefineId: '0355cf627fede1653e55bb00bc610001',
+    billTypeId: 'd50efa246a0111e886f4d1f57da744a6',
+    billTypeCode: 'FYSQL',
+    mainAreaId: '59b6f7cec84e441db2fea4a63700a175',
+    budgetAreaId: '203d2e64f6bd4b32a8c83d030fb32676',
+    tripDetailAreaId: '035609b3ce5345af7f1906ec05cc0000',
+    cityDimObjectId: '6b8ff0649ebe11e88b72df10cd5db793',
+    personDimObjectId: '6b8ce3209ebe11e88b72d1f897294e91',
+    projectDimObjectId: '6b8ce3199ebe11e88b72a97a1dba5a21',
+
+    // 默认选项
+    cclx: {
+        value: '03560c40cb4de1653e55bb00bc610000',
+        title: { zh_CN: '境内出張' }
+    },
+    sqdjqf: {
+        value: '036827cc9bb92ed32ae0a6e43fe00000',
+        title: { zh_CN: '新建' }
+    },
+    xmxg: {
+        value: '6b8ff07f9ebe11e88b7247d35c1e5077',
+        title: { zh_CN: '是' }
+    },
+    account: {
+        value: '03561d1db6a345af7f1906ec05cc0000',
+        title: { zh_CN: '项目预算' }
+    },
+    khfd: {
+        value: '6b8ff0809ebe11e88b7219c3aed96e32',
+        title: { zh_CN: '否' }
     }
 };

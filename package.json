@@ -1,6 +1,6 @@
 {
   "name": "iv-fssc-autopilot",
-  "version": "4.4.6",
+  "version": "4.37.0",
   "description": "IVision FSSC Autopilot (元年云费控极速自动驾驶副驾) - 全流程全能批量助手",
   "author": "Chris-C1108",
   "license": "MIT",
@@ -16,12 +16,21 @@
   "devDependencies": {
     "@rollup/plugin-commonjs": "^28.0.2",
     "@rollup/plugin-node-resolve": "^16.0.0",
+    "@rollup/plugin-replace": "^6.0.3",
     "@rollup/plugin-typescript": "^12.1.2",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
     "@types/tampermonkey": "^5.0.0",
     "javascript-obfuscator": "^4.1.1",
     "rollup": "^4.34.8",
     "rollup-plugin-javascript-obfuscator": "^1.0.4",
     "tslib": "^2.8.1",
     "typescript": "^5.7.3"
+  },
+  "dependencies": {
+    "@runtypelabs/persona": "^4.22.0",
+    "markstream-react": "^2.0.9",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
   }
 }
