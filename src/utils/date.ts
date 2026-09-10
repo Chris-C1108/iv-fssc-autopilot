@@ -1,13 +1,23 @@
 export function normalizeDate(str: string): string {
     if (!str) return '';
-    const m = String(str).match(/(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
-    if (m) {
-        const y = m[1];
-        const month = m[2].padStart(2, '0');
-        const d = m[3].padStart(2, '0');
+    const clean = String(str).trim();
+    // 1. 标准 YYYY-MM-DD / YYYY/MM/DD / YYYY.MM.DD
+    const m1 = clean.match(/(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+    if (m1) {
+        const y = m1[1];
+        const month = m1[2].padStart(2, '0');
+        const d = m1[3].padStart(2, '0');
         return `${y}-${month}-${d}`;
     }
-    return String(str).trim();
+    // 2. 美式 MM/DD/YYYY
+    const m2 = clean.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
+    if (m2) {
+        const y = m2[3];
+        const month = m2[1].padStart(2, '0');
+        const d = m2[2].padStart(2, '0');
+        return `${y}-${month}-${d}`;
+    }
+    return clean;
 }
 
 export function isWorkdayDate(dateStr: string): boolean {

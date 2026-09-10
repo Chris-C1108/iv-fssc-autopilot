@@ -1565,17 +1565,106 @@ function extractDropdownText(val: any): string {
 function extractDateOnly(val: any): string {
     if (!val) return '';
     const str = String(val).trim();
-    const match = str.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/);
-    if (match) {
-        return `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
-    }
     return normalizeDate(str) || '';
+}
+
+/**
+ * 全方位探测并提取超标说明 (兼容 rowDatas、rec 列表项及详情 fullData 中的所有变体字段与数据包装)
+ */
+export function extractOverStandardDescription(rowDatas: any, rec?: any, fullData?: any): string {
+    const isMeaningful = (s: any): boolean => {
+        if (!s || typeof s !== 'string') return false;
+        const clean = s.trim();
+        return clean.length > 0 && clean !== 'true' && clean !== 'false' && clean !== '是' && clean !== '否' && clean !== '[object Object]';
+    };
+
+    const tryExtract = (cand: any): string => {
+        if (!cand) return '';
+        if (typeof cand === 'string' && isMeaningful(cand)) return cand.trim();
+        if (typeof cand === 'object') {
+            if (cand.value !== undefined && cand.value !== null) {
+                if (typeof cand.value === 'string' && isMeaningful(cand.value)) return cand.value.trim();
+                const dt = extractDropdownText(cand.value);
+                if (isMeaningful(dt)) return dt;
+            }
+            if (cand.showValue && typeof cand.showValue === 'string' && isMeaningful(cand.showValue)) return cand.showValue.trim();
+            if (cand.text && typeof cand.text === 'string' && isMeaningful(cand.text)) return cand.text.trim();
+            const dt = extractDropdownText(cand);
+            if (isMeaningful(dt)) return dt;
+        }
+        return '';
+    };
+
+    // 1. rowDatas 常见别名
+    const rowCandidates = [
+        rowDatas?.OVER_STANDARD_DESCRIPTION,
+        rowDatas?.OVER_STANDARD_REASON,
+        rowDatas?.OVER_STANDARD_DESC,
+        rowDatas?.OVER_STAND_DESC,
+        rowDatas?.EXCEED_STANDARD_DESCRIPTION,
+        rowDatas?.EXCEED_STANDARD_REASON,
+        rowDatas?.OVER_REASON,
+        rowDatas?.REASON_OVER_STANDARD,
+        rowDatas?.OVER_STANDARD_MEMO,
+        rowDatas?.F_OVER_STANDARD_DESC,
+        rowDatas?.F_OVER_STANDARD_REASON,
+        rowDatas?.F_ZSC_DEF_002
+    ];
+    for (const c of rowCandidates) {
+        const val = tryExtract(c);
+        if (val) return val;
+    }
+
+    // 2. rowDatas 正则模糊扫描 (防止租户自定义别名)
+    if (rowDatas && typeof rowDatas === 'object') {
+        for (const [key, field] of Object.entries(rowDatas)) {
+            if (/OVER.*STAND|EXCEED.*STAND|超标/i.test(key)) {
+                const val = tryExtract(field);
+                if (val) return val;
+            }
+        }
+    }
+
+    // 3. rec (宿主列表项) 探测
+    const recCandidates = [
+        rec?.overStandardDescription,
+        rec?.overStandardReason,
+        rec?.overStandardDesc,
+        rec?.overStandardRemark,
+        rec?.OVER_STANDARD_DESCRIPTION,
+        rec?.OVER_STANDARD_REASON,
+        rec?.exceedStandardDescription,
+        rec?.exceedStandardReason,
+        rec?.rowDatas?.OVER_STANDARD_DESCRIPTION
+    ];
+    for (const c of recCandidates) {
+        const val = tryExtract(c);
+        if (val) return val;
+    }
+
+    // 4. fullData (详情接口完整响应) 探测
+    const fullCandidates = [
+        fullData?.expenseRecord?.overStandardDescription,
+        fullData?.expenseRecord?.overStandardReason,
+        fullData?.expenseRecord?.OVER_STANDARD_DESCRIPTION,
+        fullData?.expenseRecord?.OVER_STANDARD_REASON,
+        fullData?.overStandardDescription,
+        fullData?.overStandardReason,
+        fullData?.mainData?.overStandardDescription,
+        fullData?.mainData?.OVER_STANDARD_DESCRIPTION
+    ];
+    for (const c of fullCandidates) {
+        const val = tryExtract(c);
+        if (val) return val;
+    }
+
+    return '';
 }
 
 /**
  * 从 YuanNian 费用记录行数据 (rowDatas) 中精准提取已持久化保存的动态必填字段
  */
-export function extractSavedDynamicFields(rowDatas: any): DynamicExpenseFieldValues {
+export function extractSavedDynamicFields(rowDatas: any, rec?: any, fullData?: any): DynamicExpenseFieldValues {
     if (!rowDatas || typeof rowDatas !== 'object') return {};
     const dyn: DynamicExpenseFieldValues = {};
 
@@ -1603,8 +1692,11 @@ export function extractSavedDynamicFields(rowDatas: any): DynamicExpenseFieldVal
     if (rowDatas.ROOM_NUM?.value !== undefined && rowDatas.ROOM_NUM?.value !== null) {
         dyn.roomNum = Number(rowDatas.ROOM_NUM.value) || 1;
     }
-    if (rowDatas.OVER_STANDARD_DESCRIPTION?.value) {
-        dyn.overStandardDescription = String(rowDatas.OVER_STANDARD_DESCRIPTION.value).trim();
+    
+    // 超标说明 (全方位探测提取)
+    const overDesc = extractOverStandardDescription(rowDatas, rec, fullData);
+    if (overDesc) {
+        dyn.overStandardDescription = overDesc;
     }
 
     // 2. 飞机票
@@ -2005,7 +2097,7 @@ export async function fetchExpenseRecordsWithInvoiceDetails(
             });
             const rowDatas = ruleData?.rowDatas || {};
             const invList: any[] = rowDatas?.expenseRecordInvoiceList?.value || [];
-            const savedDynamicFields = extractSavedDynamicFields(rowDatas);
+            const savedDynamicFields = extractSavedDynamicFields(rowDatas, rec, ruleData?.fullData);
 
             const baseRowInfo = {
                 expenseRecordId: rec.expenseRecordId || '',
