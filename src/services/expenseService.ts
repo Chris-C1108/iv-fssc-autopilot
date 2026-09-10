@@ -1052,14 +1052,15 @@ export async function saveSingleExpenseItemApi(row: InvoiceItem, state: GlobalSt
             stayDays = diff > 0 ? diff : 1;
         }
 
+        const roomNum = row.roomNum || (rowDatas.ROOM_NUM?.value !== undefined && rowDatas.ROOM_NUM?.value !== null ? Number(rowDatas.ROOM_NUM.value) : 1) || 1;
         const totalAmount = (row.amount && row.amount > 0) ? row.amount : (rowDatas.AMOUNT?.value?.amount || 0);
-        const unitPriceVal = Math.round((totalAmount / stayDays) * 100) / 100;
+        const unitPriceVal = Math.round((totalAmount / (stayDays * roomNum)) * 100) / 100;
 
         if (rowDatas.HOTEL_NAME) rowDatas.HOTEL_NAME.value = row.hotelName || row.endAddress || '';
         if (rowDatas.CHECK_IN_DATE && checkIn) rowDatas.CHECK_IN_DATE.value = `${checkIn} 00:00:00`;
         if (rowDatas.CHECK_OUT_DATE && checkOut) rowDatas.CHECK_OUT_DATE.value = `${checkOut} 00:00:00`;
         if (rowDatas.STAY_DAYS) rowDatas.STAY_DAYS.value = stayDays;
-        if (rowDatas.ROOM_NUM) rowDatas.ROOM_NUM.value = 1;
+        if (rowDatas.ROOM_NUM) rowDatas.ROOM_NUM.value = roomNum;
 
         if (rowDatas.UNIT_PRICE) {
             rowDatas.UNIT_PRICE.value = {
@@ -2475,7 +2476,7 @@ function ensureExpenseRowField(
                 ensureExpenseRowField(rowDatas, 'STAY_DAYS', stayDays, 'NUMBER');
 
                 const totalAmount = Number(rowDatas.AMOUNT?.value?.amount) || 0;
-                const unitPriceVal = Math.round((totalAmount / stayDays) * 100) / 100;
+                const unitPriceVal = Math.round((totalAmount / (stayDays * roomNum)) * 100) / 100;
                 rowDatas.UNIT_PRICE = {
                     dataType: 'MONEY',
                     required: true,
@@ -2562,26 +2563,41 @@ function ensureExpenseRowField(
                 }
 
                 // 5.2.1 住宿费超标说明自动自愈与必填守卫 (彻底解决“保存校验拦截: 超标说明必填”)
-                const isOverStandard = rowDatas.OVER_STANDARD?.value?.title?.zh_CN === '是' ||
-                    rowDatas.OVER_STANDARD?.value === true ||
-                    rowDatas.OVER_STANDARD_DESCRIPTION?.required === true ||
-                    (rowDatas.UNIT_PRICE?.value?.amount && rowDatas.STANDARD_VALUE?.value?.amount &&
-                        rowDatas.UNIT_PRICE.value.amount > rowDatas.STANDARD_VALUE.value.amount);
+                const currentStdAmount = Number(rowDatas.STANDARD_VALUE?.value?.amount) || stdAmt;
+                const isOverStandard = unitPriceVal > currentStdAmount;
+
+                // 同步更新 OVER_STANDARD 字段 (是 / 否)
+                const overValId = isOverStandard ? '6b8ff07f9ebe11e88b7247d35c1e5077' : '6b8ff0809ebe11e88b7219c3aed96e32';
+                const overTitle = isOverStandard ? '是' : '否';
+                if (rowDatas.OVER_STANDARD) {
+                    rowDatas.OVER_STANDARD.value = {
+                        icon: '',
+                        iconColor: '',
+                        title: { zh_CN: overTitle },
+                        value: overValId
+                    };
+                    hasChanged = true;
+                }
+
+                if (rowDatas.OVER_STANDARD_DESCRIPTION) {
+                    rowDatas.OVER_STANDARD_DESCRIPTION.required = isOverStandard;
+                }
 
                 if (isOverStandard) {
                     result.hasOverStandard = true;
                     result.overStandardCount = (result.overStandardCount || 0) + 1;
-                }
-
-                if (isOverStandard || (rowDatas.OVER_STANDARD_DESCRIPTION && !rowDatas.OVER_STANDARD_DESCRIPTION.value)) {
                     const overReason = (dyn.overStandardDescription && dyn.overStandardDescription.trim()) ||
                         (rowDatas.OVER_STANDARD_DESCRIPTION?.value ? String(rowDatas.OVER_STANDARD_DESCRIPTION.value).trim() : '');
                     if (overReason) {
                         if (ensureExpenseRowField(rowDatas, 'OVER_STANDARD_DESCRIPTION', overReason, 'MTEXT')) {
                             hasChanged = true;
                         }
-                    } else if (isOverStandard) {
-                        throw new Error(`住宿费单价已超标，超标说明为必填项，请填写理由或点击 📋 拷贝“费用说明”后再保存！`);
+                    } else {
+                        throw new Error(`住宿费单价已超标（单价 ¥${unitPriceVal} > 标准 ¥${currentStdAmount}），超标说明为必填项，请填写理由或点击 📋 拷贝“费用说明”后再保存！`);
+                    }
+                } else {
+                    if (dyn.overStandardDescription !== undefined) {
+                        ensureExpenseRowField(rowDatas, 'OVER_STANDARD_DESCRIPTION', dyn.overStandardDescription, 'MTEXT');
                     }
                 }
             }

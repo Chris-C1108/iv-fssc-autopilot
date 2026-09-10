@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVision FSSC Autopilot (元年云费控极速自动驾驶副驾)
 // @namespace    https://github.com/Chris-C1108/iv-fssc-autopilot
-// @version      4.37.0
+// @version      4.37.1
 // @description  元年云报销全流程超级副驾：①【发票夹 & 费用记录】全量OCR数据穿透补全(乘车时间/里程100%恢复)、自动识别通信费、自由切换分类、早晚行程智能推断、拖拽多附件；②【经费报销单页】丰富多维菜单Item(科目/项目/成本中心/向客户请款)、自动聚合备注TAG(如X2605-001)、智能检索匹配项目、蝴蝶效应引擎链式联动、一键自动持久化保存(saveBillData)并自动刷新单据视图；③【极速模式】首行蝴蝶+内存克隆+单次入库(30倍提速)。
 // @author       Chris-C1108
 // @match        https://ync37.yuanian.com/*
@@ -5018,8 +5018,9 @@
                 const diff = Math.round((d2 - d1) / (1000 * 60 * 60 * 24));
                 stayDays = diff > 0 ? diff : 1;
             }
+            const roomNum = row.roomNum || (rowDatas.ROOM_NUM?.value !== undefined && rowDatas.ROOM_NUM?.value !== null ? Number(rowDatas.ROOM_NUM.value) : 1) || 1;
             const totalAmount = (row.amount && row.amount > 0) ? row.amount : (rowDatas.AMOUNT?.value?.amount || 0);
-            const unitPriceVal = Math.round((totalAmount / stayDays) * 100) / 100;
+            const unitPriceVal = Math.round((totalAmount / (stayDays * roomNum)) * 100) / 100;
             if (rowDatas.HOTEL_NAME)
                 rowDatas.HOTEL_NAME.value = row.hotelName || row.endAddress || '';
             if (rowDatas.CHECK_IN_DATE && checkIn)
@@ -5029,7 +5030,7 @@
             if (rowDatas.STAY_DAYS)
                 rowDatas.STAY_DAYS.value = stayDays;
             if (rowDatas.ROOM_NUM)
-                rowDatas.ROOM_NUM.value = 1;
+                rowDatas.ROOM_NUM.value = roomNum;
             if (rowDatas.UNIT_PRICE) {
                 rowDatas.UNIT_PRICE.value = {
                     amount: unitPriceVal,
@@ -6221,7 +6222,7 @@
                             }
                             ensureExpenseRowField(rowDatas, 'STAY_DAYS', stayDays, 'NUMBER');
                             const totalAmount = Number(rowDatas.AMOUNT?.value?.amount) || 0;
-                            const unitPriceVal = Math.round((totalAmount / stayDays) * 100) / 100;
+                            const unitPriceVal = Math.round((totalAmount / (stayDays * roomNum)) * 100) / 100;
                             rowDatas.UNIT_PRICE = {
                                 dataType: 'MONEY',
                                 required: true,
@@ -6303,16 +6304,26 @@
                                 hasChanged = true;
                             }
                             // 5.2.1 住宿费超标说明自动自愈与必填守卫 (彻底解决“保存校验拦截: 超标说明必填”)
-                            const isOverStandard = rowDatas.OVER_STANDARD?.value?.title?.zh_CN === '是' ||
-                                rowDatas.OVER_STANDARD?.value === true ||
-                                rowDatas.OVER_STANDARD_DESCRIPTION?.required === true ||
-                                (rowDatas.UNIT_PRICE?.value?.amount && rowDatas.STANDARD_VALUE?.value?.amount &&
-                                    rowDatas.UNIT_PRICE.value.amount > rowDatas.STANDARD_VALUE.value.amount);
+                            const currentStdAmount = Number(rowDatas.STANDARD_VALUE?.value?.amount) || stdAmt;
+                            const isOverStandard = unitPriceVal > currentStdAmount;
+                            // 同步更新 OVER_STANDARD 字段 (是 / 否)
+                            const overValId = isOverStandard ? '6b8ff07f9ebe11e88b7247d35c1e5077' : '6b8ff0809ebe11e88b7219c3aed96e32';
+                            const overTitle = isOverStandard ? '是' : '否';
+                            if (rowDatas.OVER_STANDARD) {
+                                rowDatas.OVER_STANDARD.value = {
+                                    icon: '',
+                                    iconColor: '',
+                                    title: { zh_CN: overTitle },
+                                    value: overValId
+                                };
+                                hasChanged = true;
+                            }
+                            if (rowDatas.OVER_STANDARD_DESCRIPTION) {
+                                rowDatas.OVER_STANDARD_DESCRIPTION.required = isOverStandard;
+                            }
                             if (isOverStandard) {
                                 result.hasOverStandard = true;
                                 result.overStandardCount = (result.overStandardCount || 0) + 1;
-                            }
-                            if (isOverStandard || (rowDatas.OVER_STANDARD_DESCRIPTION && !rowDatas.OVER_STANDARD_DESCRIPTION.value)) {
                                 const overReason = (dyn.overStandardDescription && dyn.overStandardDescription.trim()) ||
                                     (rowDatas.OVER_STANDARD_DESCRIPTION?.value ? String(rowDatas.OVER_STANDARD_DESCRIPTION.value).trim() : '');
                                 if (overReason) {
@@ -6320,8 +6331,13 @@
                                         hasChanged = true;
                                     }
                                 }
-                                else if (isOverStandard) {
-                                    throw new Error(`住宿费单价已超标，超标说明为必填项，请填写理由或点击 📋 拷贝“费用说明”后再保存！`);
+                                else {
+                                    throw new Error(`住宿费单价已超标（单价 ¥${unitPriceVal} > 标准 ¥${currentStdAmount}），超标说明为必填项，请填写理由或点击 📋 拷贝“费用说明”后再保存！`);
+                                }
+                            }
+                            else {
+                                if (dyn.overStandardDescription !== undefined) {
+                                    ensureExpenseRowField(rowDatas, 'OVER_STANDARD_DESCRIPTION', dyn.overStandardDescription, 'MTEXT');
                                 }
                             }
                         }
@@ -68917,10 +68933,11 @@
         if (isNaN(d1) || isNaN(d2) || d2 <= d1)
             return false;
         const nights = Math.max(1, Math.round((d2 - d1) / (1000 * 60 * 60 * 24)));
+        const roomNum = Math.max(1, Number(dyn.roomNum) || 1);
         const city = (dyn.city || '').replace(/市|区|县/g, '').trim();
         const isTier1 = /北京|上海|广州|深圳/.test(city);
         const standardLimit = isTier1 ? 800 : 700;
-        const unitPrice = amount / nights;
+        const unitPrice = Math.round((amount / (nights * roomNum)) * 100) / 100;
         return unitPrice > standardLimit;
     }
     /**
@@ -71949,10 +71966,10 @@ JSON 输出格式严格遵循：
                             }
                         }
                         if (['dynCity', 'dynCheckIn', 'dynCheckOut', 'dynRoomNum'].includes(dynKey) && getGroupCategory(group) === 'HOTEL') {
+                            const tr = input.closest('tr');
+                            const overInp = tr?.querySelector('input[data-dynkey="dynOverStandard"]');
+                            const overTd = overInp?.closest('td');
                             if (isHotelGroupOverStandard(group)) {
-                                const tr = input.closest('tr');
-                                const overInp = tr?.querySelector('input[data-dynkey="dynOverStandard"]');
-                                const overTd = overInp?.closest('td');
                                 const currentOverVal = (group.dynamicFields?.overStandardDescription || '').trim();
                                 if (!currentOverVal) {
                                     overTd?.classList.add('yn-bem-dyn-cell-empty');
@@ -71960,6 +71977,12 @@ JSON 输出格式严格遵循：
                                         overInp.placeholder = '超标必填 (自主填写或点击📋拷贝)';
                                 }
                                 showToast('warning', '⚠️ 检测到住宿费单价超出城市限额，超标说明为必填项！请在表格中自主输入理由或点击 📋 拷贝“费用说明”。', 6000);
+                            }
+                            else {
+                                overTd?.classList.remove('yn-bem-dyn-cell-empty');
+                                if (overInp && !group.dynamicFields?.overStandardDescription) {
+                                    overInp.placeholder = '未超标 (选填)';
+                                }
                             }
                         }
                         modalState.selectedRecordIds.add(recordId);

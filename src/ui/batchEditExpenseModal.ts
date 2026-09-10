@@ -915,10 +915,11 @@ export function isHotelGroupOverStandard(group: ExpenseRecordGroup): boolean {
     const d2 = new Date(checkOut).getTime();
     if (isNaN(d1) || isNaN(d2) || d2 <= d1) return false;
     const nights = Math.max(1, Math.round((d2 - d1) / (1000 * 60 * 60 * 24)));
+    const roomNum = Math.max(1, Number(dyn.roomNum) || 1);
     const city = (dyn.city || '').replace(/市|区|县/g, '').trim();
     const isTier1 = /北京|上海|广州|深圳/.test(city);
     const standardLimit = isTier1 ? 800 : 700;
-    const unitPrice = amount / nights;
+    const unitPrice = Math.round((amount / (nights * roomNum)) * 100) / 100;
     return unitPrice > standardLimit;
 }
 
@@ -3973,16 +3974,21 @@ function bindEvents(container: HTMLElement, doc: Document) {
                         }
                     }
                     if (['dynCity', 'dynCheckIn', 'dynCheckOut', 'dynRoomNum'].includes(dynKey) && getGroupCategory(group) === 'HOTEL') {
+                        const tr = input.closest('tr');
+                        const overInp = tr?.querySelector<HTMLInputElement>('input[data-dynkey="dynOverStandard"]');
+                        const overTd = overInp?.closest('td');
                         if (isHotelGroupOverStandard(group)) {
-                            const tr = input.closest('tr');
-                            const overInp = tr?.querySelector<HTMLInputElement>('input[data-dynkey="dynOverStandard"]');
-                            const overTd = overInp?.closest('td');
                             const currentOverVal = (group.dynamicFields?.overStandardDescription || '').trim();
                             if (!currentOverVal) {
                                 overTd?.classList.add('yn-bem-dyn-cell-empty');
                                 if (overInp) overInp.placeholder = '超标必填 (自主填写或点击📋拷贝)';
                             }
                             showToast('warning', '⚠️ 检测到住宿费单价超出城市限额，超标说明为必填项！请在表格中自主输入理由或点击 📋 拷贝“费用说明”。', 6000);
+                        } else {
+                            overTd?.classList.remove('yn-bem-dyn-cell-empty');
+                            if (overInp && !group.dynamicFields?.overStandardDescription) {
+                                overInp.placeholder = '未超标 (选填)';
+                            }
                         }
                     }
                     modalState.selectedRecordIds.add(recordId);
