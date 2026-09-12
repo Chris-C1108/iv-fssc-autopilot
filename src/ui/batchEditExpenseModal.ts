@@ -1,4 +1,4 @@
-import { GlobalState } from '../types/state';
+import { GlobalState, TripApplicationConfig, TripLeg } from '../types/state';
 import { AutopilotLogger } from '../utils/logger';
 import { showToast } from '../utils/toast';
 import { Decimal } from '../utils/decimal';
@@ -13,8 +13,26 @@ import {
     ExpenseTypeTreeNode,
     DynamicExpenseFieldValues
 } from '../services/expenseService';
-import { searchProjectList, fetchLoginUserInfo } from '../services/applicationService';
+import {
+    searchProjectList,
+    fetchLoginUserInfo,
+    createSingleTripApplicationApi,
+    fetchHistoricalTripApplications,
+    crossCheckWithHistoricalApplications,
+    calculateDaysAndNights,
+    computeMealAllowance,
+    parseItineraryTable,
+    DynamicTripInput
+} from '../services/applicationService';
+import { createBillDataAndTemplateByExpenseIdListApi, saveBillDataApi } from '../services/billService';
+import { TRIP_CONSTANTS, BUDGET_CONSTANTS } from '../config/constants';
 import { getInvoicePoolGlobalState } from '../services/invoicePoolDomService';
+
+const BILL_DEFINE_IDS = {
+    TRIP_APPLICATION_SC: '0355cf627fede1653e55bb00bc610001', // 出差申请单 (SC)
+    TRIP_CLAIM_BC: '035a50ee6d3de1653e55bb00bc610001',        // 出差费用报销单 (BC)
+    GENERAL_CLAIM_BJ: '035cd1b4d46de1653e55bb00bc610000'      // 经费报销单 (BJ)
+};
 import { isLlmConfigured, callDirectLlmJson } from '../services/llmService';
 import {
     extractTripSkeleton,
@@ -22,8 +40,32 @@ import {
     mergeInferenceResults,
     detectTypeCategory,
     getGroupCategory,
-    isUnknownTypeGroup
+    isUnknownTypeGroup,
+    getExpenseBillFlow,
+    getGroupBillFlow,
+    checkTaxiMisclassification,
+    ExpenseBillFlow,
+    parseItineraryWithAi,
+    parseItineraryWithAiDetailed
 } from '../services/inferenceService';
+import {
+    batchEditEventBus,
+    inferSelectedFields,
+    parseItinerary,
+    createBillDraft,
+    batchEditTools
+} from '../services/batchEditTools';
+import { MODAL_STYLES } from './styles';
+import React from 'react';
+import { createRoot, Root } from 'react-dom/client';
+import {
+    AssistantChatPanel,
+    ChatMessage,
+    ChatSession,
+    ChatAttachment,
+    ThinkingData,
+    ChatToolCall
+} from './AssistantChatPanel';
 
 declare const unsafeWindow: any;
 
@@ -72,6 +114,9 @@ export interface ExpenseRecordGroup {
     earliestInvoiceDate: string; // 聚合发票中的最早开票日期 (排序主键)
     hasWarn: boolean;
     invoices: ExpenseInvoiceSubItem[];
+    tripId?: string;       // 所属 Trip 唯一标识，如 'trip_1', 'trip_none'
+    tripName?: string;     // 所属 Trip 名称，如 'Trip 1: 2026-07-20 ~ 07-24 · 天津市'
+    tripNo?: number;       // 1, 2...
 }
 
 export interface ColumnDef {
@@ -89,49 +134,162 @@ export interface ColumnDef {
 }
 
 export const COLUMN_DEFINITIONS: ColumnDef[] = [
-    { key: 'earliestInvoiceDate', label: '最早开票日', sticky: 'date', isDate: true },
-    { key: 'businessDate', label: '费用业务日期', isDate: true },
-    { key: 'expenseTypeName', label: '费用类型' },
-    { key: 'expenseAmount', label: '费用金额(元)', align: 'right', isNumeric: true },
-    { key: 'description', label: '费用说明 (合并单列·直接编辑)', width: '280px' },
-    { key: 'invoiceCount', label: '发票张数', align: 'center', isNumeric: true },
+    { key: 'earliestInvoiceDate', label: '最早开票日', width: '76px', sticky: 'date', isDate: true },
+    { key: 'businessDate', label: '费用业务日', width: '78px', isDate: true },
+    { key: 'expenseTypeName', label: '费用类型', width: '100px' },
+    { key: 'expenseAmount', label: '费用金额', width: '80px', align: 'right', isNumeric: true },
+    { key: 'description', label: '费用说明', width: '120px' },
+    { key: 'invoiceCount', label: '发票张数', width: '46px', align: 'center', isNumeric: true },
 
-    // 专属必填字段 13 独立列 (费用主体聚合列，rowspan 合并)
-    { key: 'dynFrom', label: '出发地/站', width: '90px', isDynamic: true, dynFieldKey: 'dynFrom', dynInputType: 'text' },
-    { key: 'dynTo', label: '到达地/站', width: '90px', isDynamic: true, dynFieldKey: 'dynTo', dynInputType: 'text' },
-    { key: 'dynTransitNo', label: '航班号', width: '80px', isDynamic: true, dynFieldKey: 'dynTransitNo', dynInputType: 'text' },
-    { key: 'dynStartDate', label: '起程日期', width: '110px', isDate: true, isDynamic: true, dynFieldKey: 'dynStartDate', dynInputType: 'date' },
-    { key: 'dynEndDate', label: '到达日期', width: '110px', isDate: true, isDynamic: true, dynFieldKey: 'dynEndDate', dynInputType: 'date' },
-    { key: 'dynCheckIn', label: '入住日期', width: '110px', isDate: true, isDynamic: true, dynCategory: 'HOTEL', dynFieldKey: 'checkInDate', dynInputType: 'date' },
-    { key: 'dynCheckOut', label: '离店日期', width: '110px', isDate: true, isDynamic: true, dynCategory: 'HOTEL', dynFieldKey: 'checkOutDate', dynInputType: 'date' },
-    { key: 'dynCity', label: '出差城市', width: '80px', isDynamic: true, dynCategory: 'HOTEL', dynFieldKey: 'city', dynInputType: 'text' },
-    { key: 'dynCityType', label: '住宿城市类型', width: '95px', isDynamic: true, dynCategory: 'HOTEL', dynFieldKey: 'cityType', dynInputType: 'text' },
-    { key: 'dynHotel', label: '酒店名称', width: '130px', isDynamic: true, dynCategory: 'HOTEL', dynFieldKey: 'hotelName', dynInputType: 'text' },
-    { key: 'dynRoomNum', label: '房间数', width: '55px', isNumeric: true, isDynamic: true, dynCategory: 'HOTEL', dynFieldKey: 'roomNum', dynInputType: 'number' },
-    { key: 'dynOverStandard', label: '超标说明', width: '135px', isDynamic: true, dynCategory: 'HOTEL', dynFieldKey: 'overStandardDescription', dynInputType: 'text' },
+    // 专属必填字段 15 独立列 (费用主体聚合列，rowspan 合并)
+    { key: 'dynFrom', label: '出发地/站', width: '68px', isDynamic: true, dynFieldKey: 'dynFrom', dynInputType: 'text' },
+    { key: 'dynTo', label: '到达地/站', width: '68px', isDynamic: true, dynFieldKey: 'dynTo', dynInputType: 'text' },
+    { key: 'dynTransitNo', label: '航班/车次', width: '64px', isDynamic: true, dynFieldKey: 'dynTransitNo', dynInputType: 'text' },
+    { key: 'dynStartDate', label: '起程日期', width: '76px', isDate: true, isDynamic: true, dynFieldKey: 'dynStartDate', dynInputType: 'date' },
+    { key: 'dynEndDate', label: '到达日期', width: '76px', isDate: true, isDynamic: true, dynFieldKey: 'dynEndDate', dynInputType: 'date' },
+    { key: 'dynCheckIn', label: '入住日期', width: '76px', isDate: true, isDynamic: true, dynCategory: 'HOTEL', dynFieldKey: 'checkInDate', dynInputType: 'date' },
+    { key: 'dynCheckOut', label: '离店日期', width: '76px', isDate: true, isDynamic: true, dynCategory: 'HOTEL', dynFieldKey: 'checkOutDate', dynInputType: 'date' },
+    { key: 'dynCity', label: '出差城市', width: '64px', isDynamic: true, dynCategory: 'HOTEL', dynFieldKey: 'city', dynInputType: 'text' },
+    { key: 'dynCityType', label: '城市类型', width: '76px', isDynamic: true, dynCategory: 'HOTEL', dynFieldKey: 'cityType', dynInputType: 'text' },
+    { key: 'dynHotel', label: '酒店名称', width: '88px', isDynamic: true, dynCategory: 'HOTEL', dynFieldKey: 'hotelName', dynInputType: 'text' },
+    { key: 'dynRoomNum', label: '房间数', width: '46px', isNumeric: true, isDynamic: true, dynCategory: 'HOTEL', dynFieldKey: 'roomNum', dynInputType: 'number' },
+    { key: 'dynOverStandard', label: '超标说明', width: '84px', isDynamic: true, dynCategory: 'HOTEL', dynFieldKey: 'overStandardDescription', dynInputType: 'text' },
 
-    { key: 'dynAddrFrom', label: '打车始发地', width: '100px', isDynamic: true, dynCategory: 'TAXI', dynFieldKey: 'startAddress', dynInputType: 'text' },
-    { key: 'dynAddrTo', label: '打车目的地', width: '100px', isDynamic: true, dynCategory: 'TAXI', dynFieldKey: 'endAddress', dynInputType: 'text' },
-    { key: 'dynBillMonth', label: '通信账期', width: '100px', isDynamic: true, dynCategory: 'MOBILE', dynFieldKey: 'billMonth', dynInputType: 'month' },
+    { key: 'dynAddrFrom', label: '打车始发', width: '76px', isDynamic: true, dynCategory: 'TAXI', dynFieldKey: 'startAddress', dynInputType: 'text' },
+    { key: 'dynAddrTo', label: '打车目的', width: '76px', isDynamic: true, dynCategory: 'TAXI', dynFieldKey: 'endAddress', dynInputType: 'text' },
+    { key: 'dynBillMonth', label: '通信账期', width: '68px', isDynamic: true, dynCategory: 'MOBILE', dynFieldKey: 'billMonth', dynInputType: 'month' },
 
     // 发票子明细列 (14 列)
-    { key: 'invoiceIndex', label: '序号', align: 'center', isNumeric: true },
-    { key: 'invoiceType', label: '发票类型' },
-    { key: 'invoiceCode', label: '发票代码' },
-    { key: 'invoiceNo', label: '发票号码' },
-    { key: 'totalAmount', label: '价税合计(元)', align: 'right', isNumeric: true },
-    { key: 'invoiceDate', label: '本张开票日', isDate: true },
-    { key: 'departureTime', label: '行程出发/上车' },
-    { key: 'timeGetOff', label: '行程到达/下车' },
-    { key: 'stationGetOn', label: '始发地/出发站' },
-    { key: 'stationGetOff', label: '目的地/到达站' },
-    { key: 'salesName', label: '销售方/酒店/服务商', width: '160px' },
-    { key: 'fileName', label: '附件文件名', width: '140px' },
-    { key: 'remarks', label: '发票备注', width: '120px' },
-    { key: 'reconciliationNote', label: '行程与开票核对' }
+    { key: 'invoiceIndex', label: '序号', width: '40px', align: 'center', isNumeric: true },
+    { key: 'invoiceType', label: '发票类型', width: '88px' },
+    { key: 'invoiceCode', label: '发票代码', width: '95px' },
+    { key: 'invoiceNo', label: '发票号码', width: '95px' },
+    { key: 'totalAmount', label: '价税合计', width: '82px', align: 'right', isNumeric: true },
+    { key: 'invoiceDate', label: '开票日期', width: '76px', isDate: true },
+    { key: 'departureTime', label: '行程出发', width: '82px' },
+    { key: 'timeGetOff', label: '行程到达', width: '82px' },
+    { key: 'stationGetOn', label: '始发站', width: '76px' },
+    { key: 'stationGetOff', label: '到达站', width: '76px' },
+    { key: 'salesName', label: '销售方/商户', width: '120px' },
+    { key: 'fileName', label: '附件名', width: '100px' },
+    { key: 'remarks', label: '发票备注', width: '90px' },
+    { key: 'reconciliationNote', label: '核对状态', width: '88px' }
 ];
 
 export const DYNAMIC_COLUMNS: ColumnDef[] = COLUMN_DEFINITIONS.filter(c => c.isDynamic);
+
+export type GroupingMode = 'NONE' | 'TRIP' | 'TYPE' | 'TRIP_AND_TYPE';
+
+export {
+    ChatAttachment,
+    ChatMessage,
+    ChatSession,
+    ThinkingData,
+    ChatToolCall
+};
+
+const CHAT_SESSIONS_STORAGE_KEY = 'fssc_autopilot_chat_sessions';
+
+function loadChatSessionsFromStorage(): ChatSession[] {
+    try {
+        if (typeof localStorage !== 'undefined') {
+            const raw = localStorage.getItem(CHAT_SESSIONS_STORAGE_KEY);
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+            }
+        }
+    } catch (e) {}
+    return [
+        {
+            id: 'session_init',
+            title: 'Trip 智能规划与对账分析',
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            messages: []
+        }
+    ];
+}
+
+function saveChatSessionsToStorage(sessions: ChatSession[]) {
+    try {
+        if (typeof localStorage !== 'undefined') {
+            localStorage.setItem(CHAT_SESSIONS_STORAGE_KEY, JSON.stringify(sessions));
+        }
+    } catch (e) {}
+}
+
+export interface AiSkillItem {
+    id: string;
+    command: string;
+    name: string;
+    icon: string;
+    summary: string;
+    hintTitle: string;
+    hintText: string;
+    actionText?: string;
+    actionId?: string;
+    promptTemplate: (count: number, projectName: string, employeeName: string) => string;
+}
+
+export const AI_SKILLS: AiSkillItem[] = [
+    {
+        id: 'infer',
+        command: '/infer',
+        name: '智能推断与行程辅助',
+        icon: '✨',
+        summary: '结合发票票据与行程链条补全交通/住宿/打车必填字段',
+        hintTitle: '出差行程与辅助推断说明',
+        hintText: '发票开票日期通常滞后于实际出差。您可在此直接粘贴出差排期日程（例如日期、省市、客户据点、酒店等，支持 Excel 复制或自然语言描述），亦可上传行程截图/文件。若无需补充行程，可直接发送启动推断。',
+        actionText: '📋 复制排期整理 Prompt',
+        actionId: 'yn-gemini-skill-btn-copy-template',
+        promptTemplate: (count) => `请结合发票证据链（与如下出差行程）智能补全所选 ${count} 笔费用的专属必填字段：\n`
+    },
+    {
+        id: 'itinerary',
+        command: '/itinerary',
+        name: '出差排期规划 Trip',
+        icon: '📋',
+        summary: '粘贴出差排期表格或备忘，由大模型进行往返常识推理并聚类各轮 Trip 区间',
+        hintTitle: '出差排期表格粘贴与 Trip 规划',
+        hintText: '请在下方粘贴包含出行日期、目标城市、拜访客户据点、住宿酒店的排期文本或表格。AI 将以此作为权威客观依据，自动切分出差轮次并按 Trip 进行费用归集。',
+        actionText: '📋 复制排期整理 Prompt',
+        actionId: 'yn-gemini-skill-btn-copy-template',
+        promptTemplate: () => `请帮我解析以下出差日程，识别各轮往返 Trip 并将费用归集：\n`
+    },
+    {
+        id: 'proxy',
+        command: '/proxy',
+        name: '代外驻报销批量格式化',
+        icon: '👥',
+        summary: '设置外驻社员、项目号并批量更新规范费用说明',
+        hintTitle: '代外驻报销参数设置',
+        hintText: '请输入外驻社员姓名与项目编号（如：成勇 外驻深圳 X2605-001），系统将自动更新规范费用说明：[外驻:社员] 项目号 事由。',
+        promptTemplate: (count, prj, emp) => `请设置代外驻报销：\n项目号：${prj || 'X2605-001'}\n外驻社员：${emp || '外驻社员'}\n事由：现场技术支援\n请应用到所选 ${count} 笔费用`
+    },
+    {
+        id: 'audit',
+        command: '/audit',
+        name: '费用合规体检与自愈',
+        icon: '🔍',
+        summary: '体检已选费用记录，排查超标说明缺失、必填字段残缺与跨期开票风险',
+        hintTitle: '费用记录合规体检',
+        hintText: '自动审计已选费用的必填项完整度、住宿费超标说明、开票日期异常度，并生成体检报告与自愈建议。',
+        promptTemplate: (count) => `请对所选 ${count} 笔费用记录进行合规体检，排查缺失必填项与超标风险。`
+    },
+    {
+        id: 'template',
+        command: '/template',
+        name: '复制排期整理 Prompt',
+        icon: '📄',
+        summary: '复制标准 Markdown 出差日程表格整理 Prompt 模板到剪贴板',
+        hintTitle: '标准出差排期 Prompt 模板',
+        hintText: '已准备好用于将复杂非结构化日程整理为标准表格的提示词。点击下方按钮可直接复制到剪贴板。',
+        actionText: '📋 复制 Prompt 模板',
+        actionId: 'yn-gemini-skill-btn-copy-template',
+        promptTemplate: () => `请帮我将原始行程整理为标准 Markdown 排期表格。`
+    }
+];
 
 export interface BatchEditExpenseModalState {
     groups: ExpenseRecordGroup[];
@@ -140,6 +298,13 @@ export interface BatchEditExpenseModalState {
     sortAsc: boolean;
     searchQuery: string;
     filterMode: 'ALL' | 'WARN' | 'MISSING_REQUIRED' | 'OK';
+
+    // 分组展示与折叠
+    groupingMode: GroupingMode;
+    collapsedGroupKeys: Set<string>;
+    tripPlans: TripApplicationConfig[];
+    tripBillCodes: Record<string, string>; // tripId -> 生成的草稿单号，如 'trip_1' -> 'SC26090025'
+    autopilotCommandText: string;
 
     // 列字段值筛选与浮层状态
     columnFilters: Record<string, string[]>;
@@ -166,7 +331,33 @@ export interface BatchEditExpenseModalState {
 
     // Shift 键连选锚点
     lastSelectedRecordId: string | null;
+
+    // 页面交互面板状态
+    batchSettingsDialogOpen: boolean;
+    batchSettingsPanelOpen: boolean;
+    aiPanelOpen: boolean;
+    aiFeedMessages: Array<{ type: 'success' | 'info' | 'warn'; text: string; time: string }>;
+
+    // 连续多轮对话与 Gemini 复合输入卡片 (Screenshot 3 & 4)
+    chatSessions: ChatSession[];
+    currentSessionId: string;
+    currentAttachments: ChatAttachment[];
+    attachedExpenseContextEnabled: boolean;
+    selectedModel: 'flash' | 'pro' | 'flash_lite';
+    historyMenuOpen: boolean;
+    previewImageUrl: string | null;
+    aiPanelWidth: number;
+
+    // AI 技能体系与 Slash Command 指令集
+    activeSkillId: string | null;
+    skillMenuOpen: boolean;
+    slashMenuOpen: boolean;
+    slashQuery: string;
+    slashSelectedIndex: number;
+    isAssistantExecuting: boolean;
 }
+
+const initialSessions = loadChatSessionsFromStorage();
 
 let modalState: BatchEditExpenseModalState = {
     groups: [],
@@ -175,6 +366,12 @@ let modalState: BatchEditExpenseModalState = {
     sortAsc: true,
     searchQuery: '',
     filterMode: 'ALL',
+
+    groupingMode: 'TRIP',
+    collapsedGroupKeys: new Set(),
+    tripPlans: [],
+    tripBillCodes: {},
+    autopilotCommandText: '',
 
     columnFilters: {},
     activePopoverCol: null,
@@ -191,11 +388,32 @@ let modalState: BatchEditExpenseModalState = {
     currentEmployeeName: '',
     projectName: '',
     customRemark: '',
-    formatTemplate: '[${employee}]-[${project}]-[${remark}]',
+    formatTemplate: '[${project}]-[${remark}]',
     batchBusinessDate: '',
     syncBusinessDate: true,
     fillAddresses: true,
-    lastSelectedRecordId: null
+    lastSelectedRecordId: null,
+
+    batchSettingsDialogOpen: false,
+    batchSettingsPanelOpen: false,
+    aiPanelOpen: false,
+    aiFeedMessages: [],
+
+    chatSessions: initialSessions,
+    currentSessionId: initialSessions[0]?.id || 'session_init',
+    currentAttachments: [],
+    attachedExpenseContextEnabled: true,
+    selectedModel: 'flash',
+    historyMenuOpen: false,
+    previewImageUrl: null,
+    aiPanelWidth: (typeof localStorage !== 'undefined' && Number(localStorage.getItem('yn_fssc_ai_panel_width'))) || 440,
+
+    activeSkillId: null,
+    skillMenuOpen: false,
+    slashMenuOpen: false,
+    slashQuery: '',
+    slashSelectedIndex: 0,
+    isAssistantExecuting: false
 };
 
 /**
@@ -477,21 +695,20 @@ function computeFormattedDescription(
     const remark = (state.customRemark || '').trim();
     const employee = (state.currentEmployeeName || detectCurrentEmployeeName()).trim();
 
-    const tpl = state.formatTemplate || '[${employee}]-[${project}]-[${remark}]';
-
-    if (tpl.includes('${') || tpl.includes('name') || tpl.includes('project') || tpl.includes('remark') || tpl.includes('employee')) {
+    const tpl = state.formatTemplate;
+    if (tpl && tpl.includes('${')) {
         let res = tpl
             .replace(/\${employee}/g, employee)
             .replace(/\${当前社员名}/g, employee)
             .replace(/\${社员名}/g, employee)
             .replace(/\${社员}/g, employee)
-            .replace(/\${name}/g, name || employee)
-            .replace(/\${人名}/g, name || employee)
-            .replace(/\${外驻人名}/g, name)
-            .replace(/\${project}/g, project)
-            .replace(/\${项目名}/g, project)
-            .replace(/\${项目号}/g, project)
-            .replace(/\${项目}/g, project)
+            .replace(/\${name}/g, name || '姓名')
+            .replace(/\${人名}/g, name || '姓名')
+            .replace(/\${外驻人名}/g, name || '姓名')
+            .replace(/\${project}/g, project || '项目号')
+            .replace(/\${项目名}/g, project || '项目号')
+            .replace(/\${项目号}/g, project || '项目号')
+            .replace(/\${项目}/g, project || '项目号')
             .replace(/\${remark}/g, remark)
             .replace(/\${自定义备注}/g, remark)
             .replace(/\${备注}/g, remark);
@@ -505,11 +722,20 @@ function computeFormattedDescription(
         return res;
     }
 
-    const employeePart = employee ? `[${employee}]` : '';
-    const projectPart = project ? `[${project}]` : '';
-    const remarkPart = remark ? `[${remark}]` : '';
-    const parts = [employeePart, projectPart, remarkPart].filter(Boolean);
-    return parts.length > 0 ? parts.join('-') : (group?.description || '');
+    let base = '';
+    if (state.isProxy) {
+        const proxyName = name || '姓名';
+        const proj = project || '项目号';
+        base = `[外驻:${proxyName}]-[${proj}]`;
+    } else {
+        const proj = project || '项目号';
+        base = `[${proj}]`;
+    }
+
+    if (remark) {
+        base += `-[${remark}]`;
+    }
+    return base;
 }
 
 /**
@@ -519,6 +745,32 @@ export async function openBatchEditExpenseModal(doc: Document, preselectedIds?: 
     const globalState = getInvoicePoolGlobalState();
     const win = doc.defaultView || (typeof window !== 'undefined' ? window : null);
     const targetDoc = (typeof window !== 'undefined' && window.top && window.top.document) ? window.top.document : doc;
+
+    if (!targetDoc.getElementById('yn-injected-styles')) {
+        const styleEl = targetDoc.createElement('style');
+        styleEl.id = 'yn-injected-styles';
+        styleEl.innerHTML = MODAL_STYLES;
+        (targetDoc.head || targetDoc.body).appendChild(styleEl);
+    }
+
+    // 恢复本地暂存的 Trip 规划信息
+    if (modalState.tripPlans.length === 0) {
+        const cachedTrips = loadTripPlansFromStorage();
+        if (cachedTrips && cachedTrips.length > 0) {
+            modalState.tripPlans = cachedTrips;
+            AutopilotLogger.info(`[BatchEditModal] 成功恢复本地暂存的 ${cachedTrips.length} 轮 Trip 规划`);
+        }
+    }
+
+    // Google Pattern 1: 将当前上下文下的 Trip 聚类注册至全局 Tool Layer
+    batchEditTools.clusterTrips = async (params) => {
+        clusterExpensesIntoTrips(
+            params.groups || modalState.groups,
+            modalState.proxyPersonName || modalState.currentEmployeeName,
+            modalState.projectName
+        );
+        return { success: true, data: { trips: modalState.tripPlans } };
+    };
 
     let mask = targetDoc.getElementById('yn-batch-edit-mask');
     if (!mask) {
@@ -670,6 +922,17 @@ export async function openBatchEditExpenseModal(doc: Document, preselectedIds?: 
         }
         modalState.currentEmployeeName = empName || '';
 
+        // 7. 初始自动执行时空锚点智能聚类 (将费用按出差 Trip 轮次与日常经费分类)
+        try {
+            clusterExpensesIntoTrips(
+                modalState.groups,
+                modalState.proxyPersonName || modalState.currentEmployeeName,
+                modalState.projectName
+            );
+        } catch (e: any) {
+            AutopilotLogger.warn(`[BatchEditModal] 初始 Trip 聚类跳过: ${e?.message || e}`);
+        }
+
         renderModalContent(modal, targetDoc);
 
     } catch (err: any) {
@@ -695,6 +958,13 @@ export function closeBatchEditModal() {
             if (modal) modal.style.display = 'none';
         } catch (e) { }
     });
+    if (aiPanelRoot) {
+        try {
+            aiPanelRoot.unmount();
+        } catch (e) { }
+        aiPanelRoot = null;
+        aiPanelMountedEl = null;
+    }
     modalState.columnFilters = {};
     modalState.activePopoverCol = null;
     modalState.popoverKeyword = '';
@@ -868,6 +1138,566 @@ function getFilteredGroups(state: BatchEditExpenseModalState): ExpenseRecordGrou
 
         return true;
     });
+}
+
+/**
+ * 渲染分组展示结构元数据
+ */
+export interface GroupRenderSection {
+    key: string;
+    title: string;
+    flow: 'BC' | 'BJ' | 'MIXED';
+    flowTag: string;
+    items: ExpenseRecordGroup[];
+    totalAmount: number;
+    totalInvoices: number;
+    tripConfig?: TripApplicationConfig;
+    draftBillCode?: string;
+}
+
+/**
+ * 提取发票/费用记录的时空锚点日期
+ */
+function extractGroupDates(g: ExpenseRecordGroup): string[] {
+    const dates: string[] = [];
+    const addDate = (d?: string) => {
+        if (!d) return;
+        const clean = d.split(' ')[0].split('T')[0].trim();
+        if (/^\d{4}-\d{2}-\d{2}$/.test(clean)) {
+            dates.push(clean);
+        }
+    };
+
+    addDate(g.newBusinessDate);
+    addDate(g.businessDate);
+    addDate(g.earliestInvoiceDate);
+    if (g.dynamicFields) {
+        addDate(g.dynamicFields.checkInDate);
+        addDate(g.dynamicFields.checkOutDate);
+        addDate(g.dynamicFields.dynStartDate);
+        addDate(g.dynamicFields.dynEndDate);
+    }
+    for (const inv of g.invoices) {
+        addDate(inv.departureDate);
+        addDate(inv.invoiceDate);
+        if (inv.departureTime) addDate(inv.departureTime.split(' ')[0]);
+        if (inv.timeGetOn) addDate(inv.timeGetOn.split(' ')[0]);
+    }
+    return Array.from(new Set(dates)).sort();
+}
+
+/**
+ * 时空锚点聚类算法：将费用记录按出差行程 (Trip 1..N) 与日常经费 (BJ) 智能切分
+ * 严格遵循 AGENTS.md 反硬编码铁律，完全基于动态时空连续性与原生发票字段推断
+ */
+export function clusterExpensesIntoTrips(
+    groups: ExpenseRecordGroup[],
+    applicantName: string = '',
+    projectName: string = '',
+    customTrips?: DynamicTripInput[]
+): TripApplicationConfig[] {
+    if (!groups || groups.length === 0) {
+        modalState.tripPlans = [];
+        return [];
+    }
+
+    // 1. 将费用区分为差旅候选 (BC) 与日常经费 (BJ)
+    const bcGroups: ExpenseRecordGroup[] = [];
+    const bjGroups: ExpenseRecordGroup[] = [];
+
+    for (const g of groups) {
+        const flow = getGroupBillFlow(g);
+        if (flow === 'BC') {
+            bcGroups.push(g);
+        } else {
+            bjGroups.push(g);
+        }
+    }
+
+    // 2. 为日常经费打标
+    for (const g of bjGroups) {
+        g.tripId = 'NON_TRIP';
+        g.tripNo = 0;
+        g.tripName = '日常办公与市内经费 (走经费报销单·BJ)';
+    }
+
+    if (bcGroups.length === 0) {
+        modalState.tripPlans = [];
+        return [];
+    }
+
+    // 2.1 若传入了用户权威排期出差波次 (customTrips)，直接以此为客观基准进行精准时空归集与预算推演
+    if (customTrips && customTrips.length > 0) {
+        const sortedTrips = [...customTrips].sort((a, b) => a.startDate.localeCompare(b.startDate));
+        sortedTrips.forEach((t, idx) => {
+            t.tripNo = idx + 1;
+        });
+
+        interface CustomTripStats {
+            config: TripApplicationConfig;
+            trafficFee: number;
+            hotelFee: number;
+            taxiInTrip: number;
+        }
+
+        const statsList: CustomTripStats[] = sortedTrips.map(ct => {
+            const tripNo = ct.tripNo || 1;
+            const tripId = `trip_${tripNo}`;
+            const { days, nights } = calculateDaysAndNights(ct.startDate, ct.endDate);
+            const destination = (ct.destination || '出差地').replace(/省|市/g, '');
+            const legs: TripLeg[] = ct.legs && ct.legs.length > 0 ? ct.legs : [
+                { date: ct.startDate, fromCity: '出发地', toCity: destination, transport: ct.flightOrTrain || '飞机/高铁' },
+                { date: ct.endDate, fromCity: destination, toCity: '返回地', transport: ct.flightOrTrain || '飞机/高铁' }
+            ];
+
+            return {
+                config: {
+                    id: tripId,
+                    tripNo,
+                    applicantName: ct.applicantName || applicantName || modalState.currentEmployeeName || '当前社员',
+                    isProxy: Boolean(modalState.isProxy),
+                    startDate: ct.startDate,
+                    endDate: ct.endDate,
+                    days,
+                    nights,
+                    destination,
+                    hotelName: ct.hotelName || '',
+                    purpose: ct.purpose || `出差${destination}业务交流及现场技术支持`,
+                    trafficFee: 0,
+                    hotelFee: 0,
+                    mealFee: 0,
+                    otherFee: 0,
+                    trafficBuffer: 0,
+                    totalAmount: 0,
+                    legs,
+                    projectName: projectName || modalState.projectName,
+                    status: '就绪'
+                },
+                trafficFee: 0,
+                hotelFee: 0,
+                taxiInTrip: 0
+            };
+        });
+
+        // 遍历差旅记录匹配最优 Trip
+        for (const g of bcGroups) {
+            const dates = extractGroupDates(g);
+            const gDate = dates.length > 0 ? dates[0] : (g.businessDate || g.earliestInvoiceDate || '');
+
+            let bestIdx = -1;
+            let highestScore = -1;
+
+            for (let i = 0; i < statsList.length; i++) {
+                const { config } = statsList[i];
+                let score = 0;
+
+                // 日期匹配 (容差前后 1 天)
+                if (gDate) {
+                    const sTime = new Date(config.startDate.replace(/-/g, '/')).getTime() - 24 * 3600 * 1000;
+                    const eTime = new Date(config.endDate.replace(/-/g, '/')).getTime() + 24 * 3600 * 1000;
+                    const gTime = new Date(gDate.replace(/-/g, '/')).getTime();
+                    if (gTime >= sTime && gTime <= eTime) {
+                        score += 10;
+                        const strictS = new Date(config.startDate.replace(/-/g, '/')).getTime();
+                        const strictE = new Date(config.endDate.replace(/-/g, '/')).getTime();
+                        if (gTime >= strictS && gTime <= strictE) {
+                            score += 5;
+                        }
+                    }
+                }
+
+                // 地点与酒店匹配加分
+                const gDest = (g.dynamicFields?.city || g.dynamicFields?.dynTo || '').replace(/省|市/g, '').trim();
+                if (gDest && (config.destination.includes(gDest) || gDest.includes(config.destination))) {
+                    score += 20;
+                }
+                const gHotel = (g.dynamicFields?.hotelName || '').trim();
+                if (gHotel && config.hotelName && (config.hotelName.includes(gHotel) || gHotel.includes(config.hotelName))) {
+                    score += 15;
+                }
+
+                if (score > highestScore && score > 0) {
+                    highestScore = score;
+                    bestIdx = i;
+                }
+            }
+
+            if (bestIdx !== -1) {
+                const targetStat = statsList[bestIdx];
+                const amt = Number(g.expenseAmount || 0);
+                const cat = detectTypeCategory(g.newExpenseTypeId || g.expenseTypeId, g.newExpenseTypeName || g.expenseTypeName);
+                if (cat === 'FLIGHT' || cat === 'TRAIN') {
+                    targetStat.trafficFee += amt;
+                } else if (cat === 'HOTEL') {
+                    targetStat.hotelFee += amt;
+                } else if (cat === 'TAXI') {
+                    targetStat.taxiInTrip += amt;
+                } else {
+                    targetStat.trafficFee += amt;
+                }
+
+                g.tripId = targetStat.config.id;
+                g.tripNo = targetStat.config.tripNo;
+                g.tripName = `【Trip ${targetStat.config.tripNo}】${targetStat.config.destination}出差 (${targetStat.config.startDate} ~ ${targetStat.config.endDate})`;
+            } else {
+                g.tripId = 'NON_TRIP';
+                g.tripNo = 0;
+                g.tripName = '日常办公与市内经费 (走经费报销单·BJ)';
+            }
+        }
+
+        const tripConfigs: TripApplicationConfig[] = statsList.map(st => {
+            const { config, trafficFee, hotelFee, taxiInTrip } = st;
+            config.trafficFee = Math.round(trafficFee * 100) / 100;
+            config.hotelFee = Math.round(hotelFee * 100) / 100;
+            config.mealFee = computeMealAllowance(config.days, 300, 150);
+            config.otherFee = config.days * 100 + Math.round(taxiInTrip);
+            config.trafficBuffer = Math.round(config.trafficFee * 0.15);
+            config.totalAmount = Math.round((config.trafficFee + config.hotelFee + config.mealFee + config.otherFee + config.trafficBuffer) * 100) / 100;
+            return config;
+        });
+
+        const tripIntervals = tripConfigs.map(t => ({ tripNo: t.tripNo, destination: t.destination, start: t.startDate, end: t.endDate }));
+        for (const g of groups) {
+            checkTaxiMisclassification(g, tripIntervals);
+        }
+
+        modalState.tripPlans = tripConfigs;
+        saveTripPlansToStorage(tripConfigs);
+        return tripConfigs;
+    }
+
+    // 3. 收集每个差旅记录的日期与位置特征并按起始日期排序
+    interface BcGroupMeta {
+        group: ExpenseRecordGroup;
+        minDate: string;
+        maxDate: string;
+        locations: string[];
+    }
+
+    const metaList: BcGroupMeta[] = bcGroups.map(g => {
+        const dates = extractGroupDates(g);
+        const minDate = dates.length > 0 ? dates[0] : (g.businessDate || g.earliestInvoiceDate || '2026-01-01');
+        const maxDate = dates.length > 0 ? dates[dates.length - 1] : minDate;
+
+        const locs: string[] = [];
+        if (g.dynamicFields?.city) locs.push(g.dynamicFields.city);
+        if (g.dynamicFields?.dynTo) locs.push(g.dynamicFields.dynTo);
+        if (g.dynamicFields?.hotelName) locs.push(g.dynamicFields.hotelName);
+        for (const inv of g.invoices) {
+            if (inv.stationGetOff) locs.push(inv.stationGetOff);
+            if (inv.salesName) locs.push(inv.salesName);
+        }
+
+        return {
+            group: g,
+            minDate,
+            maxDate,
+            locations: locs
+        };
+    });
+
+    metaList.sort((a, b) => a.minDate.localeCompare(b.minDate));
+
+    // 4. 按时间连续性聚类（时间间隙阈值 3 天，若超过则切分为下一轮 Trip）
+    const clusters: BcGroupMeta[][] = [];
+    let curCluster: BcGroupMeta[] = [metaList[0]];
+    let curClusterMaxDate = metaList[0].maxDate;
+
+    for (let i = 1; i < metaList.length; i++) {
+        const item = metaList[i];
+        const gapDays = (new Date(item.minDate).getTime() - new Date(curClusterMaxDate).getTime()) / (1000 * 60 * 60 * 24);
+
+        if (gapDays <= 3) {
+            curCluster.push(item);
+            if (item.maxDate > curClusterMaxDate) {
+                curClusterMaxDate = item.maxDate;
+            }
+        } else {
+            clusters.push(curCluster);
+            curCluster = [item];
+            curClusterMaxDate = item.maxDate;
+        }
+    }
+    if (curCluster.length > 0) {
+        clusters.push(curCluster);
+    }
+
+    // 5. 将每个聚类构造为 TripApplicationConfig
+    const tripConfigs: TripApplicationConfig[] = clusters.map((cluster, idx) => {
+        const tripNo = idx + 1;
+        const tripId = `trip_${tripNo}`;
+
+        // 计算起止日期
+        let sDate = cluster[0].minDate;
+        let eDate = cluster[0].maxDate;
+        for (const item of cluster) {
+            if (item.minDate < sDate) sDate = item.minDate;
+            if (item.maxDate > eDate) eDate = item.maxDate;
+        }
+        if (eDate < sDate) eDate = sDate;
+
+        const { days, nights } = calculateDaysAndNights(sDate, eDate);
+
+        // 提取目的地（从到达站、城市、酒店等动态提取，剔除通用停用词）
+        const destCandidates: string[] = [];
+        for (const item of cluster) {
+            for (const loc of item.locations) {
+                const clean = loc.replace(/(?:火车站|高铁站|东站|西站|南站|北站|站|国际机场|机场|市|宾馆|大酒店|酒店|分公司|办事处)/g, '').trim();
+                if (clean && clean.length >= 2 && clean.length <= 8 && !destCandidates.includes(clean)) {
+                    destCandidates.push(clean);
+                }
+            }
+        }
+        const destination = destCandidates.slice(0, 2).join('/') || '出差地';
+
+        // 提取酒店名称
+        let hotelSummary = '';
+        for (const item of cluster) {
+            const h = item.group.dynamicFields?.hotelName;
+            if (h && !hotelSummary) hotelSummary = h;
+            for (const inv of item.group.invoices) {
+                if (inv.salesName && (inv.salesName.includes('酒店') || inv.salesName.includes('宾馆')) && !hotelSummary) {
+                    hotelSummary = inv.salesName;
+                }
+            }
+        }
+
+        // 计算各项预算金额
+        let trafficFee = 0;
+        let hotelFee = 0;
+        let taxiInTrip = 0;
+        for (const item of cluster) {
+            const amt = Number(item.group.expenseAmount || 0);
+            const cat = detectTypeCategory(item.group.newExpenseTypeId || item.group.expenseTypeId, item.group.newExpenseTypeName || item.group.expenseTypeName);
+            if (cat === 'FLIGHT' || cat === 'TRAIN') {
+                trafficFee += amt;
+            } else if (cat === 'HOTEL') {
+                hotelFee += amt;
+            } else if (cat === 'TAXI') {
+                taxiInTrip += amt;
+            } else {
+                trafficFee += amt;
+            }
+        }
+
+        trafficFee = Math.round(trafficFee * 100) / 100;
+        hotelFee = Math.round(hotelFee * 100) / 100;
+        const mealFee = computeMealAllowance(days, 300, 150);
+        const otherFee = days * 100 + Math.round(taxiInTrip); // 包含每日市内交通 Buffer 与打车
+        const trafficBuffer = Math.round(trafficFee * 0.15); // 15% 交通改签 Buffer
+        const totalAmount = Math.round((trafficFee + hotelFee + mealFee + otherFee + trafficBuffer) * 100) / 100;
+
+        // 构造行程区 Legs
+        const legs: TripLeg[] = [];
+        for (const item of cluster) {
+            for (const inv of item.group.invoices) {
+                if (inv.stationGetOn || inv.stationGetOff) {
+                    const isFlight = (inv.invoiceType || '').includes('飞机') || (inv.salesName || '').includes('航空');
+                    legs.push({
+                        date: (inv.departureDate || item.minDate || sDate).split(' ')[0],
+                        fromCity: inv.stationGetOn || '出发地',
+                        toCity: inv.stationGetOff || destination,
+                        transport: isFlight ? '飞机' : '火车',
+                        flightOrTrain: inv.trainNo || item.group.dynamicFields?.dynTransitNo || ''
+                    });
+                }
+            }
+        }
+        if (legs.length === 0) {
+            legs.push({
+                date: sDate,
+                fromCity: '出发地',
+                toCity: destination,
+                transport: '火车/飞机'
+            });
+            legs.push({
+                date: eDate,
+                fromCity: destination,
+                toCity: '返回地',
+                transport: '火车/飞机'
+            });
+        }
+
+        const appConfig: TripApplicationConfig = {
+            id: tripId,
+            tripNo,
+            applicantName: applicantName || modalState.currentEmployeeName || '当前社员',
+            isProxy: Boolean(modalState.isProxy),
+            startDate: sDate,
+            endDate: eDate,
+            days,
+            nights,
+            destination,
+            hotelName: hotelSummary,
+            purpose: `出差${destination}业务交流及现场技术支持`,
+            trafficFee,
+            hotelFee,
+            mealFee,
+            otherFee,
+            trafficBuffer,
+            totalAmount,
+            legs,
+            projectName: projectName || modalState.projectName,
+            status: '就绪'
+        };
+
+        // 绑定给该聚类的每一笔费用
+        const tripTitle = `${destination}出差 (${sDate} ~ ${eDate})`;
+        for (const item of cluster) {
+            item.group.tripId = tripId;
+            item.group.tripNo = tripNo;
+            item.group.tripName = tripTitle;
+        }
+
+        return appConfig;
+    });
+
+    // 6. 出租车出差/市内错配智能检测
+    const tripIntervals = tripConfigs.map(t => ({ tripNo: t.tripNo, destination: t.destination, start: t.startDate, end: t.endDate }));
+    for (const g of groups) {
+        checkTaxiMisclassification(g, tripIntervals);
+    }
+
+    modalState.tripPlans = tripConfigs;
+    saveTripPlansToStorage(tripConfigs);
+    return tripConfigs;
+}
+
+/**
+ * 依据当前分组模式 (GroupingMode) 将筛选后的费用记录组织为可渲染的多级组结构
+ */
+export function groupFilteredExpenses(
+    filteredGroups: ExpenseRecordGroup[],
+    mode: GroupingMode,
+    tripPlans: TripApplicationConfig[] = []
+): GroupRenderSection[] {
+    if (mode === 'NONE') {
+        const sum = filteredGroups.reduce((acc, g) => acc + Number(g.expenseAmount || 0), 0);
+        const invSum = filteredGroups.reduce((acc, g) => acc + g.invoices.length, 0);
+        return [{
+            key: 'ALL',
+            title: '全部费用明细 (平铺展示)',
+            flow: 'MIXED',
+            flowTag: '[全量]',
+            items: filteredGroups,
+            totalAmount: sum,
+            totalInvoices: invSum
+        }];
+    }
+
+    if (mode === 'TRIP') {
+        const sections: GroupRenderSection[] = [];
+        // 1. 各 Trip 轮次
+        for (const trip of tripPlans) {
+            const items = filteredGroups.filter(g => g.tripId === trip.id);
+            if (items.length > 0) {
+                const sum = items.reduce((acc, g) => acc + Number(g.expenseAmount || 0), 0);
+                const invCount = items.reduce((acc, g) => acc + g.invoices.length, 0);
+                sections.push({
+                    key: trip.id,
+                    title: `Trip ${trip.tripNo}: 出差申请单 (SC) - ${trip.destination || '出差'} (${trip.startDate} ~ ${trip.endDate})`,
+                    flow: 'BC',
+                    flowTag: '[差旅·BC]',
+                    items,
+                    totalAmount: sum,
+                    totalInvoices: invCount,
+                    tripConfig: trip,
+                    draftBillCode: modalState.tripBillCodes[trip.id]
+                });
+            }
+        }
+        // 2. 非出差 / 日常费用 (NON_TRIP)
+        const nonTripItems = filteredGroups.filter(g => !g.tripId || g.tripId === 'NON_TRIP');
+        if (nonTripItems.length > 0) {
+            const sum = nonTripItems.reduce((acc, g) => acc + Number(g.expenseAmount || 0), 0);
+            const invCount = nonTripItems.reduce((acc, g) => acc + g.invoices.length, 0);
+            sections.push({
+                key: 'NON_TRIP',
+                title: '日常办公与市内交通 (走经费报销单·BJ)',
+                flow: 'BJ',
+                flowTag: '[经费·BJ]',
+                items: nonTripItems,
+                totalAmount: sum,
+                totalInvoices: invCount,
+                draftBillCode: modalState.tripBillCodes['NON_TRIP']
+            });
+        }
+        return sections;
+    }
+
+    if (mode === 'TYPE') {
+        const typeMap = new Map<string, ExpenseRecordGroup[]>();
+        for (const g of filteredGroups) {
+            const typeName = g.newExpenseTypeName || g.expenseTypeName || '未分类';
+            if (!typeMap.has(typeName)) {
+                typeMap.set(typeName, []);
+            }
+            typeMap.get(typeName)!.push(g);
+        }
+        const sections: GroupRenderSection[] = [];
+        for (const [typeName, items] of typeMap.entries()) {
+            const sum = items.reduce((acc, g) => acc + Number(g.expenseAmount || 0), 0);
+            const invCount = items.reduce((acc, g) => acc + g.invoices.length, 0);
+            const typeId = items[0].newExpenseTypeId || items[0].expenseTypeId;
+            const flow = getExpenseBillFlow(typeId, typeName);
+            sections.push({
+                key: `type_${typeId || typeName}`,
+                title: `${typeName}`,
+                flow,
+                flowTag: flow === 'BC' ? '[差旅·BC]' : '[经费·BJ]',
+                items,
+                totalAmount: sum,
+                totalInvoices: invCount
+            });
+        }
+        return sections;
+    }
+
+    if (mode === 'TRIP_AND_TYPE') {
+        const sections: GroupRenderSection[] = [];
+        const tripBuckets = new Map<string, ExpenseRecordGroup[]>();
+        for (const g of filteredGroups) {
+            const tId = g.tripId || 'NON_TRIP';
+            if (!tripBuckets.has(tId)) tripBuckets.set(tId, []);
+            tripBuckets.get(tId)!.push(g);
+        }
+
+        for (const [tId, tItems] of tripBuckets.entries()) {
+            const trip = tripPlans.find(t => t.id === tId);
+            const tripTitle = trip
+                ? `Trip ${trip.tripNo}: ${trip.destination || '出差'} (${trip.startDate} ~ ${trip.endDate})`
+                : '日常办公与市内经费 (BJ)';
+
+            const typeBuckets = new Map<string, ExpenseRecordGroup[]>();
+            for (const g of tItems) {
+                const typeName = g.newExpenseTypeName || g.expenseTypeName || '未分类';
+                if (!typeBuckets.has(typeName)) typeBuckets.set(typeName, []);
+                typeBuckets.get(typeName)!.push(g);
+            }
+
+            for (const [typeName, items] of typeBuckets.entries()) {
+                const sum = items.reduce((acc, g) => acc + Number(g.expenseAmount || 0), 0);
+                const invCount = items.reduce((acc, g) => acc + g.invoices.length, 0);
+                const typeId = items[0].newExpenseTypeId || items[0].expenseTypeId;
+                const flow = getExpenseBillFlow(typeId, typeName);
+                sections.push({
+                    key: `${tId}__${typeId || typeName}`,
+                    title: `【${tripTitle}】➔ ${typeName}`,
+                    flow,
+                    flowTag: flow === 'BC' ? '[差旅·BC]' : '[经费·BJ]',
+                    items,
+                    totalAmount: sum,
+                    totalInvoices: invCount,
+                    tripConfig: trip,
+                    draftBillCode: trip ? modalState.tripBillCodes[trip.id] : modalState.tripBillCodes['NON_TRIP']
+                });
+            }
+        }
+        return sections;
+    }
+
+    return [];
 }
 
 /**
@@ -1521,29 +2351,364 @@ function renderDynamicSubTags(dyn?: DynamicExpenseFieldValues): string {
 }
 
 /**
- * 渲染顶部融合操作条 (Vercel Shell & Toolbar 风格)
+ * 渲染行程与明细微胶囊 (Linear/Vercel Capsule)
+ * 智能聚合展示各类型关键行程要素：
+ * - ✈️ 航班：起飞城市 ➔ 降落城市 (航班号)
+ * - 🚆 火车：出发站 ➔ 到达站 (车次)
+ * - 🚕 出租车：始发地 ➔ 目的地
+ * - 🏨 酒店：酒店名 (城市 · 住离日)
+ * - 📱 通信：通信账期
+ * - 其他：销售方/服务商
+ */
+function getGroupRouteDetailsHtml(group: ExpenseRecordGroup): string {
+    const dyn = group.dynamicFields || {};
+    const inv0 = group.invoices[0];
+    const cat = detectTypeCategory(group.newExpenseTypeId || group.expenseTypeId, group.newExpenseTypeName || group.expenseTypeName);
+
+    if (cat === 'FLIGHT') {
+        const from = dyn.flightFromCity || inv0?.stationGetOn || '';
+        const to = dyn.flightToCity || inv0?.stationGetOff || '';
+        const flightNo = dyn.flightNum || inv0?.trainNo || '';
+        if (from || to) {
+            return `
+                <div class="yn-bem-route-capsule" title="${escapeHtml(from)} ➔ ${escapeHtml(to)}${flightNo ? ` (${flightNo})` : ''}">
+                    <span class="route-icon">✈️</span>
+                    <span class="route-point">${escapeHtml(from || '待补')}</span>
+                    <span class="route-arrow">➔</span>
+                    <span class="route-point">${escapeHtml(to || '待补')}</span>
+                    ${flightNo ? `<span class="route-extra">${escapeHtml(flightNo)}</span>` : ''}
+                </div>
+            `;
+        }
+        return `<span class="yn-bem-route-capsule is-empty" data-recordid="${group.expenseRecordId}" style="cursor:pointer;" title="点击补充航线与起降城市">+ 补充航线</span>`;
+    }
+
+    if (cat === 'TRAIN') {
+        const from = dyn.trainFromStation || inv0?.stationGetOn || '';
+        const to = dyn.trainToStation || inv0?.stationGetOff || '';
+        const trainNo = inv0?.trainNo || dyn.trainNum || '';
+        if (from || to) {
+            return `
+                <div class="yn-bem-route-capsule" title="${escapeHtml(from)} ➔ ${escapeHtml(to)}${trainNo ? ` (${trainNo})` : ''}">
+                    <span class="route-icon">🚆</span>
+                    <span class="route-point">${escapeHtml(from || '待补')}</span>
+                    <span class="route-arrow">➔</span>
+                    <span class="route-point">${escapeHtml(to || '待补')}</span>
+                    ${trainNo ? `<span class="route-extra">${escapeHtml(trainNo)}</span>` : ''}
+                </div>
+            `;
+        }
+        return `<span class="yn-bem-route-capsule is-empty" data-recordid="${group.expenseRecordId}" style="cursor:pointer;" title="点击补充车次与起止站">+ 补充车次</span>`;
+    }
+
+    if (cat === 'TAXI') {
+        const from = group.newStartAddress || dyn.startAddress || inv0?.stationGetOn || '';
+        const to = group.newEndAddress || dyn.endAddress || inv0?.stationGetOff || '';
+        if (from || to) {
+            return `
+                <div class="yn-bem-route-capsule" title="${escapeHtml(from)} ➔ ${escapeHtml(to)}">
+                    <span class="route-icon">🚕</span>
+                    <span class="route-point" style="max-width:85px;">${escapeHtml(from || '待补')}</span>
+                    <span class="route-arrow">➔</span>
+                    <span class="route-point" style="max-width:85px;">${escapeHtml(to || '待补')}</span>
+                </div>
+            `;
+        }
+        return `<span class="yn-bem-route-capsule is-empty" data-recordid="${group.expenseRecordId}" style="cursor:pointer;" title="点击补充始发地/目的地">+ 补充始发/到达</span>`;
+    }
+
+    if (cat === 'HOTEL') {
+        const hotel = dyn.hotelName || (inv0?.salesName ? inv0.salesName.replace(/有限(?:责任)?公司/g, '') : '');
+        const city = dyn.city || '';
+        const dates = dyn.checkInDate ? `${dyn.checkInDate.slice(5)}~${(dyn.checkOutDate || '').slice(5)}` : '';
+        if (hotel || city) {
+            return `
+                <div class="yn-bem-route-capsule" title="${escapeHtml(hotel)} ${city ? `(${city})` : ''} ${dates}">
+                    <span class="route-icon">🏨</span>
+                    <span class="route-point" style="max-width:115px;">${escapeHtml(hotel || city)}</span>
+                    ${city && hotel ? `<span class="route-extra">${escapeHtml(city)}</span>` : ''}
+                    ${dates ? `<span class="route-extra" style="font-family:ui-monospace, monospace;">${escapeHtml(dates)}</span>` : ''}
+                </div>
+            `;
+        }
+        return `<span class="yn-bem-route-capsule is-empty" data-recordid="${group.expenseRecordId}" style="cursor:pointer;" title="点击补充酒店名与入住城市">+ 补充酒店/城市</span>`;
+    }
+
+    if (cat === 'MOBILE') {
+        const billMonth = dyn.billMonth || (inv0?.invoiceDate ? inv0.invoiceDate.slice(0, 7) : '');
+        return `
+            <div class="yn-bem-route-capsule">
+                <span class="route-icon">📱</span>
+                <span class="route-extra">账期: ${escapeHtml(billMonth || '待补')}</span>
+            </div>
+        `;
+    }
+
+    const sales = inv0?.salesName || '';
+    if (sales) {
+        return `
+            <div class="yn-bem-route-capsule" title="${escapeHtml(sales)}">
+                <span class="route-icon">🧾</span>
+                <span class="route-point" style="max-width:160px;">${escapeHtml(sales)}</span>
+            </div>
+        `;
+    }
+
+    return `<span style="color:#a3a3a3; font-size:11px;">-</span>`;
+}
+
+/**
+ * 渲染现代悬浮操作岛 (Floating Action Island - Linear/Stripe Grade)
+ * 选中行时在底部居中弹性展开，提供批量设置、AI推断、导出、保存与清选
+ */
+function renderFloatingIslandHtml(): string {
+    const selectedCount = modalState.selectedRecordIds.size;
+    const isHidden = selectedCount === 0;
+    const selectedGroups = modalState.groups.filter(g => modalState.selectedRecordIds.has(g.expenseRecordId));
+    const totalAmount = Decimal.sum(selectedGroups, g => g.expenseAmount).toFixed(2);
+
+    return `
+        <div class="yn-bem-floating-island ${isHidden ? 'is-hidden' : ''}" id="yn-bem-floating-island">
+            <div class="yn-bem-island-stat">
+                <span>已选 <strong>${selectedCount}</strong> 项</span>
+                <span class="island-amount">¥${totalAmount}</span>
+            </div>
+            <div class="yn-bem-island-divider"></div>
+            <button type="button" class="yn-bem-island-btn" id="yn-bem-island-btn-batch-settings" title="弹出批量修改属性窗口">
+                ⚙️ 批量修改属性
+            </button>
+            <button type="button" class="yn-bem-island-btn yn-bem-island-btn-ai" id="yn-bem-island-btn-ai" title="基于证据链智能补全必填字段">
+                ✨ AI智能推断
+            </button>
+            <button type="button" class="yn-bem-island-btn" id="yn-bem-island-btn-export" title="导出所选为 CSV">
+                📥 导出
+            </button>
+            <button type="button" class="yn-bem-island-btn yn-bem-island-btn-primary" id="yn-bem-island-btn-save" title="批量保存已修改记录">
+                💾 批量保存
+            </button>
+            <button type="button" class="yn-bem-island-btn" id="yn-bem-island-btn-clear" title="清空选中">
+                ✕ 清选
+            </button>
+        </div>
+    `;
+}
+
+/**
+ * 渲染居中专注批量设置弹窗 (Dedicated Batch Settings Modal Dialog)
+ * 彻底移出主 DOM 流，消除表格高度挤压；3 个逻辑卡片分区组织
+ */
+function renderBatchSettingsDialogHtml(): string {
+    const selectedCount = modalState.selectedRecordIds.size;
+
+    return `
+        <div class="yn-bem-batch-dialog-mask" id="yn-bem-batch-dialog-mask">
+            <div class="yn-bem-batch-dialog" id="yn-bem-batch-dialog">
+                <div class="yn-bem-dialog-header">
+                    <div class="yn-bem-dialog-title">
+                        <span>⚙️ 批量修改属性 (${selectedCount > 0 ? `作用于已选 ${selectedCount} 笔费用` : '请先在表格勾选要修改的费用'})</span>
+                    </div>
+                    <button type="button" class="yn-bem-close-x" id="yn-bem-dialog-close" title="关闭">✕</button>
+                </div>
+
+                <div class="yn-bem-dialog-body">
+                    <!-- 分区 1: 批量修改费用说明 (模块化独立可选) -->
+                    <div class="yn-bem-dialog-section">
+                        <div class="yn-bem-dialog-section-title" style="display:flex; align-items:center; justify-content:space-between;">
+                            <label style="display:inline-flex; align-items:center; gap:6px; font-weight:600; font-size:13px; color:#18181b; cursor:pointer;">
+                                <input type="checkbox" id="yn-bem-chk-apply-desc" checked style="cursor:pointer;" />
+                                <span>📝 批量修改费用说明 (备注信息)</span>
+                            </label>
+                            <div class="yn-bem-preview-pill" id="yn-bem-preview-pill" style="max-width:320px;">
+                                ${computeFormattedDescription(modalState, modalState.groups[0])}
+                            </div>
+                        </div>
+
+                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-top:8px;">
+                            <div class="yn-bem-field-group">
+                                <label>报销类型:</label>
+                                <select id="yn-bem-opt-proxy" class="yn-bem-select">
+                                    <option value="false" ${!modalState.isProxy ? 'selected' : ''}>本人报销</option>
+                                    <option value="true" ${modalState.isProxy ? 'selected' : ''}>外驻代报销</option>
+                                </select>
+                            </div>
+                            <div class="yn-bem-field-group" id="yn-bem-group-proxy-name" style="${modalState.isProxy ? '' : 'display:none;'}">
+                                <label>外驻人名:</label>
+                                <input type="text" id="yn-bem-input-proxy-name" class="yn-bem-input"
+                                       value="${escapeHtml(modalState.proxyPersonName)}" placeholder="如: 社员姓名" style="font-weight:600;" />
+                            </div>
+                        </div>
+
+                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-top:8px;">
+                            <div class="yn-bem-field-group">
+                                <label>费用归属项目 (标记项目号):</label>
+                                <div class="yn-bem-project-wrapper" id="yn-bem-project-wrapper">
+                                    <input type="text" id="yn-bem-input-project" class="yn-bem-input"
+                                           value="${escapeHtml(modalState.projectName)}" placeholder="搜索项目代码/名称..." style="width:100%; font-weight:600;" autocomplete="off" />
+                                    <div id="yn-bem-project-dropdown" class="yn-bem-project-dropdown"></div>
+                                </div>
+                            </div>
+                            <div class="yn-bem-field-group">
+                                <label>更多备注 (可选后缀，为空不显):</label>
+                                <input type="text" id="yn-bem-input-remark" class="yn-bem-input"
+                                       value="${escapeHtml(modalState.customRemark)}" placeholder="如: 业务调研 (为空不显)" style="width:100%;" />
+                            </div>
+                        </div>
+
+                        <div style="display:flex; align-items:center; gap:8px; margin-top:8px;">
+                            <span style="font-size:11px; color:#737373;">快捷预设:</span>
+                            <div class="yn-bem-segmented-wrap">
+                                <button type="button" class="yn-bem-preset-btn ${modalState.formatTemplate === '[${project}]-[${remark}]' || modalState.formatTemplate === '[${project}]' ? 'active' : ''}" data-tpl="[\${project}]" title="本人报销: 仅项目">[仅项目]</button>
+                                <button type="button" class="yn-bem-preset-btn ${modalState.formatTemplate === '[外驻:${name}]-[${project}]' ? 'active' : ''}" data-tpl="[外驻:\${name}]-[\${project}]" title="外驻代报销: [外驻:人名]-[项目]">[外驻:人名]-[项目]</button>
+                                <button type="button" class="yn-bem-preset-btn ${modalState.formatTemplate === '[${employee}]-[${project}]' ? 'active' : ''}" data-tpl="[\${employee}]-[\${project}]" title="[社员名]-[项目]">[当前社员名]-[项目]</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 分区 2: 变更报销类型 (模块化独立可选) -->
+                    <div class="yn-bem-dialog-section">
+                        <div class="yn-bem-dialog-section-title">
+                            <label style="display:inline-flex; align-items:center; gap:6px; font-weight:600; font-size:13px; color:#18181b; cursor:pointer;">
+                                <input type="checkbox" id="yn-bem-chk-apply-type" style="cursor:pointer;" />
+                                <span>🏷️ 变更报销类型与专属参数</span>
+                            </label>
+                        </div>
+                        <div style="margin-top:8px;">
+                            <div class="yn-bem-field-group">
+                                <label>目标报销类型:</label>
+                                <select id="yn-bem-opt-target-type" class="yn-bem-select" style="font-weight:600; color:#171717; width:100%;">
+                                    <option value="">-- 保持原类型 (不变更) --</option>
+                                    ${renderTypeTreeOptionsHtml(modalState.expenseTypeTree, modalState.targetExpenseTypeId)}
+                                </select>
+                            </div>
+                        </div>
+
+                        <!-- 专属必填字段批量输入卡片 (若有) -->
+                        <div style="margin-top:8px;">
+                            ${renderDynamicFieldsCardHtml()}
+                        </div>
+                    </div>
+
+                    <!-- 分区 3: 业务日期与交通地址 (模块化独立可选) -->
+                    <div class="yn-bem-dialog-section">
+                        <div class="yn-bem-dialog-section-title">
+                            <label style="display:inline-flex; align-items:center; gap:6px; font-weight:600; font-size:13px; color:#18181b; cursor:pointer;">
+                                <input type="checkbox" id="yn-bem-chk-apply-date" style="cursor:pointer;" />
+                                <span>📅 统一业务日期与交通地址</span>
+                            </label>
+                        </div>
+                        <div style="display:flex; align-items:center; gap:16px; margin-top:8px;">
+                            <div class="yn-bem-field-group">
+                                <label>统一业务日期:</label>
+                                <div style="display:flex; align-items:center; gap:6px;">
+                                    <input type="date" id="yn-bem-input-biz-date" class="yn-bem-input"
+                                           value="${modalState.batchBusinessDate}" style="width:130px; font-family:ui-monospace, monospace;" />
+                                    <span class="yn-bem-quick-link" id="yn-bem-qa-sync-earliest-date" title="将已选费用的业务日期同步为其最早开票日">按最早开票日</span>
+                                </div>
+                            </div>
+                            <label style="font-size:11px; color:#525252; cursor:pointer; display:inline-flex; align-items:center; gap:4px; margin-top:14px;">
+                                <input type="checkbox" id="yn-bem-chk-fill-addr" ${modalState.fillAddresses ? 'checked' : ''} />
+                                补交通始发/到达地址
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="yn-bem-dialog-footer">
+                    <button type="button" class="yn-bem-btn yn-bem-btn-secondary" id="yn-bem-dialog-cancel">取消</button>
+                    <button type="button" class="yn-bem-btn yn-bem-btn-primary" id="yn-bem-dialog-apply">应用到已选 (${selectedCount} 笔)</button>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+/**
+ * 渲染精简双行顶部融合操作条 (Linear / Vercel 风格 44px + 34px)
  */
 function renderTopBarHtml(filteredGroups: ExpenseRecordGroup[]): string {
     const totalGroups = modalState.groups.length;
-    const totalInvoices = modalState.groups.reduce((sum, g) => sum + g.invoices.length, 0);
     const warnCount = modalState.groups.filter(g => g.hasWarn).length;
     const missingRequiredCount = modalState.groups.filter(g => isGroupMissingRequired(g)).length;
+    const isAllCollapsed = modalState.collapsedGroupKeys.size > 0;
 
     return `
-        <div class="yn-bem-top-bar">
-            <!-- 第 1 行：品牌标题 + 统计徽章 + 预警指示 + 关闭按钮 -->
-            <div class="yn-bem-bar-row" style="justify-content: space-between;">
-                <div class="yn-bem-header-left">
-                    <span class="yn-bem-brand">
-                        批量修改费用信息
-                        <span class="yn-bem-brand-badge">最早开票日聚合 · ${totalGroups} 笔费用 (${totalInvoices} 张发票)</span>
-                    </span>
-                    ${warnCount > 0 ? `<span class="yn-bem-warn-indicator">检出 ${warnCount} 处开票与行程日期差异</span>` : ''}
+        <div class="yn-bem-top-bar" id="yn-bem-top-bar">
+            <!-- 左侧：标题 + 分组 + 展开/折叠单按钮 + 选区快速操作 + 状态过滤 -->
+            <div class="yn-bem-header-left">
+                <span class="yn-bem-brand">
+                    批量修改费用信息
+                </span>
+                ${warnCount > 0 ? `<span class="yn-bem-warn-indicator">⚠️ 检出 ${warnCount} 处差异</span>` : ''}
+
+                <div class="yn-bem-field-group" style="align-items:center; gap:4px; margin-left:4px;">
+                    <label style="font-size:11px; color:#525252; font-weight:600;">分组:</label>
+                    <select id="yn-bem-opt-grouping" class="yn-bem-select" style="font-size:11px; padding:2px 6px; font-weight:600; color:#171717;">
+                        <option value="TRIP" ${modalState.groupingMode === 'TRIP' ? 'selected' : ''}>按 Trip 轮次</option>
+                        <option value="TYPE" ${modalState.groupingMode === 'TYPE' ? 'selected' : ''}>按费用类型</option>
+                        <option value="TRIP_AND_TYPE" ${modalState.groupingMode === 'TRIP_AND_TYPE' ? 'selected' : ''}>Trip+类型两级</option>
+                        <option value="NONE" ${modalState.groupingMode === 'NONE' ? 'selected' : ''}>平铺 (不分组)</option>
+                    </select>
+                    <button type="button" class="yn-bem-btn-mini" id="yn-bem-btn-toggle-all-groups"
+                            title="点击展开或折叠所有分组" ${modalState.groupingMode === 'NONE' ? 'disabled style="opacity:0.4; cursor:not-allowed;"' : ''}>
+                        ${isAllCollapsed ? '展开' : '折叠'}
+                    </button>
                 </div>
-                <button class="yn-bem-close-x" id="yn-bem-close-btn" title="关闭 (Esc)">✕</button>
+
+                <div class="yn-bem-quick-select-wrap" style="display:inline-flex; align-items:center; gap:6px; margin-left:6px; padding-left:8px; border-left:1px solid var(--coss-border);">
+                    <span class="yn-bem-quick-link" id="yn-bem-qa-select-all">全选</span>
+                    <span class="yn-bem-quick-link" id="yn-bem-qa-deselect">全不选</span>
+                    <span class="yn-bem-quick-link" id="yn-bem-qa-invert">反选</span>
+                    ${missingRequiredCount > 0 ? `<span class="yn-bem-quick-link" id="yn-bem-qa-select-missing" style="color:#dc2626; border-color:#fee2e2; background:#fef2f2;">仅选待补 (${missingRequiredCount})</span>` : ''}
+                    ${warnCount > 0 ? `<span class="yn-bem-quick-link" id="yn-bem-qa-select-warn" style="color:#b45309; border-color:#fef3c7; background:#fffbeb;">仅选预警 (${warnCount})</span>` : ''}
+
+                    <select id="yn-bem-filter-mode" class="yn-bem-select" style="font-size:11px; padding:2px 6px; margin-left:2px;">
+                        <option value="ALL" ${modalState.filterMode === 'ALL' ? 'selected' : ''}>全部 (${totalGroups})</option>
+                        <option value="MISSING_REQUIRED" ${modalState.filterMode === 'MISSING_REQUIRED' ? 'selected' : ''}>待补必填 (${missingRequiredCount})</option>
+                        <option value="WARN" ${modalState.filterMode === 'WARN' ? 'selected' : ''}>预警 (${warnCount})</option>
+                        <option value="OK" ${modalState.filterMode === 'OK' ? 'selected' : ''}>正常 (${totalGroups - warnCount - missingRequiredCount})</option>
+                    </select>
+                </div>
+
+                <div id="yn-bem-active-filters-wrap" style="display:inline-flex; align-items:center; gap:4px; margin-left:4px;">
+                    ${renderActiveFilterTagsHtml()}
+                </div>
             </div>
 
-            <!-- 第 2 行：批量参数配置流 (出差 / 报销 / 项目实时搜索 / 变更类型 / 备注 / 业务日期 / 格式) -->
+            <!-- 中间：顶部居中搜索框 -->
+            <div class="yn-bem-header-center">
+                <input type="text" id="yn-bem-search" class="yn-bem-input yn-bem-search-center"
+                       placeholder="搜索开票日/发票号/销方/说明..." value="${escapeHtml(modalState.searchQuery)}" />
+            </div>
+
+            <!-- 右侧：AI 助手切换 + 关闭 (全宽固定在顶栏最右侧) -->
+            <div class="yn-bem-header-right">
+                <button type="button" class="yn-bem-btn-toggle-ai ${modalState.aiPanelOpen ? 'is-active' : ''}" id="yn-bem-btn-toggle-ai" title="点击展开/收起 AI 智能助手">
+                    <span class="yn-gemini-sparkle-icon">✦</span> AI 助手 ${modalState.aiPanelOpen ? '✕' : '✨'}
+                </button>
+                <button class="yn-bem-close-x" id="yn-bem-close-btn" title="关闭 (Esc)">✕</button>
+            </div>
+        </div>
+    `;
+}
+
+
+/**
+ * 渲染弹出式/抽屉式批量属性配置面板 (Batch Settings Dropdown Panel)
+ */
+function renderBatchSettingsPanelHtml(): string {
+    return `
+        <div class="yn-bem-batch-settings-panel" id="yn-bem-batch-settings-panel">
+            <div class="yn-bem-settings-header">
+                <span>⚙️ 批量属性快速配置 (修改后请点击右侧「应用到已选」生效)</span>
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <span style="font-size:11px; color:#737373;">费用说明实时预览:</span>
+                    <div class="yn-bem-preview-pill" id="yn-bem-preview-pill">
+                        ${computeFormattedDescription(modalState, modalState.groups[0])}
+                    </div>
+                </div>
+            </div>
+
+            <!-- 参数设置行 1: 出差 / 报销 / 外驻人名 / 项目 / 变更类型 / 备注 / 业务日期 -->
             <div class="yn-bem-bar-row">
                 <div class="yn-bem-field-group">
                     <label>出差区分:</label>
@@ -1571,7 +2736,7 @@ function renderTopBarHtml(filteredGroups: ExpenseRecordGroup[]): string {
                     <label>归属项目:</label>
                     <div class="yn-bem-project-wrapper" id="yn-bem-project-wrapper">
                         <input type="text" id="yn-bem-input-project" class="yn-bem-input"
-                               value="${modalState.projectName}" placeholder="搜索项目代码/名称..." style="width:150px; font-weight:600;" autocomplete="off" />
+                               value="${modalState.projectName}" placeholder="搜索项目代码/名称..." style="width:140px; font-weight:600;" autocomplete="off" />
                         <div id="yn-bem-project-dropdown" class="yn-bem-project-dropdown"></div>
                     </div>
                 </div>
@@ -1587,7 +2752,7 @@ function renderTopBarHtml(filteredGroups: ExpenseRecordGroup[]): string {
                 <div class="yn-bem-field-group">
                     <label>自定义备注:</label>
                     <input type="text" id="yn-bem-input-remark" class="yn-bem-input"
-                           value="${modalState.customRemark}" placeholder="为空不显" style="width:110px;" />
+                           value="${modalState.customRemark}" placeholder="为空不显" style="width:100px;" />
                 </div>
 
                 <div class="yn-bem-field-group">
@@ -1596,9 +2761,30 @@ function renderTopBarHtml(filteredGroups: ExpenseRecordGroup[]): string {
                            value="${modalState.batchBusinessDate}" style="width:125px; font-family:ui-monospace, monospace;" />
                     <span class="yn-bem-quick-link" id="yn-bem-qa-sync-earliest-date" title="将已选费用的业务日期同步为其最早开票日">按最早开票日</span>
                 </div>
+            </div>
 
-                <div class="yn-bem-field-group" style="margin-left:auto; display:flex; gap:8px; align-items:center;">
-                    <button class="yn-bem-btn-ai" id="yn-bem-btn-ai-infer" title="基于发票证据链与大模型智能补全各类型专属必填字段">
+            <!-- 参数设置行 2: 格式预设 (含外驻代报销格式) + 补交通地址 + 应用按钮 -->
+            <div class="yn-bem-bar-row" style="border-top:1px solid #f0f0f0; padding-top:8px;">
+                <div style="display:flex; align-items:center; gap:8px; flex:1; min-width:320px;">
+                    <span style="font-size:11px; color:#737373; font-weight:500;">格式预设:</span>
+                    <div class="yn-bem-segmented-wrap">
+                        <button type="button" class="yn-bem-preset-btn ${modalState.formatTemplate === '[\${employee}]-[\${project}]-[\${remark}]' ? 'active' : ''}" data-tpl="[\${employee}]-[\${project}]-[\${remark}]" title="使用 [当前社员名]-[项目号]-[备注]">[当前社员名]-[项目号]</button>
+                        <button type="button" class="yn-bem-preset-btn ${modalState.formatTemplate === '[${project}]-[${remark}]' ? 'active' : ''}" data-tpl="[\${project}]-[\${remark}]" title="使用 [项目]-[备注]">[仅项目]</button>
+                        <button type="button" class="yn-bem-preset-btn ${modalState.formatTemplate === '[外驻:\${name}] \${project} \${remark}' ? 'active' : ''}" data-tpl="[外驻:\${name}] \${project} \${remark}" title="使用 [外驻:人名] 项目 备注 (代外驻报销专用)">[外驻:人名] 项目 备注</button>
+                    </div>
+
+                    <input type="text" id="yn-bem-input-template" class="yn-bem-input"
+                           value="${modalState.formatTemplate}" style="width:230px; font-family:ui-monospace, monospace; font-size:11px;"
+                           title="支持模板变量: \${employee}当前社员名, \${name}外驻人名, \${project}项目, \${remark}自定义备注" />
+
+                    <label style="font-size:11px; color:#525252; cursor:pointer; display:inline-flex; align-items:center; gap:4px; margin-left:8px;">
+                        <input type="checkbox" id="yn-bem-chk-fill-addr" ${modalState.fillAddresses ? 'checked' : ''} />
+                        补交通始发/到达
+                    </label>
+                </div>
+
+                <div style="display:flex; gap:8px; align-items:center; margin-left:auto;">
+                    <button class="yn-bem-btn-ai" id="yn-bem-btn-ai-infer" title="基于发票证据链智能补全必填字段">
                         ✨ AI 智能推断
                     </button>
                     <button class="yn-bem-btn yn-bem-btn-apply" id="yn-bem-btn-apply">
@@ -1609,59 +2795,145 @@ function renderTopBarHtml(filteredGroups: ExpenseRecordGroup[]): string {
 
             <!-- 专属动态必填字段批量输入卡片 -->
             ${renderDynamicFieldsCardHtml()}
-
-            <!-- 第 3 行：格式预设 (Segmented Control) + 实时预览 + 补交通地址 + 快速筛选与检索 -->
-            <div class="yn-bem-bar-row" style="border-top:1px solid #f0f0f0; padding-top:8px;">
-                <div style="display:flex; align-items:center; gap:8px; flex:1; min-width:320px;">
-                    <span style="font-size:11px; color:#737373; font-weight:500;">格式预设:</span>
-                    <div class="yn-bem-segmented-wrap">
-                        <button type="button" class="yn-bem-preset-btn ${modalState.formatTemplate === '[\${employee}]-[\${project}]-[\${remark}]' ? 'active' : ''}" data-tpl="[\${employee}]-[\${project}]-[\${remark}]" title="使用 [当前社员名]-[项目号]-[备注]">[当前社员名]-[项目号]</button>
-                        <button type="button" class="yn-bem-preset-btn ${modalState.formatTemplate === '[${project}]-[${remark}]' ? 'active' : ''}" data-tpl="[\${project}]-[\${remark}]" title="使用 [项目]-[备注]">[仅项目]</button>
-                    </div>
-
-                    <input type="text" id="yn-bem-input-template" class="yn-bem-input"
-                           value="${modalState.formatTemplate}" style="width:250px; font-family:ui-monospace, monospace; font-size:11px;"
-                           title="支持模板变量: \${employee}当前社员名, \${name}外驻人名, \${project}项目, \${remark}自定义备注" />
-
-                    <span style="font-size:11px; color:#737373; font-weight:500; margin-left:4px;">预览:</span>
-                    <div class="yn-bem-preview-pill" id="yn-bem-preview-pill">
-                        ${computeFormattedDescription(modalState, modalState.groups[0])}
-                    </div>
-                </div>
-
-                <div style="display:flex; align-items:center; gap:8px;">
-                    <label style="font-size:11px; color:#525252; cursor:pointer; display:inline-flex; align-items:center; gap:4px;">
-                        <input type="checkbox" id="yn-bem-chk-fill-addr" ${modalState.fillAddresses ? 'checked' : ''} />
-                        补交通始发/到达
-                    </label>
-
-                    <input type="text" id="yn-bem-search" class="yn-bem-input"
-                           placeholder="搜索开票日/发票号/销方/说明..." style="width:190px;" value="${modalState.searchQuery}" />
-
-                    <div style="display:inline-flex; align-items:center; gap:4px;">
-                        <span class="yn-bem-quick-link" id="yn-bem-qa-select-all">全选</span>
-                        <span class="yn-bem-quick-link" id="yn-bem-qa-deselect">全不选</span>
-                        <span class="yn-bem-quick-link" id="yn-bem-qa-invert">反选</span>
-                        ${missingRequiredCount > 0 ? `<span class="yn-bem-quick-link" id="yn-bem-qa-select-missing" style="color:#dc2626; border-color:#fee2e2; background:#fef2f2;">仅选待补 (${missingRequiredCount})</span>` : ''}
-                        ${warnCount > 0 ? `<span class="yn-bem-quick-link" id="yn-bem-qa-select-warn" style="color:#b45309; border-color:#fef3c7; background:#fffbeb;">仅选预警 (${warnCount})</span>` : ''}
-                    </div>
-
-                    <select id="yn-bem-filter-mode" class="yn-bem-select" style="font-size:11px; padding:2px 6px;">
-                        <option value="ALL" ${modalState.filterMode === 'ALL' ? 'selected' : ''}>全部 (${totalGroups})</option>
-                        <option value="MISSING_REQUIRED" ${modalState.filterMode === 'MISSING_REQUIRED' ? 'selected' : ''}>待补必填 (${missingRequiredCount})</option>
-                        <option value="WARN" ${modalState.filterMode === 'WARN' ? 'selected' : ''}>预警 (${warnCount})</option>
-                        <option value="OK" ${modalState.filterMode === 'OK' ? 'selected' : ''}>正常 (${totalGroups - warnCount - missingRequiredCount})</option>
-                    </select>
-                </div>
-            </div>
-
-            <!-- 活跃列筛选条件标签栏 -->
-            <div id="yn-bem-active-filters-wrap">
-                ${renderActiveFilterTagsHtml()}
-            </div>
         </div>
     `;
 }
+
+let aiPanelRoot: Root | null = null;
+let aiPanelMountedEl: HTMLElement | null = null;
+
+/**
+ * 挂载并渲染 assistant-ui 智能副驾 React 面板
+ */
+function renderAssistantChat(container: HTMLElement) {
+    const rootEl = container.querySelector<HTMLElement>('#yn-bem-ai-panel-react-root');
+    if (!rootEl) return;
+
+    if (!aiPanelRoot || aiPanelMountedEl !== rootEl) {
+        if (aiPanelRoot) {
+            try {
+                aiPanelRoot.unmount();
+            } catch (e) { }
+        }
+        aiPanelRoot = createRoot(rootEl);
+        aiPanelMountedEl = rootEl;
+    }
+
+    const selectedCount = modalState.selectedRecordIds.size;
+    const selectedGroups = modalState.groups.filter(g => modalState.selectedRecordIds.has(g.expenseRecordId));
+    const totalAmountDecimal = Decimal.sum(selectedGroups, g => g.expenseAmount);
+
+    aiPanelRoot.render(
+        React.createElement(AssistantChatPanel, {
+            sessions: modalState.chatSessions,
+            currentSessionId: modalState.currentSessionId,
+            onSelectSession: (id: string) => {
+                modalState.currentSessionId = id;
+                renderAssistantChat(container);
+            },
+            onNewSession: () => {
+                const newSession: ChatSession = {
+                    id: `session_${Date.now()}`,
+                    title: '新对话',
+                    createdAt: Date.now(),
+                    updatedAt: Date.now(),
+                    messages: []
+                };
+                modalState.chatSessions.unshift(newSession);
+                modalState.currentSessionId = newSession.id;
+                modalState.activeSkillId = null;
+                saveChatSessionsToStorage(modalState.chatSessions);
+                renderAssistantChat(container);
+                showToast('success', '已开启全新对话');
+            },
+            onDeleteSession: (delId: string) => {
+                modalState.chatSessions = modalState.chatSessions.filter(s => s.id !== delId);
+                if (modalState.chatSessions.length === 0) {
+                    const fresh: ChatSession = {
+                        id: `session_${Date.now()}`,
+                        title: 'Trip 智能规划与对账分析',
+                        createdAt: Date.now(),
+                        updatedAt: Date.now(),
+                        messages: []
+                    };
+                    modalState.chatSessions.push(fresh);
+                    modalState.currentSessionId = fresh.id;
+                } else if (modalState.currentSessionId === delId) {
+                    modalState.currentSessionId = modalState.chatSessions[0].id;
+                }
+                saveChatSessionsToStorage(modalState.chatSessions);
+                renderAssistantChat(container);
+            },
+            onSendMessage: (text: string, attachments: ChatAttachment[]) => {
+                handleAssistantSendMessage(container, text, attachments);
+            },
+            onApplySkill: (skillId: string) => {
+                const skill = AI_SKILLS.find(s => s.id === skillId);
+                if (!skill) return;
+                if (skill.id === 'template') {
+                    copyFallback(ITINERARY_PROMPT_TEMPLATE);
+                    return;
+                }
+                modalState.activeSkillId = skill.id;
+                renderAssistantChat(container);
+            },
+            onSuggestionClick: (key) => {
+                if (key === 'infer') {
+                    openAiAssistantWithSkill(container, 'infer');
+                } else if (key === 'itinerary') {
+                    openAiAssistantWithSkill(container, 'itinerary');
+                } else if (key === 'autopilot-plan') {
+                    runAutopilotPlan(container);
+                } else if (key === 'dashboard') {
+                    if (modalState.tripPlans.length === 0) {
+                        clusterExpensesIntoTrips(
+                            modalState.groups,
+                            modalState.proxyPersonName || modalState.currentEmployeeName,
+                            modalState.projectName
+                        );
+                    }
+                    openAutopilotDecisionDashboard(container);
+                }
+            },
+            selectedExpenseCount: selectedCount,
+            selectedExpenseAmount: totalAmountDecimal.toNumber(),
+            attachedExpenseContextEnabled: modalState.attachedExpenseContextEnabled,
+            onToggleExpenseContext: (enabled: boolean) => {
+                modalState.attachedExpenseContextEnabled = enabled;
+                renderAssistantChat(container);
+            },
+            employeeName: modalState.currentEmployeeName || detectCurrentEmployeeName(),
+            isExecuting: modalState.isAssistantExecuting,
+            onClose: () => {
+                closeAiPanel(container);
+            },
+            skills: AI_SKILLS,
+            activeSkillId: modalState.activeSkillId,
+            onDismissSkill: () => {
+                modalState.activeSkillId = null;
+                renderAssistantChat(container);
+            },
+            onCopyPromptTemplate: () => {
+                copyFallback(ITINERARY_PROMPT_TEMPLATE);
+            },
+            selectedModel: modalState.selectedModel,
+            onSelectModel: (model: string) => {
+                modalState.selectedModel = model as any;
+                renderAssistantChat(container);
+            }
+        })
+    );
+}
+
+/**
+ * 局部刷新 AI 侧边栏
+ */
+function refreshAiPanel(container: HTMLElement) {
+    if (modalState.aiPanelOpen) {
+        renderAssistantChat(container);
+    }
+}
+
 
 /**
  * 按 ID 递归查找费用类型名称
@@ -1963,7 +3235,116 @@ function openRowDynamicModal(recordId: string, container: HTMLElement) {
 }
 
 /**
- * 渲染聚合多行明细表格 (Vercel Clean Table & Tabular Figures)
+ * 渲染单笔费用记录（含发票明细行）的 HTML 结构
+ */
+function renderGroupRowsHtml(group: ExpenseRecordGroup): string {
+    const isSelected = modalState.selectedRecordIds.has(group.expenseRecordId);
+    const isDescChanged = group.newDescription !== undefined && group.newDescription !== group.description;
+    const isDateChanged = group.newBusinessDate !== undefined && group.newBusinessDate !== group.businessDate;
+    const isTypeChanged = Boolean(group.newExpenseTypeId && group.newExpenseTypeId !== group.expenseTypeId);
+    const isAiDateInferred = Boolean(group.inferredFields?.['businessDate']);
+    const flow = getGroupBillFlow(group);
+
+    // 智能错配检测
+    const tripIntervals = modalState.tripPlans.map(t => ({ tripNo: t.tripNo, destination: t.destination, start: t.startDate, end: t.endDate }));
+    const misclass = checkTaxiMisclassification(group, tripIntervals);
+    let misclassHtml = '';
+    if (misclass.hasMisclass) {
+        const isToTripTaxi = misclass.suggestedTypeId === '0356c4cef03345af7f1906ec05cc0000';
+        misclassHtml = `<button type="button" class="yn-bem-type-misclass-bulb" data-recordid="${group.expenseRecordId}" data-target-type="${isToTripTaxi ? 'TRIP_TAXI' : 'CITY_TAXI'}" title="${misclass.reason || ''}">💡转${misclass.suggestedTypeName || '相应类型'}</button>`;
+    }
+
+    // FULL 模式：35列多行结构 (永久固定)
+    const invList = group.invoices;
+    const span = Math.max(1, invList.length);
+    const inv0 = invList[0];
+
+    let rowsHtml = `
+        <tr class="${isSelected ? 'is-selected' : ''} yn-bem-group-first yn-bem-data-row" data-recordid="${group.expenseRecordId}">
+            <!-- 费用主体聚合列 1: 复选框 -->
+            <td class="yn-bem-col-sticky-cb yn-bem-group-cell" rowspan="${span}">
+                <input type="checkbox" class="yn-bem-record-cb" data-recordid="${group.expenseRecordId}" ${isSelected ? 'checked' : ''} />
+            </td>
+
+            <!-- 费用主体聚合列 2: 最早开票日 -->
+            <td class="yn-bem-col-sticky-date yn-bem-group-cell" rowspan="${span}">
+                <span>${group.earliestInvoiceDate || '<span style="color:#a3a3a3;">-</span>'}</span>
+            </td>
+
+            <!-- 费用主体聚合列 3: 业务日期 (就地直接修改，100% 满高贴合) -->
+            <td class="yn-bem-group-cell yn-bem-cell-interactive ${isAiDateInferred ? 'yn-bem-cell-ai-date' : ''}" rowspan="${span}">
+                <div class="yn-bem-dyn-cell-inner">
+                    <input type="date" class="yn-bem-cell-date-input ${isAiDateInferred ? 'is-ai-inferred' : (isDateChanged ? 'has-changed' : '')}"
+                           data-recordid="${group.expenseRecordId}"
+                           value="${group.newBusinessDate || group.businessDate || ''}"
+                           title="${isAiDateInferred ? `✨ AI已自动同步为实际入住日期 (原开票日: ${group.businessDate})` : (isDateChanged ? `业务日期已修改 (原业务日期: ${group.businessDate})` : '点击直接修改业务日期')}" />
+                    ${isAiDateInferred ? `<span class="yn-bem-ai-sparkle-dot" title="✨ AI已自动同步为实际入住日 (原开票日: ${group.businessDate})">✨</span>` : ''}
+                </div>
+            </td>
+
+            <!-- 费用主体聚合列 4: 费用类型 (就地直接修改下拉 + 专属字段微按钮 + 流向 Tag + 错配纠错) -->
+            <td class="yn-bem-group-cell yn-bem-cell-interactive" rowspan="${span}">
+                <div class="yn-bem-cell-type-wrapper">
+                    <div style="display:flex; align-items:center; gap:4px;">
+                        <select class="yn-bem-cell-type-select ${isTypeChanged ? 'has-type-changed' : ''}"
+                                data-recordid="${group.expenseRecordId}"
+                                title="点击直接修改此笔费用的报销类型">
+                            ${renderTypeTreeOptionsHtml(modalState.expenseTypeTree, group.newExpenseTypeId || group.expenseTypeId)}
+                        </select>
+                        <span class="yn-bem-tag-${flow.toLowerCase()}" style="font-size:10px; padding:1px 4px; border-radius:3px; white-space:nowrap;">
+                            ${flow === 'BC' ? '差旅·BC' : '经费·BJ'}
+                        </span>
+                        <button type="button" class="yn-bem-btn-mini yn-bem-cell-dyn-trigger" data-recordid="${group.expenseRecordId}" title="弹窗精细调整该行专属字段" style="padding:1px 4px; font-size:10px;">
+                            ⚙
+                        </button>
+                    </div>
+                    ${misclassHtml}
+                </div>
+            </td>
+
+            <!-- 费用主体聚合列 5: 费用金额 (等宽靠右) -->
+            <td class="yn-bem-group-cell" rowspan="${span}" style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-variant-numeric:tabular-nums; font-weight:600; color:#171717; text-align:right;">
+                ¥${Number(group.expenseAmount || 0).toFixed(2)}
+            </td>
+
+            <!-- 费用主体聚合列 6: 合并费用说明文本框 (100% 满高贴合) -->
+            <td class="yn-bem-group-cell yn-bem-cell-interactive" rowspan="${span}">
+                <input type="text" class="yn-bem-desc-input ${isDescChanged ? 'has-changed' : ''}"
+                       data-recordid="${group.expenseRecordId}"
+                       value="${escapeHtml(group.newDescription !== undefined ? group.newDescription : group.description)}"
+                       placeholder="输入或修改费用说明..." title="直接就地编辑费用说明" />
+            </td>
+
+            <!-- 费用主体聚合列 7: 发票张数 -->
+            <td class="yn-bem-group-cell" rowspan="${span}" style="text-align:center;">
+                <span style="font-family:ui-monospace, monospace; font-weight:600;">${group.invoiceCount}</span>
+            </td>
+
+            <!-- 专属必填字段独立列 8-20 (rowspan) -->
+            ${DYNAMIC_COLUMNS.map(col => renderDynamicFieldCellHtml(group, col, span)).join('')}
+
+            <!-- 发票 0 明细列 (若无发票则渲染空单元格) -->
+            ${inv0 ? renderInvoiceDetailCells(inv0, group.invoiceCount, group) : `<td colspan="14" style="color:#a3a3a3; text-align:center;">(无挂载发票明细)</td>`}
+        </tr>
+    `;
+
+    // 后续发票明细行：仅渲染发票明细列
+    if (invList.length > 1) {
+        for (let k = 1; k < invList.length; k++) {
+            const invK = invList[k];
+            rowsHtml += `
+                <tr class="${isSelected ? 'is-selected' : ''} yn-bem-data-row" data-recordid="${group.expenseRecordId}">
+                    ${renderInvoiceDetailCells(invK, group.invoiceCount, group)}
+                </tr>
+            `;
+        }
+    }
+
+    return rowsHtml;
+}
+
+/**
+ * 渲染聚合多行明细表格 (Vercel Clean Table & Tabular Figures，多级分组与折叠架构)
  */
 function renderTableHtml(): string {
     const filteredGroups = getFilteredGroups(modalState);
@@ -1971,41 +3352,84 @@ function renderTableHtml(): string {
         modalState.selectedRecordIds.has(g.expenseRecordId)
     );
     const isAllChecked = filteredGroups.length > 0 && selectedInFiltered.length === filteredGroups.length;
+    const activeCols = COLUMN_DEFINITIONS;
+    const totalColSpan = activeCols.length + 1;
+
+    const getColumnCategoryPill = (key: string): string => {
+        if (['dynFrom', 'dynTo', 'dynTransitNo', 'dynStartDate', 'dynEndDate'].includes(key)) {
+            return `<span class="yn-bem-th-cat-pill yn-th-cat-transit" title="差旅交通专属必填">交通</span>`;
+        }
+        if (['dynCheckIn', 'dynCheckOut', 'dynCity', 'dynCityType', 'dynHotel', 'dynRoomNum', 'dynOverStandard'].includes(key)) {
+            return `<span class="yn-bem-th-cat-pill yn-th-cat-hotel" title="住宿费专属必填">住宿</span>`;
+        }
+        if (['dynAddrFrom', 'dynAddrTo'].includes(key)) {
+            return `<span class="yn-bem-th-cat-pill yn-th-cat-taxi" title="出租车专属必填">打车</span>`;
+        }
+        if (key === 'dynBillMonth') {
+            return `<span class="yn-bem-th-cat-pill yn-th-cat-mobile" title="通信费专属必填">通信</span>`;
+        }
+        if (key.startsWith('invoice') || ['totalAmount', 'departureTime', 'timeGetOff', 'stationGetOn', 'stationGetOff', 'salesName', 'fileName', 'remarks', 'reconciliationNote'].includes(key)) {
+            return `<span class="yn-bem-th-cat-pill yn-th-cat-invoice" title="原始发票票面明细">发票</span>`;
+        }
+        if (['earliestInvoiceDate', 'businessDate', 'expenseTypeName', 'expenseAmount', 'description', 'invoiceCount'].includes(key)) {
+            return `<span class="yn-bem-th-cat-pill yn-th-cat-base" title="费用记录基础属性">基础</span>`;
+        }
+        return '';
+    };
+
+    const colGroupHtml = `
+        <colgroup>
+            <col style="width: 34px; min-width: 34px;" />
+            ${activeCols.map(col => `<col style="width: ${col.width || '80px'}; min-width: ${col.width || '80px'};" />`).join('')}
+        </colgroup>
+    `;
+
+    const renderThCellHtml = (col: ColumnDef): string => {
+        const isSorted = modalState.sortKey === col.key;
+        const arrow = isSorted ? (modalState.sortAsc ? ' ↑' : ' ↓') : '';
+        const isFiltered = Boolean(modalState.columnFilters[col.key] && modalState.columnFilters[col.key].length > 0);
+        const isPopoverOpen = modalState.activePopoverCol === col.key;
+        const stickyClass = col.sticky === 'date' ? 'yn-bem-col-sticky-date' : '';
+        const alignStyle = col.align === 'right' ? 'text-align:right;' : (col.align === 'center' ? 'text-align:center;' : '');
+        const justifyStyle = col.align === 'right' ? 'justify-content:flex-end;' : (col.align === 'center' ? 'justify-content:center;' : '');
+        const catPill = getColumnCategoryPill(col.key);
+
+        return `
+            <th class="${stickyClass} ${isSorted ? 'sorted-active' : ''}" style="${alignStyle} ${col.width ? `min-width:${col.width}; width:${col.width};` : ''}">
+                <div class="yn-bem-th-cell-stack">
+                    <div class="yn-bem-th-top-row">
+                        ${catPill || '<span class="yn-bem-th-pill-spacer"></span>'}
+                        ${col.key !== 'actions' && col.key !== 'routeDetails' ? `
+                            <button type="button" class="yn-bem-th-filter-trigger ${isFiltered ? 'is-active' : ''}" data-filter-col="${col.key}" title="按 ${col.label} 筛选">▾</button>
+                            ${isPopoverOpen ? renderColumnFilterPopoverHtml(col.key) : ''}
+                        ` : ''}
+                    </div>
+                    <div class="yn-bem-th-bottom-row" style="${justifyStyle}">
+                        <span class="yn-bem-th-title" data-sort="${col.key}" title="${col.label}">
+                            <span class="yn-bem-th-label-text">${col.label}</span>
+                            ${arrow ? `<span class="yn-bem-th-sort-arrow">${arrow}</span>` : ''}
+                        </span>
+                    </div>
+                </div>
+            </th>
+        `;
+    };
 
     if (filteredGroups.length === 0) {
         return `
         <table class="yn-bem-table">
+            ${colGroupHtml}
             <thead>
                 <tr>
                     <th class="yn-bem-col-sticky-cb">
                         <input type="checkbox" id="yn-bem-th-select-all" disabled />
                     </th>
-                    ${COLUMN_DEFINITIONS.map(col => {
-                        const isSorted = modalState.sortKey === col.key;
-                        const arrow = isSorted ? (modalState.sortAsc ? ' ↑' : ' ↓') : '';
-                        const isFiltered = Boolean(modalState.columnFilters[col.key] && modalState.columnFilters[col.key].length > 0);
-                        const isPopoverOpen = modalState.activePopoverCol === col.key;
-                        const stickyClass = col.sticky === 'date' ? 'yn-bem-col-sticky-date' : '';
-                        const alignStyle = col.align === 'right' ? 'text-align:right;' : (col.align === 'center' ? 'text-align:center;' : '');
-
-                        return `
-                            <th class="${stickyClass} ${isSorted ? 'sorted-active' : ''}" style="${alignStyle} ${col.width ? `min-width:${col.width};` : ''}">
-                                <div class="yn-bem-th-content">
-                                    <span class="yn-bem-th-title" data-sort="${col.key}">
-                                        ${col.label}
-                                        ${arrow ? `<span class="yn-bem-th-sort-arrow">${arrow}</span>` : ''}
-                                    </span>
-                                    <button type="button" class="yn-bem-th-filter-trigger ${isFiltered ? 'is-active' : ''}" data-filter-col="${col.key}" title="按 ${col.label} 筛选">▾</button>
-                                    ${isPopoverOpen ? renderColumnFilterPopoverHtml(col.key) : ''}
-                                </div>
-                            </th>
-                        `;
-                    }).join('')}
+                    ${activeCols.map(col => renderThCellHtml(col)).join('')}
                 </tr>
             </thead>
             <tbody>
                 <tr>
-                    <td colspan="${COLUMN_DEFINITIONS.length + 1}" style="text-align:center; padding:60px 16px; color:#64748b; background:#fff;">
+                    <td colspan="${totalColSpan}" style="text-align:center; padding:60px 16px; color:#64748b; background:#fff;">
                         <div style="font-size:20px; margin-bottom:8px;">🔍 未找到符合筛选条件的费用记录</div>
                         <div style="font-size:13px; color:#94a3b8; margin-bottom:14px;">当前检索词或列筛选条件未匹配到任何结果</div>
                         <button type="button" class="yn-bem-btn yn-bem-btn-secondary" id="yn-bem-empty-clear-filters" style="font-size:12px; padding:5px 16px; cursor:pointer;">
@@ -2020,130 +3444,65 @@ function renderTableHtml(): string {
 
     return `
         <table class="yn-bem-table">
+            ${colGroupHtml}
             <thead>
                 <tr>
                     <th class="yn-bem-col-sticky-cb">
                         <input type="checkbox" id="yn-bem-th-select-all" ${isAllChecked ? 'checked' : ''} />
                     </th>
-                    ${COLUMN_DEFINITIONS.map(col => {
-                        const isSorted = modalState.sortKey === col.key;
-                        const arrow = isSorted ? (modalState.sortAsc ? ' ↑' : ' ↓') : '';
-                        const isFiltered = Boolean(modalState.columnFilters[col.key] && modalState.columnFilters[col.key].length > 0);
-                        const isPopoverOpen = modalState.activePopoverCol === col.key;
-                        const stickyClass = col.sticky === 'date' ? 'yn-bem-col-sticky-date' : '';
-                        const alignStyle = col.align === 'right' ? 'text-align:right;' : (col.align === 'center' ? 'text-align:center;' : '');
-
-                        return `
-                            <th class="${stickyClass} ${isSorted ? 'sorted-active' : ''}" style="${alignStyle} ${col.width ? `min-width:${col.width};` : ''}">
-                                <div class="yn-bem-th-content">
-                                    <span class="yn-bem-th-title" data-sort="${col.key}">
-                                        ${col.label}
-                                        ${arrow ? `<span class="yn-bem-th-sort-arrow">${arrow}</span>` : ''}
-                                    </span>
-                                    <button type="button" class="yn-bem-th-filter-trigger ${isFiltered ? 'is-active' : ''}" data-filter-col="${col.key}" title="按 ${col.label} 筛选">▾</button>
-                                    ${isPopoverOpen ? renderColumnFilterPopoverHtml(col.key) : ''}
-                                </div>
-                            </th>
-                        `;
-                    }).join('')}
+                    ${activeCols.map(col => renderThCellHtml(col)).join('')}
                 </tr>
             </thead>
-            <tbody>
-                ${filteredGroups.map(group => {
-                    const isSelected = modalState.selectedRecordIds.has(group.expenseRecordId);
-                    const invList = group.invoices;
-                    const span = Math.max(1, invList.length);
-                    const isDescChanged = group.newDescription !== undefined && group.newDescription !== group.description;
-                    const isDateChanged = group.newBusinessDate !== undefined && group.newBusinessDate !== group.businessDate;
-                    const isTypeChanged = Boolean(group.newExpenseTypeId && group.newExpenseTypeId !== group.expenseTypeId);
-
-                    const isAiDateInferred = Boolean(group.inferredFields?.['businessDate']);
-
-                    // 行 0：渲染费用主体列 (rowspan) 以及发票 0 的明细列
-                    const inv0 = invList[0];
-                    let rowsHtml = `
-                        <tr class="${isSelected ? 'is-selected' : ''} yn-bem-group-first" data-recordid="${group.expenseRecordId}">
-                            <!-- 费用主体聚合列 1: 复选框 -->
-                            <td class="yn-bem-col-sticky-cb yn-bem-group-cell" rowspan="${span}">
-                                <input type="checkbox" class="yn-bem-record-cb" data-recordid="${group.expenseRecordId}" ${isSelected ? 'checked' : ''} />
-                            </td>
-
-                            <!-- 费用主体聚合列 2: 最早开票日 -->
-                            <td class="yn-bem-col-sticky-date yn-bem-group-cell" rowspan="${span}">
-                                <span>${group.earliestInvoiceDate || '<span style="color:#a3a3a3;">-</span>'}</span>
-                            </td>
-
-                            <!-- 费用主体聚合列 3: 业务日期 (就地直接修改) -->
-                            <td class="yn-bem-group-cell yn-bem-cell-interactive ${isAiDateInferred ? 'yn-bem-cell-ai-date' : ''}" rowspan="${span}">
-                                <div class="yn-bem-dyn-cell-inner">
-                                    <input type="date" class="yn-bem-cell-date-input ${isAiDateInferred ? 'is-ai-inferred' : (isDateChanged ? 'has-changed' : '')}"
-                                           data-recordid="${group.expenseRecordId}"
-                                           value="${group.newBusinessDate || group.businessDate || ''}"
-                                           title="${isAiDateInferred ? '✨ AI已自动同步为实际入住日期' : '点击直接修改业务日期'}" />
-                                    ${isAiDateInferred ? `<span class="yn-bem-ai-sparkle-dot" title="✨ AI自动同步为实际入住日">✨</span>` : ''}
-                                </div>
-                                ${isAiDateInferred
-                                    ? `<span class="yn-bem-ai-date-badge" title="原开票日: ${group.businessDate} ➔ AI已同步为实际入住日">✨ AI同步入住日</span>`
-                                    : (isDateChanged ? `<span style="font-size:10px; color:#15803d; display:block; font-family:ui-monospace; margin-top:2px;">(原: ${group.businessDate})</span>` : '')
-                                }
-                            </td>
-
-                            <!-- 费用主体聚合列 4: 费用类型 (就地直接修改下拉 + 专属字段微按钮) -->
-                            <td class="yn-bem-group-cell yn-bem-cell-interactive" rowspan="${span}">
-                                <div class="yn-bem-cell-type-wrapper">
-                                    <select class="yn-bem-cell-type-select ${isTypeChanged ? 'has-type-changed' : ''}"
-                                            data-recordid="${group.expenseRecordId}"
-                                            title="点击直接修改此笔费用的报销类型">
-                                        ${renderTypeTreeOptionsHtml(modalState.expenseTypeTree, group.newExpenseTypeId || group.expenseTypeId)}
-                                    </select>
-                                    ${renderDynamicSubTags(group.dynamicFields)}
-                                    <button type="button" class="yn-bem-cell-dyn-trigger" data-recordid="${group.expenseRecordId}" title="点击修改本行专属必填字段">
-                                        ⚙ 专属字段
-                                    </button>
-                                </div>
-                            </td>
-
-                            <!-- 费用主体聚合列 5: 费用金额 (等宽靠右) -->
-                            <td class="yn-bem-group-cell" rowspan="${span}" style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-variant-numeric:tabular-nums; font-weight:600; color:#171717; text-align:right;">
-                                ¥${Number(group.expenseAmount || 0).toFixed(2)}
-                            </td>
-
-                            <!-- 费用主体聚合列 6: 合并费用说明文本框 -->
-                            <td class="yn-bem-group-cell" rowspan="${span}">
-                                <textarea class="yn-bem-desc-box ${isDescChanged ? 'has-changed' : ''}"
-                                          data-recordid="${group.expenseRecordId}"
-                                          placeholder="输入或修改费用说明...">${group.newDescription !== undefined ? group.newDescription : group.description}</textarea>
-                            </td>
-
-                            <!-- 费用主体聚合列 7: 发票张数 -->
-                            <td class="yn-bem-group-cell" rowspan="${span}" style="text-align:center;">
-                                <span style="font-family:ui-monospace, monospace; font-weight:600;">${group.invoiceCount}</span>
-                                ${group.invoiceCount > 1 ? `<div class="yn-bem-multi-inv-badge">${group.invoiceCount}张发票合并</div>` : ''}
-                            </td>
-
-                            <!-- 专属必填字段独立列 8-20 (rowspan) -->
-                            ${DYNAMIC_COLUMNS.map(col => renderDynamicFieldCellHtml(group, col, span)).join('')}
-
-                            <!-- 发票 0 明细列 (若无发票则渲染空单元格) -->
-                            ${inv0 ? renderInvoiceDetailCells(inv0, group.invoiceCount, group) : `<td colspan="14" style="color:#a3a3a3; text-align:center;">(无挂载发票明细)</td>`}
-                        </tr>
+            ${(() => {
+                if (modalState.groupingMode === 'NONE') {
+                    return `
+                        <tbody>
+                            ${filteredGroups.map(group => renderGroupRowsHtml(group)).join('')}
+                        </tbody>
                     `;
+                }
 
-                    // 后续发票明细行：仅渲染发票明细列
-                    if (invList.length > 1) {
-                        for (let k = 1; k < invList.length; k++) {
-                            const invK = invList[k];
-                            rowsHtml += `
-                                <tr class="${isSelected ? 'is-selected' : ''}" data-recordid="${group.expenseRecordId}">
-                                    ${renderInvoiceDetailCells(invK, group.invoiceCount, group)}
-                                </tr>
-                            `;
-                        }
-                    }
+                const sections = groupFilteredExpenses(filteredGroups, modalState.groupingMode, modalState.tripPlans);
+                return sections.map(sec => {
+                    const isCollapsed = modalState.collapsedGroupKeys.has(sec.key);
+                    const selectedCount = sec.items.filter(g => modalState.selectedRecordIds.has(g.expenseRecordId)).length;
+                    const totalCount = sec.items.length;
+                    const isChecked = totalCount > 0 && selectedCount === totalCount;
+                    const isIndeterminate = selectedCount > 0 && selectedCount < totalCount;
 
-                    return rowsHtml;
-                }).join('')}
-            </tbody>
+                    return `
+                        <tbody class="yn-bem-group-tbody ${isCollapsed ? 'is-collapsed' : ''}" data-group-key="${sec.key}">
+                            <tr class="yn-bem-group-header-row" data-group-key="${sec.key}">
+                                <td colspan="${totalColSpan}" class="yn-bem-group-header-cell">
+                                    <div class="yn-bem-group-header-inner">
+                                        <button type="button" class="yn-bem-group-toggle-btn" data-group-key="${sec.key}" title="${isCollapsed ? '点击展开' : '点击折叠'}">
+                                            ${isCollapsed ? '▶' : '▼'}
+                                        </button>
+                                        <input type="checkbox" class="yn-bem-group-cb" data-group-key="${sec.key}" ${isChecked ? 'checked' : ''} ${isIndeterminate ? 'data-indeterminate="true"' : ''} title="全选/反选本分组" />
+                                        <span class="yn-bem-group-title">${sec.title}</span>
+                                        <span class="yn-bem-group-flow-tag yn-bem-tag-${sec.flow.toLowerCase()}">${sec.flowTag}</span>
+                                        <span class="yn-bem-group-summary-badge">${sec.items.length} 笔费用 (${sec.totalInvoices} 张发票) · 小计 ¥${sec.totalAmount.toFixed(2)}</span>
+                                        ${sec.tripConfig ? `
+                                            <div style="margin-left:auto; display:flex; align-items:center; gap:6px;">
+                                                <button type="button" class="yn-bem-btn-trip-edit" data-trip-edit-id="${sec.tripConfig.id}" title="查看并修改本轮 Trip 行程、酒店、拜访客户据点及预算">
+                                                    ✏️ 编辑/打磨 Trip
+                                                </button>
+                                                <button type="button" class="yn-bem-btn-trip-edit" data-trip-report-id="${sec.tripConfig.id}" title="生成并复制本轮出差报告 (Markdown) 总结草稿">
+                                                    📄 出差报告草稿
+                                                </button>
+                                                <button type="button" class="yn-bem-btn-mini yn-bem-btn-trip-create-sc" data-trip-id="${sec.tripConfig.id}">
+                                                    ⚡ 生成该轮申请单 (SC)
+                                                </button>
+                                            </div>
+                                        ` : ''}
+                                    </div>
+                                </td>
+                            </tr>
+                            ${sec.items.map(group => renderGroupRowsHtml(group)).join('')}
+                        </tbody>
+                    `;
+                }).join('');
+            })()}
         </table>
     `;
 }
@@ -2219,38 +3578,10 @@ function renderFooterStatsHtml(): string {
 }
 
 /**
- * 响应式更新底部操作浮条 (Batch Action Bar) 按钮状态与文案
- * 当 selectedCount === 0 时，禁用批量操作按钮
+ * 响应式更新底部操作浮条 (兼容空桩)
  */
-function updateFooterActionButtons(container: HTMLElement): void {
-    const filteredGroups = getFilteredGroups(modalState);
-    const effectiveSelectedGroups = filteredGroups.filter(g => modalState.selectedRecordIds.has(g.expenseRecordId));
-    const selectedCount = effectiveSelectedGroups.length;
-    const isZeroSelected = selectedCount === 0;
-
-    const btnClear = container.querySelector<HTMLButtonElement>('#yn-bem-btn-clear-selection');
-    if (btnClear) {
-        btnClear.disabled = isZeroSelected;
-        btnClear.title = isZeroSelected ? '当前无任何选中条目' : '一键清空当前选中项';
-    }
-
-    const btnExport = container.querySelector<HTMLButtonElement>('#yn-bem-btn-export');
-    if (btnExport) {
-        btnExport.disabled = isZeroSelected;
-        btnExport.innerHTML = isZeroSelected
-            ? `<span>📥 导出所选 (0)</span>`
-            : `<span>📥 导出所选 (<strong>${selectedCount}</strong> 笔)</span>`;
-        btnExport.title = isZeroSelected ? '请先勾选需要导出的费用记录' : `导出选中的 ${selectedCount} 笔费用及对应发票明细 (CSV)`;
-    }
-
-    const btnSaveAll = container.querySelector<HTMLButtonElement>('#yn-bem-btn-save-all');
-    if (btnSaveAll) {
-        btnSaveAll.disabled = isZeroSelected;
-        btnSaveAll.innerHTML = isZeroSelected
-            ? `<span>确认批量修改并保存</span>`
-            : `<span>确认批量修改并保存 (<strong>${selectedCount}</strong> 笔)</span>`;
-        btnSaveAll.title = isZeroSelected ? '请先勾选需要保存的费用记录' : `保存已选的 ${selectedCount} 笔费用修改到系统`;
-    }
+function updateFooterActionButtons(_container: HTMLElement): void {
+    // 底部冗余操作按钮组已剔除，统一收敛至 Floating Action Island 悬浮操作岛
 }
 
 /**
@@ -2258,40 +3589,45 @@ function updateFooterActionButtons(container: HTMLElement): void {
  */
 function renderModalContent(container: HTMLElement, doc: Document) {
     const filteredGroups = getFilteredGroups(modalState);
+    const aiWidth = modalState.aiPanelWidth || 440;
 
     container.innerHTML = `
-        <!-- 1. 顶部融合操作栏 (全屏无独立暗黑标题栏) -->
+        <!-- 1. 顶部融合操作栏 (单行 46px 全宽置顶，左右端固定，搜索居中) -->
         ${renderTopBarHtml(filteredGroups)}
 
-        <!-- 2. 聚合明细表格 -->
-        <div class="yn-bem-table-wrap" id="yn-bem-table-wrap">
-            ${renderTableHtml()}
+        <!-- 2. 主工作区：明细表格 (100% 满宽，零布局偏移 CLS=0) -->
+        <div class="yn-bem-modal-main-wrapper" id="yn-bem-modal-main-wrapper">
+            <div class="yn-bem-main-layout" id="yn-bem-main-layout">
+                <div class="yn-bem-table-wrap" id="yn-bem-table-wrap">
+                    ${renderTableHtml()}
+                </div>
+            </div>
+
+            <!-- 3. 底部极简状态指示条 (Clean Status Strip) -->
+            <div class="yn-bem-footer">
+                <div class="yn-bem-footer-stats" id="yn-bem-footer-stats">
+                    ${renderFooterStatsHtml()}
+                </div>
+            </div>
         </div>
 
-        <!-- 3. 底部操作浮条 (Batch Action Bar - Vercel Clean Footer) -->
-        <div class="yn-bem-footer">
-            <div class="yn-bem-footer-stats" id="yn-bem-footer-stats">
-                ${renderFooterStatsHtml()}
-            </div>
-            <div class="yn-bem-footer-actions">
-                <button class="yn-bem-btn yn-bem-btn-secondary" id="yn-bem-btn-clear-selection" title="取消选择（一键清空选中）">
-                    取消选择 (清空)
-                </button>
-                <button class="yn-bem-btn yn-bem-btn-secondary" id="yn-bem-btn-export" title="导出当前选中的费用记录清单 (CSV)">
-                    📥 导出所选 (CSV)
-                </button>
-                <button class="yn-bem-btn yn-bem-btn-secondary" id="yn-bem-btn-cancel">
-                    关闭
-                </button>
-                <button class="yn-bem-btn yn-bem-btn-primary" id="yn-bem-btn-save-all">
-                    确认批量修改并保存
-                </button>
-            </div>
+        <!-- 4. 底部悬浮操作岛 (Floating Action Island - 选中时弹性浮现) -->
+        ${renderFloatingIslandHtml()}
+
+        <!-- 5. 居中批量修改弹窗容器 (按需挂载) -->
+        <div id="yn-bem-batch-dialog-wrap">
+            ${modalState.batchSettingsDialogOpen ? renderBatchSettingsDialogHtml() : ''}
+        </div>
+
+        <!-- 6. AI 智能副驾悬浮抽屉面板：右侧滑入滑出 + 可任意调整宽度 (assistant-ui React Root) -->
+        <div id="yn-bem-ai-panel-wrap" class="${modalState.aiPanelOpen ? 'is-open' : ''}" style="width:${aiWidth}px;">
+            <div class="yn-bem-ai-resizer" id="yn-bem-ai-resizer" title="左右拖动调整 AI 助手面板宽度"></div>
+            <div class="yn-bem-ai-panel" id="yn-bem-ai-panel-react-root"></div>
         </div>
     `;
 
     bindEvents(container, doc);
-    updateFooterActionButtons(container);
+    updateFloatingIsland(container);
 }
 
 const ITINERARY_PROMPT_TEMPLATE = `请帮我将以下原始出差/行程信息整理为标准的精简 Markdown 表格，仅保留以下必要列（无需多余解释）：
@@ -2323,93 +3659,738 @@ function copyFallback(text: string) {
     document.body.removeChild(ta);
 }
 
+// ============================================================
+// Trip 信息本地暂存与打磨系统 (Local Storage & Polish System)
+// ============================================================
+const STORAGE_KEY_TRIP_PLANS = 'yn_fssc_cached_trip_plans';
+
 /**
- * 弹出出差行程排期辅助推断模态框 (Itinerary Helper Modal)
- * 帮助用户在其他 AI 工具中一键整理出差排期，并粘贴排期结果以供本系统进行 100% 高可信精准对齐
+ * 将 Trip 规划临时持久化到 LocalStorage，方便用户跨操作打磨与恢复
  */
-function openItineraryModal(container: HTMLElement) {
-    let mask = document.getElementById('yn-bem-itinerary-mask');
-    if (!mask) {
-        const div = document.createElement('div');
-        div.innerHTML = `
-            <div id="yn-bem-itinerary-mask">
-                <div class="yn-bem-itinerary-card">
-                    <div class="yn-bem-itinerary-header">
-                        <div class="yn-bem-itinerary-title">
-                            <span>✈ 出差行程排期辅助推断 (提高 AI 准确性)</span>
+export function saveTripPlansToStorage(plans: TripApplicationConfig[]): void {
+    try {
+        if (typeof localStorage !== 'undefined') {
+            localStorage.setItem(STORAGE_KEY_TRIP_PLANS, JSON.stringify(plans));
+        }
+    } catch (e: any) {
+        AutopilotLogger.warn(`[TripStorage] 暂存 Trip 失败: ${e?.message || e}`);
+    }
+}
+
+/**
+ * 从 LocalStorage 读取用户暂存的 Trip 规划
+ */
+export function loadTripPlansFromStorage(): TripApplicationConfig[] {
+    try {
+        if (typeof localStorage !== 'undefined') {
+            const raw = localStorage.getItem(STORAGE_KEY_TRIP_PLANS);
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                if (Array.isArray(parsed) && parsed.length > 0) {
+                    return parsed;
+                }
+            }
+        }
+    } catch (e: any) {
+        AutopilotLogger.warn(`[TripStorage] 读取暂存 Trip 失败: ${e?.message || e}`);
+    }
+    return [];
+}
+
+/**
+ * 清空暂存的 Trip 规划
+ */
+export function clearTripPlansFromStorage(): void {
+    try {
+        if (typeof localStorage !== 'undefined') {
+            localStorage.removeItem(STORAGE_KEY_TRIP_PLANS);
+        }
+    } catch (e) {
+        // ignore
+    }
+}
+
+/**
+ * 生成出差报告与总结草稿 (Markdown 格式)
+ * 允许用户一键导出打磨后的出差信息，直接粘贴到周报或业务总结汇报
+ */
+export function generateTripReportMarkdown(trip: TripApplicationConfig, items: ExpenseRecordGroup[] = []): string {
+    const tripSum = items.reduce((acc, g) => acc + Number(g.expenseAmount || 0), 0);
+    const invoiceCount = items.reduce((acc, g) => acc + g.invoices.length, 0);
+    const categories = Array.from(new Set(items.map(g => g.newExpenseTypeName || g.expenseTypeName))).filter(Boolean);
+
+    return `# 业务出差报告与总结草稿 (Trip ${trip.tripNo})
+
+## 1. 出差基本信息
+- **出差轮次**：Trip ${trip.tripNo}
+- **出差目的地**：${trip.destination}
+- **出差区间**：${trip.startDate} ~ ${trip.endDate}（共 ${trip.days} 天 ${trip.nights} 晚）
+- **出差人员**：${trip.applicantName} ${trip.travelers && trip.travelers.length > 0 ? `(同行: ${trip.travelers.join('、')})` : ''}
+- **归属项目**：${trip.projectName || modalState.projectName || '未指定'}
+- **出差事由**：${trip.purpose || '业务交流及现场技术支持'}
+- **拜访客户/据点**：${trip.targetFactories || '未填写'}
+- **入住酒店**：${trip.hotelName || '未填写'}
+
+## 2. 差旅费用报销核算
+- **关联实际报销费用**：${items.length} 笔 (${invoiceCount} 张发票)
+- **实际报销总额**：¥${tripSum.toFixed(2)}
+- **涉及费用类别**：${categories.join('、') || '差旅费用'}
+- **出差申请单 (SC) 额度核定**：¥${trip.totalAmount.toFixed(2)}
+  - 交通费预算：¥${trip.trafficFee.toFixed(2)}
+  - 住宿费预算：¥${trip.hotelFee.toFixed(2)}
+  - 误餐补贴：¥${trip.mealFee.toFixed(2)}
+  - 市内交通/机动 Buffer：¥${trip.otherFee.toFixed(2)}
+  - 交通改签 Buffer：¥${trip.trafficBuffer.toFixed(2)}
+${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
+
+## 3. 主要工作与业务成果总结 (可就地补充修改)
+1. 现场调研与业务沟通：走访 ${trip.targetFactories || '客户据点'}，针对实际业务与技术需求进行深度现场对接与交流；
+2. 问题排查与方案落地：针对现场技术疑难与工艺流程开展实地排查，制定并推动解决方案；
+3. 后续工作计划与跟进事项：跟进现场遗留问题，保持与客户/据点业务负责人的密切对接。
+`;
+}
+
+/**
+ * 就地编辑/打磨 Trip 详情模态框
+ * 允许用户细致微调 Trip 的目的地、起止日、酒店、走访客户、同行人及预算
+ */
+export function openEditTripModal(tripId: string, container: HTMLElement) {
+    const trip = modalState.tripPlans.find(t => t.id === tripId);
+    if (!trip) {
+        showToast('warning', '未找到对应的 Trip 规划信息');
+        return;
+    }
+
+    const existing = document.getElementById('yn-bem-edit-trip-mask');
+    if (existing) existing.remove();
+
+    const tripItems = modalState.groups.filter(g => g.tripId === trip.id);
+    const tripSum = tripItems.reduce((acc, g) => acc + Number(g.expenseAmount || 0), 0);
+
+    const mask = document.createElement('div');
+    mask.id = 'yn-bem-edit-trip-mask';
+    mask.innerHTML = `
+        <div class="yn-bem-edit-trip-card">
+            <div class="yn-bem-edit-trip-header">
+                <div class="yn-bem-edit-trip-title">
+                    <span>✏️ 编辑/打磨 Trip ${trip.tripNo} 行程与申请规划</span>
+                    <span class="yn-bem-badge-trip">Trip ${trip.tripNo}</span>
+                </div>
+                <button type="button" class="yn-bem-close-x" id="yn-bem-btn-close-edit-trip">✕</button>
+            </div>
+            <div class="yn-bem-edit-trip-body">
+                <div class="yn-bem-form-row">
+                    <div class="yn-bem-form-group">
+                        <label class="yn-bem-form-label">目的地城市 *</label>
+                        <input type="text" id="yn-trip-edit-dest" class="yn-bem-form-input" value="${escapeHtml(trip.destination)}" placeholder="如: 天津、广州、深圳" />
+                    </div>
+                    <div class="yn-bem-form-group">
+                        <label class="yn-bem-form-label">起始日期 (出差首日) *</label>
+                        <input type="date" id="yn-trip-edit-start" class="yn-bem-form-input" value="${trip.startDate}" />
+                    </div>
+                    <div class="yn-bem-form-group">
+                        <label class="yn-bem-form-label">结束日期 (返回日) *</label>
+                        <input type="date" id="yn-trip-edit-end" class="yn-bem-form-input" value="${trip.endDate}" />
+                    </div>
+                </div>
+
+                <div class="yn-bem-form-row">
+                    <div class="yn-bem-form-group">
+                        <label class="yn-bem-form-label">主申请人 / 外驻代报人</label>
+                        <input type="text" id="yn-trip-edit-applicant" class="yn-bem-form-input" value="${escapeHtml(trip.applicantName)}" />
+                    </div>
+                    <div class="yn-bem-form-group">
+                        <label class="yn-bem-form-label">同行人员 (用顿号、分隔)</label>
+                        <input type="text" id="yn-trip-edit-travelers" class="yn-bem-form-input" value="${escapeHtml((trip.travelers || []).join('、'))}" placeholder="如: 陈浩、成勇、李建勇" />
+                    </div>
+                    <div class="yn-bem-form-group">
+                        <label class="yn-bem-form-label">归属项目</label>
+                        <input type="text" id="yn-trip-edit-project" class="yn-bem-form-input" value="${escapeHtml(trip.projectName || modalState.projectName || '')}" placeholder="如: X2605-001" />
+                    </div>
+                </div>
+
+                <div class="yn-bem-form-row">
+                    <div class="yn-bem-form-group">
+                        <label class="yn-bem-form-label">走访据点 / 客户公司列表</label>
+                        <input type="text" id="yn-trip-edit-factories" class="yn-bem-form-input" value="${escapeHtml(trip.targetFactories || '')}" placeholder="如: 住理工津荣模具、環宇住理工、東海化成" />
+                    </div>
+                    <div class="yn-bem-form-group">
+                        <label class="yn-bem-form-label">入住酒店 (排期权威酒店)</label>
+                        <input type="text" id="yn-trip-edit-hotel" class="yn-bem-form-input" value="${escapeHtml(trip.hotelName || '')}" placeholder="如: 亚朵酒店（天津117大厦华科大街） / 美悦酒店" />
+                    </div>
+                </div>
+
+                <div class="yn-bem-form-group">
+                    <label class="yn-bem-form-label">出差具体事由与目的</label>
+                    <textarea id="yn-trip-edit-purpose" class="yn-bem-form-textarea" rows="2" placeholder="如: 天津客户业务交流及现场技术支持">${escapeHtml(trip.purpose || '')}</textarea>
+                </div>
+
+                <!-- 申请单预算明细 (可自由微调) -->
+                <div style="background:#ffffff; border:1px solid #e2e8f0; border-radius:6px; padding:12px;">
+                    <div style="font-size:12px; font-weight:700; color:#0f172a; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
+                        <span>💰 出差申请单 (SC) 额度与预算微调</span>
+                        <span style="font-size:11px; color:#64748b; font-weight:normal;">(当前天数: <span id="yn-trip-edit-days-badge" style="font-weight:700; color:#0f172a;">${trip.days}天${trip.nights}晚</span> · 关联报销: ${tripItems.length}笔 ¥${tripSum.toFixed(2)})</span>
+                    </div>
+                    <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:8px;">
+                        <div class="yn-bem-form-group">
+                            <label class="yn-bem-form-label">交通费预算 (机票/高铁)</label>
+                            <input type="number" id="yn-trip-edit-fee-traffic" class="yn-bem-form-input" step="0.01" value="${trip.trafficFee.toFixed(2)}" />
                         </div>
-                        <button type="button" class="yn-bem-close-x" id="yn-bem-itin-close" title="关闭">✕</button>
-                    </div>
-
-                    <div class="yn-bem-itinerary-tip">
-                        <strong>💡 为什么需要排期信息？</strong><br>
-                        飞机票、住宿发票的<strong>开票日期通常滞后于实际出差行程</strong>，直接按发票开票日期推断容易产生偏差。
-                        提供您的出差日程排期表（如 Excel 表格复制的文本、Markdown 或日程简述），AI 将以此作为权威客观依据，精准推断实际入住/离店日期与市内出租车动线。
-                    </div>
-
-                    <div class="yn-bem-prompt-bar">
-                        <div class="yn-bem-prompt-bar-text">
-                            <span>📋 需要在第三方 AI 工具 (ChatGPT / DeepSeek / Claude) 中整理日程？</span>
+                        <div class="yn-bem-form-group">
+                            <label class="yn-bem-form-label">住宿费预算</label>
+                            <input type="number" id="yn-trip-edit-fee-hotel" class="yn-bem-form-input" step="0.01" value="${trip.hotelFee.toFixed(2)}" />
                         </div>
-                        <button type="button" class="yn-bem-btn-copy-prompt" id="yn-bem-btn-copy-itin-prompt">
-                            📋 复制排期整理 Prompt
-                        </button>
+                        <div class="yn-bem-form-group">
+                            <label class="yn-bem-form-label">误餐补贴</label>
+                            <input type="number" id="yn-trip-edit-fee-meal" class="yn-bem-form-input" step="0.01" value="${trip.mealFee.toFixed(2)}" />
+                        </div>
+                        <div class="yn-bem-form-group">
+                            <label class="yn-bem-form-label">市内交通及Buffer</label>
+                            <input type="number" id="yn-trip-edit-fee-other" class="yn-bem-form-input" step="0.01" value="${trip.otherFee.toFixed(2)}" />
+                        </div>
+                        <div class="yn-bem-form-group">
+                            <label class="yn-bem-form-label">交通改签Buffer (15%)</label>
+                            <input type="number" id="yn-trip-edit-fee-buffer" class="yn-bem-form-input" step="0.01" value="${trip.trafficBuffer.toFixed(2)}" />
+                        </div>
+                        <div class="yn-bem-form-group" style="justify-content: flex-end;">
+                            <label class="yn-bem-form-label" style="color:#15803d;">申请总额 (SC)</label>
+                            <div id="yn-trip-edit-total-val" style="font-size:15px; font-weight:700; color:#15803d; font-family:ui-monospace, monospace; padding-top:4px;">¥${trip.totalAmount.toFixed(2)}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="yn-bem-edit-trip-footer">
+                <button type="button" class="yn-bem-btn yn-bem-btn-secondary" id="yn-trip-edit-copy-report" style="margin-right:auto;">
+                    📋 复制出差总结报告 (Markdown)
+                </button>
+                <button type="button" class="yn-bem-btn yn-bem-btn-secondary" id="yn-trip-edit-cancel">取消</button>
+                <button type="button" class="yn-bem-btn yn-bem-btn-primary" id="yn-trip-edit-save">💾 保存修改并同步暂存</button>
+            </div>
+        </div>
+    `;
+
+    const targetDoc = container.ownerDocument || document;
+    targetDoc.body.appendChild(mask);
+
+    const closeTripModal = () => mask.remove();
+    mask.querySelector('#yn-bem-btn-close-edit-trip')?.addEventListener('click', closeTripModal);
+    mask.querySelector('#yn-trip-edit-cancel')?.addEventListener('click', closeTripModal);
+
+    // 动态联动总金额计算
+    const recalcTotal = () => {
+        const tf = parseFloat((mask.querySelector('#yn-trip-edit-fee-traffic') as HTMLInputElement)?.value || '0') || 0;
+        const hf = parseFloat((mask.querySelector('#yn-trip-edit-fee-hotel') as HTMLInputElement)?.value || '0') || 0;
+        const mf = parseFloat((mask.querySelector('#yn-trip-edit-fee-meal') as HTMLInputElement)?.value || '0') || 0;
+        const of = parseFloat((mask.querySelector('#yn-trip-edit-fee-other') as HTMLInputElement)?.value || '0') || 0;
+        const bf = parseFloat((mask.querySelector('#yn-trip-edit-fee-buffer') as HTMLInputElement)?.value || '0') || 0;
+        const total = Math.round((tf + hf + mf + of + bf) * 100) / 100;
+        const totalEl = mask.querySelector('#yn-trip-edit-total-val');
+        if (totalEl) totalEl.textContent = `¥${total.toFixed(2)}`;
+        return total;
+    };
+
+    ['yn-trip-edit-fee-traffic', 'yn-trip-edit-fee-hotel', 'yn-trip-edit-fee-meal', 'yn-trip-edit-fee-other', 'yn-trip-edit-fee-buffer'].forEach(id => {
+        mask.querySelector(`#${id}`)?.addEventListener('input', recalcTotal);
+    });
+
+    // 起止日期变动联动天数与误餐补贴
+    const onDateChange = () => {
+        const s = (mask.querySelector('#yn-trip-edit-start') as HTMLInputElement)?.value;
+        const e = (mask.querySelector('#yn-trip-edit-end') as HTMLInputElement)?.value;
+        if (s && e && s <= e) {
+            const { days, nights } = calculateDaysAndNights(s, e);
+            const badge = mask.querySelector('#yn-trip-edit-days-badge');
+            if (badge) badge.textContent = `${days}天${nights}晚`;
+            const mealInp = mask.querySelector<HTMLInputElement>('#yn-trip-edit-fee-meal');
+            if (mealInp) {
+                mealInp.value = computeMealAllowance(days, 300, 150).toFixed(2);
+                recalcTotal();
+            }
+        }
+    };
+    mask.querySelector('#yn-trip-edit-start')?.addEventListener('change', onDateChange);
+    mask.querySelector('#yn-trip-edit-end')?.addEventListener('change', onDateChange);
+
+    // 复制出差报告
+    mask.querySelector('#yn-trip-edit-copy-report')?.addEventListener('click', () => {
+        const reportMd = generateTripReportMarkdown(trip, tripItems);
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(reportMd).then(() => {
+                showToast('success', `✨ 已复制 Trip ${trip.tripNo} 的出差总结报告草稿到剪贴板！`);
+            }).catch(() => {
+                copyFallback(reportMd);
+                showToast('success', `✨ 已复制 Trip ${trip.tripNo} 的出差总结报告草稿到剪贴板！`);
+            });
+        } else {
+            copyFallback(reportMd);
+            showToast('success', `✨ 已复制 Trip ${trip.tripNo} 的出差总结报告草稿到剪贴板！`);
+        }
+    });
+
+    // 保存并持久化
+    mask.querySelector('#yn-trip-edit-save')?.addEventListener('click', () => {
+        const destInp = mask.querySelector<HTMLInputElement>('#yn-trip-edit-dest')?.value.trim() || trip.destination;
+        const sDate = mask.querySelector<HTMLInputElement>('#yn-trip-edit-start')?.value || trip.startDate;
+        const eDate = mask.querySelector<HTMLInputElement>('#yn-trip-edit-end')?.value || trip.endDate;
+        const applicant = mask.querySelector<HTMLInputElement>('#yn-trip-edit-applicant')?.value.trim() || trip.applicantName;
+        const travelersRaw = mask.querySelector<HTMLInputElement>('#yn-trip-edit-travelers')?.value.trim() || '';
+        const proj = mask.querySelector<HTMLInputElement>('#yn-trip-edit-project')?.value.trim() || trip.projectName;
+        const factories = mask.querySelector<HTMLInputElement>('#yn-trip-edit-factories')?.value.trim() || '';
+        const hotel = mask.querySelector<HTMLInputElement>('#yn-trip-edit-hotel')?.value.trim() || '';
+        const purpose = mask.querySelector<HTMLTextAreaElement>('#yn-trip-edit-purpose')?.value.trim() || trip.purpose;
+
+        const tf = parseFloat((mask.querySelector('#yn-trip-edit-fee-traffic') as HTMLInputElement)?.value || '0') || 0;
+        const hf = parseFloat((mask.querySelector('#yn-trip-edit-fee-hotel') as HTMLInputElement)?.value || '0') || 0;
+        const mf = parseFloat((mask.querySelector('#yn-trip-edit-fee-meal') as HTMLInputElement)?.value || '0') || 0;
+        const of = parseFloat((mask.querySelector('#yn-trip-edit-fee-other') as HTMLInputElement)?.value || '0') || 0;
+        const bf = parseFloat((mask.querySelector('#yn-trip-edit-fee-buffer') as HTMLInputElement)?.value || '0') || 0;
+        const total = Math.round((tf + hf + mf + of + bf) * 100) / 100;
+
+        const { days, nights } = calculateDaysAndNights(sDate, eDate);
+
+        trip.destination = destInp;
+        trip.startDate = sDate;
+        trip.endDate = eDate;
+        trip.days = days;
+        trip.nights = nights;
+        trip.applicantName = applicant;
+        trip.travelers = travelersRaw ? travelersRaw.split(/[、,，\s]+/).filter(Boolean) : [];
+        trip.projectName = proj;
+        trip.targetFactories = factories;
+        trip.hotelName = hotel;
+        trip.purpose = purpose;
+        trip.trafficFee = tf;
+        trip.hotelFee = hf;
+        trip.mealFee = mf;
+        trip.otherFee = of;
+        trip.trafficBuffer = bf;
+        trip.totalAmount = total;
+
+        // 同步修改属于本 Trip 的费用行名称
+        for (const g of modalState.groups) {
+            if (g.tripId === trip.id) {
+                g.tripName = `【Trip ${trip.tripNo}】${trip.destination}出差 (${trip.startDate} ~ ${trip.endDate})`;
+            }
+        }
+
+        // 写入 LocalStorage 暂存
+        saveTripPlansToStorage(modalState.tripPlans);
+
+        closeTripModal();
+        refreshTableView(container);
+        showToast('success', `✨ 已成功更新并暂存 Trip ${trip.tripNo} 的打磨信息！`);
+    });
+}
+
+/**
+ * 唤出 100vh AI 智能副驾侧边栏并激活对应技能 (Skill)
+ * 携带已选条目胶囊、注入技能提示词并自动获得焦点
+ */
+export function openAiAssistantWithSkill(container: HTMLElement, skillId: string): void {
+    // 1. 若当前未勾选任何条目，自动全选当前筛选视图下的全部条目
+    if (modalState.selectedRecordIds.size === 0) {
+        const filtered = getFilteredGroups(modalState);
+        filtered.forEach(g => modalState.selectedRecordIds.add(g.expenseRecordId));
+        updateAllCheckboxStates(container);
+        updateStatsAndFooter(container);
+    }
+
+    // 2. 打开 AI 智能侧边栏 (100vh)
+    modalState.aiPanelOpen = true;
+    modalState.attachedExpenseContextEnabled = true;
+    modalState.activeSkillId = skillId;
+    modalState.skillMenuOpen = false;
+    modalState.slashMenuOpen = false;
+
+    const aiWrap = container.querySelector<HTMLElement>('#yn-bem-ai-panel-wrap');
+    const w = modalState.aiPanelWidth || 440;
+    if (aiWrap) {
+        aiWrap.style.width = `${w}px`;
+        aiWrap.classList.add('is-open');
+    }
+
+    const btnToggleAi = container.querySelector<HTMLButtonElement>('#yn-bem-btn-toggle-ai');
+    if (btnToggleAi) {
+        btnToggleAi.classList.add('is-active');
+        btnToggleAi.innerHTML = `<span class="yn-gemini-sparkle-icon">✦</span> AI 助手 ✕`;
+    }
+
+    renderAssistantChat(container);
+}
+
+/**
+ * 全景报销决策复核与极速建单看板 (HITL)
+ * 允许用户在单一看板中一览所有出差申请单 (SC)、出差报销单 (BC) 与日常经费报销单 (BJ) 的规划构成、
+ * 预算展开及历史防重比对，确认无误后一键调用 API 管道极速持久化草稿入库 (commit: false)
+ */
+export function openAutopilotDecisionDashboard(container: HTMLElement, focusTripId?: string) {
+    const existing = container.querySelector('#yn-bem-decision-dashboard-modal');
+    if (existing) existing.remove();
+
+    if (modalState.tripPlans.length === 0) {
+        clusterExpensesIntoTrips(
+            modalState.groups,
+            modalState.proxyPersonName || modalState.currentEmployeeName,
+            modalState.projectName
+        );
+    }
+
+    const tripPlans = modalState.tripPlans;
+    const groups = modalState.groups;
+    const globalState = getInvoicePoolGlobalState();
+
+    const nonTripItems = groups.filter(g => !g.tripId || g.tripId === 'NON_TRIP');
+    const nonTripTotal = nonTripItems.reduce((acc, g) => acc + Number(g.expenseAmount || 0), 0);
+    const nonTripInvoices = nonTripItems.reduce((acc, g) => acc + g.invoices.length, 0);
+
+    const targetDoc = container.ownerDocument || (typeof window !== 'undefined' && window.top && window.top.document ? window.top.document : document);
+    if (!targetDoc.getElementById('yn-injected-styles')) {
+        const styleEl = targetDoc.createElement('style');
+        styleEl.id = 'yn-injected-styles';
+        styleEl.innerHTML = MODAL_STYLES;
+        (targetDoc.head || targetDoc.body).appendChild(styleEl);
+    }
+
+    const overlay = targetDoc.createElement('div');
+    overlay.id = 'yn-bem-decision-dashboard-modal';
+    overlay.className = 'yn-bem-decision-modal-overlay';
+
+    let tripsHtml = '';
+    if (tripPlans.length === 0) {
+        tripsHtml = `
+            <div style="padding:24px; text-align:center; color:#737373; background:#f8fafc; border:1px dashed #cbd5e1; border-radius:8px;">
+                未检测到差旅类费用（飞机票/火车票/住宿费/出差打车）。如全部为本地日常支出，请直接查看下方【日常经费报销 (BJ)】。
+            </div>
+        `;
+    } else {
+        tripsHtml = tripPlans.map(trip => {
+            const tripItems = groups.filter(g => g.tripId === trip.id);
+            const tripSum = tripItems.reduce((acc, g) => acc + Number(g.expenseAmount || 0), 0);
+            const isGenerated = Boolean(modalState.tripBillCodes[trip.id]);
+            const billCode = modalState.tripBillCodes[trip.id] || '';
+
+            return `
+                <div class="yn-bem-dashboard-card ${focusTripId === trip.id ? 'is-focused' : ''}">
+                    <div class="yn-bem-dashboard-card-header">
+                        <div class="yn-bem-dashboard-card-title">
+                            <span class="yn-bem-badge-trip">Trip ${trip.tripNo}</span>
+                            出差申请单 (SC) ➔ 出差费用报销单 (BC)
+                            <span class="yn-bem-tag-bc" style="margin-left:6px;">[差旅·BC]</span>
+                        </div>
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            ${isGenerated
+                                ? `<span class="yn-bem-group-draft-badge">✅ 已生成草稿: ${billCode}</span>`
+                                : `<span style="font-size:12px; color:#f59e0b; font-weight:600;">⏳ 待创建草稿</span>`
+                            }
+                            <button type="button" class="yn-bem-btn-trip-edit" data-dashboard-edit-trip="${trip.id}" title="查看并修改本轮出差行程与申请单预算">
+                                ✏️ 打磨
+                            </button>
+                            <button type="button" class="yn-bem-btn-trip-edit" data-dashboard-report-trip="${trip.id}" title="复制本轮出差总结报告草稿">
+                                📄 报告
+                            </button>
+                        </div>
+                    </div>
+                    <div class="yn-bem-dashboard-grid">
+                        <div class="yn-bem-dashboard-field">
+                            <span class="label">出差区间:</span>
+                            <span class="val">${trip.startDate} ~ ${trip.endDate} (${trip.days}天${trip.nights}晚)</span>
+                        </div>
+                        <div class="yn-bem-dashboard-field">
+                            <span class="label">目的地城市:</span>
+                            <span class="val">${trip.destination || '未指定'}</span>
+                        </div>
+                        <div class="yn-bem-dashboard-field">
+                            <span class="label">出差人/申请人:</span>
+                            <span class="val">${trip.applicantName} ${trip.isProxy ? '(外驻代报)' : '(本人)'}</span>
+                        </div>
+                        <div class="yn-bem-dashboard-field">
+                            <span class="label">归属项目:</span>
+                            <span class="val" style="color:#0284c7; font-weight:600;">${trip.projectName || modalState.projectName || '未指定'}</span>
+                        </div>
+                        <div class="yn-bem-dashboard-field" style="grid-column: span 2;">
+                            <span class="label">出差事由:</span>
+                            <span class="val">${trip.purpose || '业务交流及现场技术支持'}</span>
+                        </div>
                     </div>
 
-                    <textarea id="yn-bem-itinerary-text" class="yn-bem-itinerary-textarea"
-                        placeholder="请在此粘贴整理好的出差排期表格或文本（例如 Excel 复制的日程：含日期、目标省市、客户公司、交通方式、入住酒店等）...&#10;&#10;如无需排期，可直接点击下方「跳过排期，仅按现有发票推断」"></textarea>
+                    <div class="yn-bem-dashboard-budget-row">
+                        <div class="yn-bem-budget-item">
+                            <span class="b-label">交通费预算</span>
+                            <span class="b-val">¥${trip.trafficFee.toFixed(2)}</span>
+                        </div>
+                        <div class="yn-bem-budget-item">
+                            <span class="b-label">住宿费预算</span>
+                            <span class="b-val">¥${trip.hotelFee.toFixed(2)}</span>
+                        </div>
+                        <div class="yn-bem-budget-item">
+                            <span class="b-label">误餐补贴</span>
+                            <span class="b-val">¥${trip.mealFee.toFixed(2)}</span>
+                        </div>
+                        <div class="yn-bem-budget-item">
+                            <span class="b-label">市内交通Buffer</span>
+                            <span class="b-val">¥${trip.otherFee.toFixed(2)}</span>
+                        </div>
+                        <div class="yn-bem-budget-item">
+                            <span class="b-label">交通改签Buffer</span>
+                            <span class="b-val">¥${trip.trafficBuffer.toFixed(2)}</span>
+                        </div>
+                        <div class="yn-bem-budget-item is-total">
+                            <span class="b-label">申请总额 (SC)</span>
+                            <span class="b-val" style="color:#15803d; font-weight:700;">¥${trip.totalAmount.toFixed(2)}</span>
+                        </div>
+                    </div>
 
-                    <div class="yn-bem-itinerary-actions">
-                        <button type="button" class="yn-bem-btn yn-bem-btn-secondary" id="yn-bem-btn-itin-skip">
-                            跳过排期，仅按现有发票推断
-                        </button>
-                        <button type="button" class="yn-bem-btn yn-bem-btn-primary" id="yn-bem-btn-itin-submit">
-                            ✨ 结合排期一键智能推断
-                        </button>
+                    <div style="margin-top:10px; font-size:12px; color:#525252; display:flex; justify-content:space-between; align-items:center; background:#f9fafb; padding:8px 12px; border-radius:6px;">
+                        <span>关联本轮实际发票报销: <strong>${tripItems.length}</strong> 笔费用，报销金额 <strong>¥${tripSum.toFixed(2)}</strong></span>
+                        <span style="color:#737373;">(申请单总额已自动包含充裕 Buffer，确保报销金额绝不超标)</span>
+                    </div>
+
+                    ${trip.matchedHistoryBill ? `
+                        <div style="margin-top:8px; padding:6px 10px; background:#fffbeb; border:1px solid #fef3c7; border-radius:4px; font-size:11px; color:#b45309;">
+                            ⚠️ 系统交叉对比命中历史相近出差申请单: <strong>${trip.matchedHistoryBill.billCode}</strong> (申报金额 ¥${trip.matchedHistoryBill.amount}，申请日 ${trip.matchedHistoryBill.billDate})
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+        }).join('');
+    }
+
+    let nonTripHtml = '';
+    if (nonTripItems.length > 0) {
+        const isGenerated = Boolean(modalState.tripBillCodes['NON_TRIP']);
+        const billCode = modalState.tripBillCodes['NON_TRIP'] || '';
+        nonTripHtml = `
+            <div class="yn-bem-dashboard-card">
+                <div class="yn-bem-dashboard-card-header">
+                    <div class="yn-bem-dashboard-card-title">
+                        <span class="yn-bem-tag-bj" style="margin-right:6px;">[经费·BJ]</span>
+                        日常办公与市内交通经费报销单 (BJ)
+                    </div>
+                    <div>
+                        ${isGenerated
+                            ? `<span class="yn-bem-group-draft-badge">✅ 已生成草稿: ${billCode}</span>`
+                            : `<span style="font-size:12px; color:#f59e0b; font-weight:600;">⏳ 待创建草稿</span>`
+                        }
+                    </div>
+                </div>
+                <div class="yn-bem-dashboard-grid">
+                    <div class="yn-bem-dashboard-field">
+                        <span class="label">费用笔数:</span>
+                        <span class="val">${nonTripItems.length} 笔 (${nonTripInvoices} 张发票)</span>
+                    </div>
+                    <div class="yn-bem-dashboard-field">
+                        <span class="label">报销总额:</span>
+                        <span class="val" style="color:#15803d; font-weight:700;">¥${nonTripTotal.toFixed(2)}</span>
+                    </div>
+                    <div class="yn-bem-dashboard-field">
+                        <span class="label">主申请人:</span>
+                        <span class="val">${modalState.proxyPersonName || modalState.currentEmployeeName || '当前社员'}</span>
+                    </div>
+                    <div class="yn-bem-dashboard-field">
+                        <span class="label">归属项目:</span>
+                        <span class="val" style="color:#0284c7; font-weight:600;">${modalState.projectName || '未指定'}</span>
+                    </div>
+                    <div class="yn-bem-dashboard-field" style="grid-column: span 2;">
+                        <span class="label">包含类型:</span>
+                        <span class="val">${Array.from(new Set(nonTripItems.map(g => g.newExpenseTypeName || g.expenseTypeName))).join('、')}</span>
                     </div>
                 </div>
             </div>
         `;
-        mask = div.firstElementChild as HTMLElement;
-        document.body.appendChild(mask);
+    }
 
-        const closeItin = () => {
-            if (mask) mask.style.display = 'none';
-        };
+    overlay.innerHTML = `
+        <div class="yn-bem-decision-modal">
+            <div class="yn-bem-decision-modal-header">
+                <div>
+                    <h2 class="title">🚀 全景报销决策复核与极速建单看板 (HITL)</h2>
+                    <p class="subtitle">人类在回路复核确认：核验出差申请单 (SC) 预算与各报销单 (BC/BJ) 分流。点击下方一键极速创建草稿入库（刚性锁定 commit: false 保存草稿，绝不提交审批）。</p>
+                </div>
+                <button type="button" class="yn-bem-decision-modal-close" id="yn-bem-btn-close-dashboard">✕</button>
+            </div>
 
-        mask.querySelector('#yn-bem-itin-close')?.addEventListener('click', closeItin);
+            <div class="yn-bem-decision-modal-body">
+                <div style="margin-bottom:16px;">
+                    <h3 style="font-size:14px; font-weight:700; color:#171717; margin-bottom:8px; display:flex; align-items:center; gap:6px;">
+                        <span>🛫 异地出差轮次与申请单 (SC / BC) 规划</span>
+                        <span style="font-size:12px; color:#737373; font-weight:normal;">(共 ${tripPlans.length} 轮出差)</span>
+                    </h3>
+                    ${tripsHtml}
+                </div>
 
-        mask.querySelector('#yn-bem-btn-copy-itin-prompt')?.addEventListener('click', () => {
-            const textToCopy = ITINERARY_PROMPT_TEMPLATE;
-            if (navigator.clipboard && navigator.clipboard.writeText) {
-                navigator.clipboard.writeText(textToCopy).then(() => {
-                    showToast('success', '已复制排期整理 Prompt 到剪贴板！可直接粘贴至 AI 工具生成标准排期表格。');
-                }).catch(() => {
-                    copyFallback(textToCopy);
-                });
-            } else {
-                copyFallback(textToCopy);
+                ${nonTripItems.length > 0 ? `
+                    <div style="margin-bottom:16px;">
+                        <h3 style="font-size:14px; font-weight:700; color:#171717; margin-bottom:8px; display:flex; align-items:center; gap:6px;">
+                            <span>🏢 日常办公与市内经费 (BJ) 规划</span>
+                            <span style="font-size:12px; color:#737373; font-weight:normal;">(共 ${nonTripItems.length} 笔)</span>
+                        </h3>
+                        ${nonTripHtml}
+                    </div>
+                ` : ''}
+            </div>
+
+            <div class="yn-bem-decision-modal-footer">
+                <div class="yn-bem-dashboard-status" id="yn-bem-dashboard-status">
+                    就绪：请复核上述出差单与报销单方案，确认无误后点击右侧按钮极速入库。
+                </div>
+                <div style="display:flex; gap:10px; align-items:center;">
+                    <button type="button" class="yn-bem-btn yn-bem-btn-secondary" id="yn-bem-btn-cancel-dashboard">
+                        返回表格复核
+                    </button>
+                    <button type="button" class="yn-bem-btn yn-bem-btn-autopilot-execute" id="yn-bem-btn-execute-autopilot">
+                        ⚡ 一键极速创建草稿入库 (commit: false)
+                    </button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    targetDoc.body.appendChild(overlay);
+
+    // Bind Close
+    const closeDashboard = () => overlay.remove();
+    overlay.querySelector('#yn-bem-btn-close-dashboard')?.addEventListener('click', closeDashboard);
+    overlay.querySelector('#yn-bem-btn-cancel-dashboard')?.addEventListener('click', closeDashboard);
+
+    // Bind Dashboard In-place Edit and Report Clicks
+    overlay.addEventListener('click', (e) => {
+        const target = e.target as HTMLElement;
+        const editBtn = target.closest<HTMLElement>('[data-dashboard-edit-trip]');
+        if (editBtn && editBtn.dataset.dashboardEditTrip) {
+            const tId = editBtn.dataset.dashboardEditTrip;
+            openEditTripModal(tId, container);
+            return;
+        }
+        const repBtn = target.closest<HTMLElement>('[data-dashboard-report-trip]');
+        if (repBtn && repBtn.dataset.dashboardReportTrip) {
+            const tId = repBtn.dataset.dashboardReportTrip;
+            const t = tripPlans.find(p => p.id === tId);
+            if (t) {
+                const items = groups.filter(g => g.tripId === t.id);
+                const md = generateTripReportMarkdown(t, items);
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(md).then(() => {
+                        showToast('success', `✨ 已复制 Trip ${t.tripNo} 出差报告草稿到剪贴板！`);
+                    }).catch(() => {
+                        copyFallback(md);
+                        showToast('success', `✨ 已复制 Trip ${t.tripNo} 出差报告草稿到剪贴板！`);
+                    });
+                } else {
+                    copyFallback(md);
+                    showToast('success', `✨ 已复制 Trip ${t.tripNo} 出差报告草稿到剪贴板！`);
+                }
             }
-        });
+            return;
+        }
+    });
 
-        mask.querySelector('#yn-bem-btn-itin-skip')?.addEventListener('click', () => {
-            closeItin();
-            handleAiInference(container);
-        });
+    // Bind Execute Pipeline
+    const btnExec = overlay.querySelector<HTMLButtonElement>('#yn-bem-btn-execute-autopilot');
+    const statusDiv = overlay.querySelector<HTMLElement>('#yn-bem-dashboard-status');
 
-        mask.querySelector('#yn-bem-btn-itin-submit')?.addEventListener('click', () => {
-            const textarea = mask?.querySelector<HTMLTextAreaElement>('#yn-bem-itinerary-text');
-            const itineraryText = textarea ? textarea.value.trim() : '';
-            closeItin();
-            handleAiInference(container, itineraryText || undefined);
-        });
-    }
+    btnExec?.addEventListener('click', async () => {
+        if (!confirm('确认按照复核看板中的规划，一键自动创建出差申请单 (SC) 与报销单 (BC/BJ) 草稿吗？\\n\\n【安全承诺】：所有单据均以草稿形式保存在系统（commit: false），绝不自动提交审批。')) {
+            return;
+        }
 
-    mask.style.display = 'flex';
-    const textarea = mask.querySelector<HTMLTextAreaElement>('#yn-bem-itinerary-text');
-    if (textarea) {
-        setTimeout(() => textarea.focus(), 50);
-    }
+        btnExec.disabled = true;
+        btnExec.innerText = '正在极速入库...';
+
+        try {
+            // Step 1: 如果表格中有修改的费用记录，先批量保存费用记录更新
+            const updates: ExpenseRecordUpdateItem[] = [];
+            for (const g of modalState.groups) {
+                const isDescChanged = g.newDescription !== undefined && g.newDescription !== g.description;
+                const isDateChanged = g.newBusinessDate !== undefined && g.newBusinessDate !== g.businessDate;
+                const isTypeChanged = Boolean(g.newExpenseTypeId && g.newExpenseTypeId !== g.expenseTypeId);
+                const hasDynChanged = Boolean(g.dynamicFields && Object.keys(g.dynamicFields).length > 0);
+
+                if (isDescChanged || isDateChanged || isTypeChanged || hasDynChanged) {
+                    updates.push({
+                        expenseRecordId: g.expenseRecordId,
+                        targetExpenseTypeId: g.newExpenseTypeId || g.expenseTypeId,
+                        targetExpenseTypeName: g.newExpenseTypeName || g.expenseTypeName,
+                        newBusinessDate: g.newBusinessDate || g.businessDate,
+                        newDescription: g.newDescription !== undefined ? g.newDescription : g.description,
+                        dynamicFields: g.dynamicFields
+                    });
+                }
+            }
+
+            if (updates.length > 0) {
+                if (statusDiv) statusDiv.innerHTML = `<span class="spinner"></span> 正在保存 ${updates.length} 笔修改后的费用记录...`;
+                await batchUpdateExpenseRecordsApi(updates, globalState);
+            }
+
+            const resultsSummary: string[] = [];
+
+            // Step 2: 为每个 Trip 生成 SC 申请单草稿，随后生成 BC 出差报销单草稿
+            for (const trip of tripPlans) {
+                if (statusDiv) statusDiv.innerHTML = `<span class="spinner"></span> 正在生成 Trip ${trip.tripNo} 出差申请单 (SC)...`;
+                const scRes = await createSingleTripApplicationApi(trip, globalState);
+                if (scRes.success && scRes.billCode) {
+                    modalState.tripBillCodes[trip.id] = scRes.billCode;
+                    resultsSummary.push(`Trip ${trip.tripNo} 出差申请单: ${scRes.billCode}`);
+                } else {
+                    throw new Error(`创建 Trip ${trip.tripNo} 出差申请单失败: ${scRes.message || '未知异常'}`);
+                }
+
+                // 收集该 Trip 下所有费用 ID
+                const tripExpenseIds = groups.filter(g => g.tripId === trip.id).map(g => g.expenseRecordId);
+                if (tripExpenseIds.length > 0) {
+                    if (statusDiv) statusDiv.innerHTML = `<span class="spinner"></span> 正在生成 Trip ${trip.tripNo} 出差费用报销单 (BC) 关联 ${tripExpenseIds.length} 笔费用...`;
+                    const bcRes = await createBillDataAndTemplateByExpenseIdListApi(
+                        BILL_DEFINE_IDS.TRIP_CLAIM_BC,
+                        tripExpenseIds,
+                        globalState
+                    );
+                    if (bcRes?.billData) {
+                        const savedBc = await saveBillDataApi(bcRes.billData, globalState);
+                        const bcCode = savedBc?.billCode || bcRes.billData.billCode || 'BC草稿';
+                        resultsSummary.push(`Trip ${trip.tripNo} 出差报销单: ${bcCode}`);
+                    }
+                }
+            }
+
+            // Step 3: 为日常费用生成 BJ 经费报销单草稿
+            if (nonTripItems.length > 0) {
+                const bjExpenseIds = nonTripItems.map(g => g.expenseRecordId);
+                if (statusDiv) statusDiv.innerHTML = `<span class="spinner"></span> 正在生成日常经费报销单 (BJ) 关联 ${bjExpenseIds.length} 笔费用...`;
+                const bjRes = await createBillDataAndTemplateByExpenseIdListApi(
+                    BILL_DEFINE_IDS.GENERAL_CLAIM_BJ,
+                    bjExpenseIds,
+                    globalState
+                );
+                if (bjRes?.billData) {
+                    const savedBj = await saveBillDataApi(bjRes.billData, globalState);
+                    const bjCode = savedBj?.billCode || bjRes.billData.billCode || 'BJ草稿';
+                    modalState.tripBillCodes['NON_TRIP'] = bjCode;
+                    resultsSummary.push(`日常经费报销单: ${bjCode}`);
+                }
+            }
+
+            if (statusDiv) {
+                statusDiv.innerHTML = `<span style="color:#15803d; font-weight:700;">🎉 全部单据草稿极速创建入库成功！(已保存为未提交草稿)</span>`;
+            }
+            btnExec.innerText = '✅ 入库成功';
+
+            showToast('success', `🎉 全流程草稿已全部生成入库！共生成 ${resultsSummary.length} 张单据。\n请在系统【我的申请】/【我的报销】中复核`, 8000);
+
+            refreshTableView(container);
+            setTimeout(() => {
+                closeDashboard();
+            }, 2500);
+
+        } catch (err: any) {
+            AutopilotLogger.error(`[Autopilot Pipeline] 入库异常: ${err.message}`);
+            if (statusDiv) {
+                statusDiv.innerHTML = `<span style="color:#dc2626; font-weight:700;">❌ 入库失败: ${err.message || '网络或接口异常'}</span>`;
+            }
+            btnExec.disabled = false;
+            btnExec.innerText = '重试极速建单';
+            showToast('error', `极速建单失败: ${err.message || '网络或接口异常'}`);
+        }
+    });
 }
 
 /**
@@ -2459,7 +4440,11 @@ function extractFlightNumFromText(text: string): string | null {
 /**
  * 一键 AI 智能推断专属必填字段 (二层推断：规则优先 + 大模型跨单据深度推断)
  */
-async function handleAiInference(container: HTMLElement, itineraryText?: string) {
+async function handleAiInference(
+    container: HTMLElement,
+    itineraryText?: string,
+    onProgress?: (status: string) => void
+): Promise<string> {
     // 1. 获取推断目标行：有筛选时严格限定在筛选范围内；优先已勾选，若未勾选则以当前筛选视图全部行作为目标
     const filtered = getFilteredGroups(modalState);
     const isFiltering = filtered.length < modalState.groups.length;
@@ -2473,7 +4458,7 @@ async function handleAiInference(container: HTMLElement, itineraryText?: string)
         targetGroups = filtered;
         if (targetGroups.length === 0) {
             showToast('warning', isFiltering ? '当前筛选视图中无任何费用记录可供推断' : '当前列表无任何费用记录可供推断');
-            return;
+            return '当前筛选视图中无任何费用记录可供推断';
         }
         targetGroups.forEach(g => modalState.selectedRecordIds.add(g.expenseRecordId));
     }
@@ -2811,6 +4796,7 @@ async function handleAiInference(container: HTMLElement, itineraryText?: string)
                 itineraryText,
                 (status) => {
                     if (aiBtn) aiBtn.innerHTML = `<span class="spinner"></span> ${status}`;
+                    onProgress?.(status);
                 }
             );
 
@@ -2830,20 +4816,26 @@ async function handleAiInference(container: HTMLElement, itineraryText?: string)
 
         refreshTableView(container);
 
+        let resultSummary = '';
         if (llmInferredCount > 0) {
+            resultSummary = `规则提取 ${ruleInferredCount} 项，大模型精准推理 ${llmInferredCount} 项`;
             showToast('success', `✨ AI 智能推断完成：规则提取 ${ruleInferredCount} 项，大模型精准推理 ${llmInferredCount} 项！`);
         } else if (ruleInferredCount > 0) {
+            resultSummary = `基于证据链提取 ${ruleInferredCount} 项`;
             if (!isLlmConfigured()) {
                 showToast('success', `✨ 已提取 ${ruleInferredCount} 项！(在设置中配置大模型 API Key 可启用跨行程与排期深度推断)`);
             } else {
                 showToast('success', `✨ 已基于发票证据链提取 ${ruleInferredCount} 项字段！`);
             }
         } else {
-            showToast('info', '所选记录的专属字段已全部完整，无需额外推断');
+            resultSummary = '所选记录的专属字段已全部完整，无需额外推断';
+            showToast('info', resultSummary);
         }
+        return resultSummary;
     } catch (err: any) {
         AutopilotLogger.error(`[AiInference] 智能推断异常: ${err?.message || err}`);
         showToast('error', `推断失败: ${err.message || '未知异常'}`);
+        return `推断失败: ${err?.message || '未知异常'}`;
     } finally {
         if (aiBtn) {
             aiBtn.disabled = false;
@@ -2852,33 +4844,228 @@ async function handleAiInference(container: HTMLElement, itineraryText?: string)
     }
 }
 
-/**
- * 局部刷新表格视图与统计信息
- */
-function refreshTableView(container: HTMLElement) {
-    // 强制执行筛选联动裁剪，确保当前选择集合 100% 同步当前视图，彻底杜绝幽灵提交
-    pruneSelectedRecordIds();
+export type RefreshMode = 'FULL' | 'ROWS' | 'STATS' | 'CHECKBOXES';
 
-    const wrap = container.querySelector('#yn-bem-table-wrap');
-    if (wrap) {
-        wrap.innerHTML = renderTableHtml();
-        const thAll = wrap.querySelector<HTMLInputElement>('#yn-bem-th-select-all');
-        if (thAll) {
-            const filtered = getFilteredGroups(modalState);
-            const selectedInFiltered = filtered.filter(g => modalState.selectedRecordIds.has(g.expenseRecordId));
-            thAll.checked = filtered.length > 0 && selectedInFiltered.length === filtered.length;
-            thAll.indeterminate = selectedInFiltered.length > 0 && selectedInFiltered.length < filtered.length;
+let pendingRafId: number | null = null;
+
+/**
+ * requestAnimationFrame 防抖节流刷新
+ */
+function debouncedRefresh(container: HTMLElement, mode: RefreshMode = 'STATS') {
+    if (pendingRafId) cancelAnimationFrame(pendingRafId);
+    pendingRafId = requestAnimationFrame(() => {
+        refreshTableView(container, mode);
+        pendingRafId = null;
+    });
+}
+
+/**
+ * 局部增量同步所有 Checkbox 勾选与半选状态 (纯 DOM 操作，耗时 < 5ms)
+ */
+function updateAllCheckboxStates(container: HTMLElement): void {
+    const filtered = getFilteredGroups(modalState);
+    const selectedInFiltered = filtered.filter(g => modalState.selectedRecordIds.has(g.expenseRecordId));
+
+    // 1. 同步行 Checkbox & tr 行高亮状态 (解决 BUG 1: 取消选择后行依然残留高亮与勾选)
+    container.querySelectorAll<HTMLInputElement>('.yn-bem-record-cb').forEach(cb => {
+        const rid = cb.dataset.recordid;
+        if (rid) {
+            cb.checked = modalState.selectedRecordIds.has(rid);
+        }
+    });
+
+    // 确保所有数据行 (包含多发票明细行) 同步 is-selected class
+    container.querySelectorAll<HTMLElement>('tr.yn-bem-data-row').forEach(tr => {
+        const rid = tr.dataset.recordid;
+        if (rid) {
+            tr.classList.toggle('is-selected', modalState.selectedRecordIds.has(rid));
+        }
+    });
+
+    // 2. 同步分组 Checkbox
+    container.querySelectorAll<HTMLInputElement>('.yn-bem-group-cb').forEach(cb => {
+        const groupKey = cb.dataset.groupKey;
+        if (!groupKey) return;
+        const tbody = container.querySelector<HTMLElement>(`tbody[data-group-key="${groupKey}"]`);
+        if (!tbody) return;
+        const rowCbs = Array.from(tbody.querySelectorAll<HTMLInputElement>('.yn-bem-record-cb'));
+        const total = rowCbs.length;
+        const checkedCount = rowCbs.filter(c => c.checked).length;
+        cb.checked = total > 0 && checkedCount === total;
+        cb.indeterminate = checkedCount > 0 && checkedCount < total;
+    });
+
+    // 3. 同步表头全选 Checkbox
+    const thAll = container.querySelector<HTMLInputElement>('#yn-bem-th-select-all');
+    if (thAll) {
+        thAll.checked = filtered.length > 0 && selectedInFiltered.length === filtered.length;
+        thAll.indeterminate = selectedInFiltered.length > 0 && selectedInFiltered.length < filtered.length;
+    }
+}
+
+/**
+ * 增量刷新底部悬浮操作岛 (Floating Action Island - Linear/Stripe Grade)
+ */
+function updateFloatingIsland(container: HTMLElement): void {
+    const island = container.querySelector<HTMLElement>('#yn-bem-floating-island');
+    if (!island) return;
+    const selectedCount = modalState.selectedRecordIds.size;
+    if (selectedCount === 0) {
+        island.classList.add('is-hidden');
+    } else {
+        island.classList.remove('is-hidden');
+        const selectedGroups = modalState.groups.filter(g => modalState.selectedRecordIds.has(g.expenseRecordId));
+        const totalAmount = Decimal.sum(selectedGroups, g => g.expenseAmount).toFixed(2);
+        const statEl = island.querySelector('.yn-bem-island-stat');
+        if (statEl) {
+            statEl.innerHTML = `<span>已选 <strong>${selectedCount}</strong> 项</span><span class="island-amount">¥${totalAmount}</span>`;
         }
     }
+}
+
+/**
+ * 打开居中专注批量设置弹窗
+ */
+function openBatchSettingsDialog(container: HTMLElement): void {
+    modalState.batchSettingsDialogOpen = true;
+    let wrap = container.querySelector<HTMLElement>('#yn-bem-batch-dialog-wrap');
+    if (!wrap) {
+        wrap = document.createElement('div');
+        wrap.id = 'yn-bem-batch-dialog-wrap';
+        container.appendChild(wrap);
+    }
+    wrap.innerHTML = renderBatchSettingsDialogHtml();
+    bindBatchSettingsEvents(container);
+
+    // 弹窗右上角关闭与遮罩点击事件
+    wrap.querySelector('#yn-bem-dialog-close')?.addEventListener('click', () => closeBatchSettingsDialog(container));
+    wrap.querySelector('#yn-bem-dialog-cancel')?.addEventListener('click', () => closeBatchSettingsDialog(container));
+    wrap.querySelector('#yn-bem-batch-dialog-mask')?.addEventListener('click', (e) => {
+        if ((e.target as HTMLElement).id === 'yn-bem-batch-dialog-mask') {
+            closeBatchSettingsDialog(container);
+        }
+    });
+}
+
+/**
+ * 关闭居中批量设置弹窗
+ */
+function closeBatchSettingsDialog(container: HTMLElement): void {
+    modalState.batchSettingsDialogOpen = false;
+    const wrap = container.querySelector<HTMLElement>('#yn-bem-batch-dialog-wrap');
+    if (wrap) {
+        wrap.innerHTML = '';
+    }
+}
+
+/**
+ * 增量刷新底部统计栏与说明实时预览
+ */
+function updateStatsAndFooter(container: HTMLElement): void {
     const stats = container.querySelector('#yn-bem-footer-stats');
     if (stats) {
         stats.innerHTML = renderFooterStatsHtml();
     }
     updateFooterActionButtons(container);
+    updateFloatingIsland(container);
     const pill = container.querySelector('#yn-bem-preview-pill');
     if (pill) {
         pill.textContent = computeFormattedDescription(modalState, modalState.groups[0]);
     }
+}
+
+/**
+ * 增量同步 AI 助手面板与 Composer 中的费用上下文药丸徽章
+ */
+function updateAiContextPill(container: HTMLElement): void {
+    const selectedCount = modalState.selectedRecordIds.size;
+    const selectedGroups = modalState.groups.filter(g => modalState.selectedRecordIds.has(g.expenseRecordId));
+    const totalAmount = Decimal.sum(selectedGroups, g => g.expenseAmount);
+
+    // 1. 同步旧版欢迎区 context-pill (若存在)
+    const pill = container.querySelector<HTMLElement>('#yn-gemini-context-pill');
+    if (pill) {
+        if (selectedCount === 0) {
+            pill.className = 'yn-gemini-context-pill has-no-selection';
+            pill.innerHTML = `<span>📎 当前未勾选费用 (支持快捷全选)</span>`;
+        } else {
+            pill.className = 'yn-gemini-context-pill';
+            pill.innerHTML = `
+                <span>📎 已携带 <strong>${selectedCount}</strong> 笔已选费用数据</span>
+                <span style="font-size:10px; color:#15803d; font-family:ui-monospace, monospace;">¥${totalAmount.toFixed(2)}</span>
+            `;
+        }
+    }
+
+    // 2. 同步 Gemini Composer 卡片顶部的上下文芯片 (Screenshot 3)
+    const composerHeader = container.querySelector<HTMLElement>('.yn-gemini-composer-header');
+    if (composerHeader) {
+        if (modalState.attachedExpenseContextEnabled && selectedCount > 0) {
+            composerHeader.style.display = 'flex';
+            composerHeader.innerHTML = `
+                <div class="yn-gemini-composer-context-chip" id="yn-gemini-composer-context-chip">
+                    <span>📎 已选中费用条目 <strong>${selectedCount}</strong> 笔，金额 ¥${totalAmount.toFixed(2)}</span>
+                    <span class="yn-gemini-chip-dismiss" id="yn-gemini-chip-dismiss" title="从本次输入中移除费用上下文">✕</span>
+                </div>
+            `;
+            composerHeader.querySelector('#yn-gemini-chip-dismiss')?.addEventListener('click', (e) => {
+                e.stopPropagation();
+                modalState.attachedExpenseContextEnabled = false;
+                composerHeader.style.display = 'none';
+                composerHeader.innerHTML = '';
+            });
+        } else {
+            composerHeader.style.display = 'none';
+            composerHeader.innerHTML = '';
+        }
+    }
+}
+
+/**
+ * 精细度分级视图刷新函数 (4级模式：FULL / ROWS / STATS / CHECKBOXES)
+ */
+function refreshTableView(container: HTMLElement, mode: RefreshMode = 'ROWS') {
+    // 强制执行筛选联动裁剪，确保当前选择集合 100% 同步当前视图，彻底杜绝幽灵提交
+    pruneSelectedRecordIds();
+
+    if (mode === 'CHECKBOXES') {
+        updateAllCheckboxStates(container);
+        updateStatsAndFooter(container);
+        updateAiContextPill(container);
+        batchEditEventBus.publish({
+            type: 'SELECTION_CHANGED',
+            payload: {
+                selectedIds: modalState.selectedRecordIds,
+                count: modalState.selectedRecordIds.size,
+                totalAmount: Decimal.sum(
+                    modalState.groups.filter(g => modalState.selectedRecordIds.has(g.expenseRecordId)),
+                    g => g.expenseAmount
+                ).toNumber()
+            }
+        });
+        return;
+    }
+
+    if (mode === 'STATS') {
+        updateStatsAndFooter(container);
+        updateAiContextPill(container);
+        return;
+    }
+
+    if (mode === 'FULL') {
+        renderModalContent(container, container.ownerDocument);
+        return;
+    }
+
+    // Default 'ROWS' mode:
+    const wrap = container.querySelector('#yn-bem-table-wrap');
+    if (wrap) {
+        wrap.innerHTML = renderTableHtml();
+        updateAllCheckboxStates(container);
+    }
+    updateStatsAndFooter(container);
+    updateAiContextPill(container);
+
     const cardWrap = container.querySelector('#yn-bem-dynamic-fields-card');
     if (cardWrap && !modalState.targetExpenseTypeId) {
         cardWrap.outerHTML = renderDynamicFieldsCardHtml();
@@ -3064,19 +5251,18 @@ function bindDynamicCardEvents(container: HTMLElement) {
 /**
  * 绑定所有交互事件
  */
-function bindEvents(container: HTMLElement, doc: Document) {
-    const win = doc.defaultView || (typeof window !== 'undefined' ? window : null);
+/**
+ * 绑定批量设置弹出面板内部事件
+ */
+function bindBatchSettingsEvents(container: HTMLElement) {
+    const win = container.ownerDocument?.defaultView || (typeof window !== 'undefined' ? window : null);
     const globalState = getInvoicePoolGlobalState();
 
-    // 1. 关闭按钮
-    container.querySelector('#yn-bem-close-btn')?.addEventListener('click', closeBatchEditModal);
-    container.querySelector('#yn-bem-btn-cancel')?.addEventListener('click', closeBatchEditModal);
-
-    // 2. 出差模式与报销类型
+    // 1. 出差模式与报销类型
     const optTrip = container.querySelector<HTMLSelectElement>('#yn-bem-opt-trip');
     optTrip?.addEventListener('change', () => {
         modalState.isTrip = optTrip.value === 'true';
-        refreshTableView(container);
+        refreshTableView(container, 'STATS');
     });
 
     const optProxy = container.querySelector<HTMLSelectElement>('#yn-bem-opt-proxy');
@@ -3086,10 +5272,10 @@ function bindEvents(container: HTMLElement, doc: Document) {
         if (groupProxyName) {
             groupProxyName.style.display = modalState.isProxy ? 'inline-flex' : 'none';
         }
-        refreshTableView(container);
+        refreshTableView(container, 'STATS');
     });
 
-    // 2.1 变更报销类型下拉监听
+    // 2. 变更报销类型下拉监听
     const optTargetType = container.querySelector<HTMLSelectElement>('#yn-bem-opt-target-type');
     optTargetType?.addEventListener('change', () => {
         const val = optTargetType.value;
@@ -3117,14 +5303,11 @@ function bindEvents(container: HTMLElement, doc: Document) {
         }
     });
 
-    // 2.2 初始绑定专属动态必填字段卡片事件
-    bindDynamicCardEvents(container);
-
     // 3. 代报销外驻人名
     const inputName = container.querySelector<HTMLInputElement>('#yn-bem-input-proxy-name');
     inputName?.addEventListener('input', () => {
         modalState.proxyPersonName = inputName.value;
-        refreshTableView(container);
+        debouncedRefresh(container, 'STATS');
     });
 
     // 4. 归属项目号/名 实时接口检索与智能下拉
@@ -3164,7 +5347,7 @@ function bindEvents(container: HTMLElement, doc: Document) {
                         modalState.projectName = code;
                         if (inputProject) inputProject.value = code;
                         dropdownProject.style.display = 'none';
-                        refreshTableView(container);
+                        refreshTableView(container, 'STATS');
                     }
                 });
             });
@@ -3179,7 +5362,7 @@ function bindEvents(container: HTMLElement, doc: Document) {
         projectDebounceTimer = setTimeout(() => {
             performProjectSearch(inputProject.value);
         }, 250);
-        refreshTableView(container);
+        debouncedRefresh(container, 'STATS');
     });
 
     inputProject?.addEventListener('focus', () => {
@@ -3188,51 +5371,20 @@ function bindEvents(container: HTMLElement, doc: Document) {
         }
     });
 
-    // 点击外部时自动收起项目下拉与列筛选浮层
-    doc.addEventListener('click', (e) => {
-        const target = e.target as HTMLElement;
-        if (dropdownProject && !target.closest('#yn-bem-project-wrapper')) {
-            dropdownProject.style.display = 'none';
-        }
-        if (modalState.activePopoverCol && !target.closest('#yn-bem-filter-popover') && !target.closest('.yn-bem-th-filter-trigger')) {
-            modalState.activePopoverCol = null;
-            modalState.popoverKeyword = '';
-            refreshTableView(container);
-        }
-    });
-
-    // 活跃筛选条件微标签移除与全部清除
-    container.querySelector('.yn-bem-top-bar')?.addEventListener('click', (e) => {
-        const target = e.target as HTMLElement;
-        if (target && target.classList.contains('yn-bem-remove-filter')) {
-            const col = target.dataset.col;
-            if (col) {
-                delete modalState.columnFilters[col];
-                refreshTableView(container);
-            }
-            return;
-        }
-        if (target && target.id === 'yn-bem-clear-all-filters') {
-            modalState.columnFilters = {};
-            refreshTableView(container);
-            return;
-        }
-    });
-
     // 5. 自定义备注
     const inputRemark = container.querySelector<HTMLInputElement>('#yn-bem-input-remark');
     inputRemark?.addEventListener('input', () => {
         modalState.customRemark = inputRemark.value;
-        refreshTableView(container);
+        debouncedRefresh(container, 'STATS');
     });
 
-    // 6. 批量业务日期输入
+    // 6. 批量业务日期
     const inputBizDate = container.querySelector<HTMLInputElement>('#yn-bem-input-biz-date');
     inputBizDate?.addEventListener('change', () => {
         modalState.batchBusinessDate = inputBizDate.value;
     });
 
-    // 7. 快捷同步最早开票日为业务日期
+    // 7. 快捷同步最早开票日
     container.querySelector('#yn-bem-qa-sync-earliest-date')?.addEventListener('click', () => {
         const filtered = getFilteredGroups(modalState);
         const isFiltering = filtered.length < modalState.groups.length;
@@ -3255,7 +5407,7 @@ function bindEvents(container: HTMLElement, doc: Document) {
             }
         });
 
-        refreshTableView(container);
+        refreshTableView(container, 'ROWS');
         showToast('success', `已将 ${isFiltering ? '当前筛选内已选 ' : ''}${updated} 笔费用的业务日期同步为其最早开票日期`);
     });
 
@@ -3266,7 +5418,7 @@ function bindEvents(container: HTMLElement, doc: Document) {
         container.querySelectorAll('.yn-bem-preset-btn').forEach(b => {
             b.classList.toggle('active', (b as HTMLElement).dataset.tpl === inputTemplate.value);
         });
-        refreshTableView(container);
+        debouncedRefresh(container, 'STATS');
     });
 
     container.querySelectorAll('.yn-bem-preset-btn').forEach(btn => {
@@ -3277,19 +5429,24 @@ function bindEvents(container: HTMLElement, doc: Document) {
                 if (inputTemplate) inputTemplate.value = tpl;
                 container.querySelectorAll('.yn-bem-preset-btn').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
-                refreshTableView(container);
+                refreshTableView(container, 'STATS');
             }
         });
     });
 
-    // 9. 补齐交通费始发/目的地选项
+    // 9. 补齐交通始发/目的地
     const chkFillAddr = container.querySelector<HTMLInputElement>('#yn-bem-chk-fill-addr');
     chkFillAddr?.addEventListener('change', () => {
         modalState.fillAddresses = chkFillAddr.checked;
     });
 
-    // 10. 批量应用按钮
-    container.querySelector('#yn-bem-btn-apply')?.addEventListener('click', () => {
+    // 10. AI 智能推断按钮 (面板内)
+    container.querySelector('#yn-bem-btn-ai-infer')?.addEventListener('click', () => {
+        handleAiInference(container);
+    });
+
+    // 11. 批量应用按钮 (支持面板与独立居中弹窗)
+    const handleApply = () => {
         const filtered = getFilteredGroups(modalState);
         const isFiltering = filtered.length < modalState.groups.length;
         const targetGroups = modalState.groups.filter(g => {
@@ -3303,52 +5460,750 @@ function bindEvents(container: HTMLElement, doc: Document) {
             return;
         }
 
+        const applyDesc = container.querySelector<HTMLInputElement>('#yn-bem-chk-apply-desc')?.checked ?? true;
+        const applyType = container.querySelector<HTMLInputElement>('#yn-bem-chk-apply-type')?.checked ?? false;
+        const applyDate = container.querySelector<HTMLInputElement>('#yn-bem-chk-apply-date')?.checked ?? false;
+
+        if (!applyDesc && !applyType && !applyDate) {
+            showToast('warning', '请至少勾选一个需要批量设置的模块（说明 / 类型 / 日期）');
+            return;
+        }
+
         let updatedCount = 0;
         targetGroups.forEach(group => {
-            // 计算新说明
-            group.newDescription = computeFormattedDescription(modalState, group);
-
-            // 批量修改业务日期
-            if (modalState.batchBusinessDate) {
-                group.newBusinessDate = modalState.batchBusinessDate;
+            if (applyDesc) {
+                group.newDescription = computeFormattedDescription(modalState, group);
             }
-
-            // 变更报销类型
-            if (modalState.targetExpenseTypeId) {
-                group.newExpenseTypeId = modalState.targetExpenseTypeId;
-                group.newExpenseTypeName = modalState.targetExpenseTypeName;
-            }
-
-            // 注入专属必填字段
-            const dynValues = { ...modalState.dynamicFields };
-            const hasAnyDyn = Object.values(dynValues).some(v => v !== undefined && v !== '' && v !== 0);
-            if (hasAnyDyn) {
-                group.dynamicFields = { ...(group.dynamicFields || {}), ...dynValues };
-            }
-
-            // 自动补齐始发/目的地
-            if (modalState.fillAddresses) {
-                for (const inv of group.invoices) {
-                    if (inv.stationGetOn) group.newStartAddress = inv.stationGetOn;
-                    if (inv.stationGetOff) group.newEndAddress = inv.stationGetOff;
-                    if (group.newStartAddress || group.newEndAddress) break;
+            if (applyDate) {
+                if (modalState.batchBusinessDate) {
+                    group.newBusinessDate = modalState.batchBusinessDate;
                 }
-                if (group.newStartAddress || group.newEndAddress) {
-                    group.dynamicFields = {
-                        ...(group.dynamicFields || {}),
-                        startAddress: group.newStartAddress || group.dynamicFields?.startAddress,
-                        endAddress: group.newEndAddress || group.dynamicFields?.endAddress
-                    };
+                if (modalState.fillAddresses) {
+                    for (const inv of group.invoices) {
+                        if (inv.stationGetOn) group.newStartAddress = inv.stationGetOn;
+                        if (inv.stationGetOff) group.newEndAddress = inv.stationGetOff;
+                        if (group.newStartAddress || group.newEndAddress) break;
+                    }
+                    if (group.newStartAddress || group.newEndAddress) {
+                        group.dynamicFields = {
+                            ...(group.dynamicFields || {}),
+                            startAddress: group.newStartAddress || group.dynamicFields?.startAddress,
+                            endAddress: group.newEndAddress || group.dynamicFields?.endAddress
+                        };
+                    }
+                }
+            }
+            if (applyType) {
+                if (modalState.targetExpenseTypeId) {
+                    group.newExpenseTypeId = modalState.targetExpenseTypeId;
+                    group.newExpenseTypeName = modalState.targetExpenseTypeName;
+                }
+                const dynValues = { ...modalState.dynamicFields };
+                const hasAnyDyn = Object.values(dynValues).some(v => v !== undefined && v !== '' && v !== 0);
+                if (hasAnyDyn) {
+                    group.dynamicFields = { ...(group.dynamicFields || {}), ...dynValues };
                 }
             }
             updatedCount++;
         });
 
-        refreshTableView(container);
-        showToast('success', `成功应用到 ${isFiltering ? '当前筛选内已选 ' : '已选 '}${updatedCount} 笔费用！请在下方表格核验，确认无误后点击“确认保存”`);
+        refreshTableView(container, 'ROWS');
+        closeBatchSettingsDialog(container);
+        showToast('success', `成功应用到 ${isFiltering ? '当前筛选内已选 ' : '已选 '}${updatedCount} 笔费用！请核验后保存`);
+    };
+
+    container.querySelector('#yn-bem-btn-apply')?.addEventListener('click', handleApply);
+    container.querySelector('#yn-bem-dialog-apply')?.addEventListener('click', handleApply);
+
+    // 绑定专属字段卡片内部事件
+    bindDynamicCardEvents(container);
+}
+
+/**
+ * 绑定 AI 侧边栏拖拽调整宽度把手
+ */
+function bindAiPanelResizer(container: HTMLElement) {
+    const aiWrap = container.querySelector<HTMLElement>('#yn-bem-ai-panel-wrap');
+    const resizer = container.querySelector<HTMLElement>('#yn-bem-ai-resizer');
+    if (resizer && aiWrap) {
+        let isResizing = false;
+
+        const onMouseDown = (e: MouseEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
+            isResizing = true;
+            resizer.classList.add('is-resizing');
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+
+            const onMouseMove = (moveEv: MouseEvent) => {
+                if (!isResizing) return;
+                const winWidth = window.innerWidth;
+                let newWidth = winWidth - moveEv.clientX;
+                const minWidth = 320;
+                const maxWidth = Math.round(winWidth * 0.85);
+                if (newWidth < minWidth) newWidth = minWidth;
+                if (newWidth > maxWidth) newWidth = maxWidth;
+
+                modalState.aiPanelWidth = newWidth;
+                aiWrap.style.width = `${newWidth}px`;
+            };
+
+            const onMouseUp = () => {
+                if (isResizing) {
+                    isResizing = false;
+                    resizer.classList.remove('is-resizing');
+                    document.body.style.cursor = '';
+                    document.body.style.userSelect = '';
+                    try {
+                        localStorage.setItem('yn_fssc_ai_panel_width', String(modalState.aiPanelWidth));
+                    } catch (err) {}
+                }
+                window.removeEventListener('mousemove', onMouseMove);
+                window.removeEventListener('mouseup', onMouseUp);
+            };
+
+            window.addEventListener('mousemove', onMouseMove);
+            window.addEventListener('mouseup', onMouseUp);
+        };
+
+        resizer.addEventListener('mousedown', onMouseDown);
+    }
+}
+
+/**
+ * 收起 AI 侧边栏
+ */
+function closeAiPanel(container: HTMLElement) {
+    modalState.aiPanelOpen = false;
+    const aiWrap = container.querySelector<HTMLElement>('#yn-bem-ai-panel-wrap');
+    if (aiWrap) {
+        aiWrap.classList.remove('is-open');
+    }
+    const btnToggle = container.querySelector<HTMLButtonElement>('#yn-bem-btn-toggle-ai');
+    if (btnToggle) {
+        btnToggle.classList.remove('is-active');
+        btnToggle.innerHTML = `<span class="yn-gemini-sparkle-icon">✦</span> AI 助手 ✨`;
+    }
+}
+
+/**
+ * 全流程智能规划 (行程与日常)
+ */
+async function runAutopilotPlan(container: HTMLElement) {
+    const cmdText = (modalState.autopilotCommandText || '').trim();
+    let detectedTrips: DynamicTripInput[] = [];
+    if (cmdText) {
+        const prjMatch = cmdText.match(/(X\d{4}-\d{3}|[A-Z0-9]{2,8}-\d{3,4}|PRJ-[A-Z0-9\-]+)/i);
+        if (prjMatch) modalState.projectName = prjMatch[1].trim().toUpperCase();
+        const proxyMatch = cmdText.match(/(?:代|外驻)[:\s]*([^\s,，。]+)/);
+        if (proxyMatch) {
+            modalState.isProxy = true;
+            modalState.proxyPersonName = proxyMatch[1].trim();
+        }
+        try {
+            if (cmdText.length >= 20 && (cmdText.includes('\n') || cmdText.includes('\t') || cmdText.includes('据点') || cmdText.includes('出差'))) {
+                detectedTrips = await parseItineraryWithAi(cmdText);
+            }
+            if (!detectedTrips || detectedTrips.length === 0) {
+                detectedTrips = parseItineraryTable(cmdText);
+            }
+        } catch (e) {
+            detectedTrips = [];
+        }
+    }
+
+    clusterExpensesIntoTrips(
+        modalState.groups,
+        modalState.proxyPersonName || modalState.currentEmployeeName,
+        modalState.projectName,
+        detectedTrips.length > 0 ? detectedTrips : undefined
+    );
+
+    modalState.groupingMode = 'TRIP';
+    const optGrouping = container.querySelector<HTMLSelectElement>('#yn-bem-opt-grouping');
+    if (optGrouping) optGrouping.value = 'TRIP';
+    modalState.collapsedGroupKeys.clear();
+    refreshTableView(container, 'ROWS');
+
+    const planMsg = detectedTrips.length > 0
+        ? `已精准识别出差排期 ${detectedTrips.length} 轮 Trip 并划分区间，正在打开决策复核看板...`
+        : `已自动识别 ${modalState.tripPlans.length} 轮出差 Trip 及日常费用，正在打开决策复核看板...`;
+
+    showToast('success', `✨ ${planMsg}`, 3000);
+    setTimeout(() => {
+        openAutopilotDecisionDashboard(container);
+    }, 500);
+}
+
+/**
+ * 处理 Assistant 对话发送与 Agentic 执行
+ */
+async function handleAssistantSendMessage(
+    container: HTMLElement,
+    text: string,
+    attachments: ChatAttachment[]
+) {
+    const curSession = modalState.chatSessions.find(s => s.id === modalState.currentSessionId) || modalState.chatSessions[0];
+    if (!curSession) return;
+
+    // 首条消息自动重命名会话标题
+    if (curSession.title === '新对话' || curSession.title === '未命名会话' || curSession.messages.length === 0) {
+        curSession.title = text.slice(0, 18) || (attachments[0] ? `附件: ${attachments[0].name.slice(0, 12)}` : '对话');
+    }
+
+    const selectedCount = modalState.selectedRecordIds.size;
+    const selectedGroups = modalState.groups.filter(g => modalState.selectedRecordIds.has(g.expenseRecordId));
+    const totalAmountDecimal = Decimal.sum(selectedGroups, g => g.expenseAmount);
+
+    // 1. 添加用户消息
+    const userMsg: ChatMessage = {
+        id: `msg_${Date.now()}_u`,
+        role: 'user',
+        text: text || (attachments.length > 0 ? `[上传了 ${attachments.length} 个附件/图片]` : ''),
+        time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+        attachments: attachments.length > 0 ? attachments : undefined,
+        expenseContext: (modalState.attachedExpenseContextEnabled && selectedCount > 0)
+            ? { count: selectedCount, totalAmount: totalAmountDecimal.toNumber() }
+            : undefined
+    };
+    curSession.messages.push(userMsg);
+    curSession.updatedAt = Date.now();
+    saveChatSessionsToStorage(modalState.chatSessions);
+    renderAssistantChat(container);
+
+    // 2. 意图分流与助理回复
+    const lowerText = text.toLowerCase();
+    const isInfer = modalState.activeSkillId === 'infer' || lowerText.includes('推断') || lowerText.includes('infer') || lowerText.includes('必填');
+    const isItin = modalState.activeSkillId === 'itinerary' || lowerText.includes('排期') || lowerText.includes('行程');
+    const hasSchedule = text.length >= 20 && (text.includes('\n') || text.includes('\t') || text.includes('|') || /\d{4}[-/]\d{1,2}[-/]\d{1,2}/.test(text));
+
+    modalState.activeSkillId = null;
+    modalState.isAssistantExecuting = true;
+    renderAssistantChat(container);
+
+    if (isItin || hasSchedule) {
+        const usingLlm = isLlmConfigured();
+        const startTime = Date.now();
+        const assistMsg: ChatMessage = {
+            id: `msg_${Date.now()}_a`,
+            role: 'assistant',
+            text: '',
+            time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+            thinking: {
+                content: usingLlm
+                    ? `正在运用大语言模型解析您的出差排期，对齐往返闭环并聚类行程轮次 (Trips)...`
+                    : `正在运用本地轻量规则引擎分析排期并聚类行程轮次 (Trips)...`,
+                status: 'thinking',
+                durationMs: 0,
+                isExpanded: true
+            },
+            toolCalls: [
+                {
+                    id: 'tool_parse_itin',
+                    name: 'parseItineraryWithAiDetailed',
+                    title: '出差排期深度认知解析与闭环规划',
+                    icon: '📋',
+                    status: 'running',
+                    progress: usingLlm ? '正在通过大模型进行多轮常识与行程推理...' : '正在通过本地规则提取出行要素...'
+                }
+            ]
+        };
+        curSession.messages.push(assistMsg);
+        curSession.updatedAt = Date.now();
+        saveChatSessionsToStorage(modalState.chatSessions);
+        renderAssistantChat(container);
+
+        try {
+            const parseResult = await parseItineraryWithAiDetailed(text);
+            const detectedTrips = parseResult.trips;
+            const duration = Date.now() - startTime;
+
+            assistMsg.thinking = {
+                content: `排期解析完成：共识别 ${detectedTrips.length} 轮往返 Trip，完成客观据点与闭环常识对齐。`,
+                status: 'done',
+                durationMs: duration,
+                isExpanded: false
+            };
+
+            const itinTool = assistMsg.toolCalls?.find(t => t.id === 'tool_parse_itin');
+            if (itinTool) {
+                itinTool.status = 'done';
+                itinTool.progress = undefined;
+                itinTool.output = { tripCount: detectedTrips.length, trips: detectedTrips.map(t => ({ tripNo: t.tripNo, dest: t.destination, start: t.startDate, end: t.endDate })) };
+            }
+
+            assistMsg.text = parseResult.summaryMarkdown;
+            curSession.updatedAt = Date.now();
+            saveChatSessionsToStorage(modalState.chatSessions);
+            renderAssistantChat(container);
+
+            if (detectedTrips.length > 0) {
+                clusterExpensesIntoTrips(
+                    modalState.groups,
+                    modalState.proxyPersonName || modalState.currentEmployeeName,
+                    modalState.projectName,
+                    detectedTrips
+                );
+                modalState.groupingMode = 'TRIP';
+                const groupSelect = container.querySelector<HTMLSelectElement>('#yn-bem-grouping-select');
+                if (groupSelect) groupSelect.value = 'TRIP';
+                refreshTableView(container);
+
+                // 随后异步启动专属必填字段推断，提供实时进度流式反馈
+                const inferTool: ChatToolCall = {
+                    id: 'tool_infer_fields',
+                    name: 'inferRequiredFields',
+                    title: '发票专属必填字段智能推断',
+                    icon: '🔮',
+                    status: 'running',
+                    progress: '正在初始化发票 OCR 票据链与行程对齐...'
+                };
+                assistMsg.toolCalls = assistMsg.toolCalls || [];
+                assistMsg.toolCalls.push(inferTool);
+                renderAssistantChat(container);
+
+                setTimeout(() => {
+                    handleAiInference(container, text, (progress) => {
+                        inferTool.progress = progress;
+                        renderAssistantChat(container);
+                    }).then((inferSummary) => {
+                        inferTool.status = 'done';
+                        inferTool.progress = undefined;
+                        inferTool.output = inferSummary;
+                        assistMsg.text = `${parseResult.summaryMarkdown}\n\n---\n✅ **专属字段推断就绪**：${inferSummary}。\n您可直接在大表格中复核每笔明细，或点击保存。`;
+                        modalState.isAssistantExecuting = false;
+                        curSession.updatedAt = Date.now();
+                        saveChatSessionsToStorage(modalState.chatSessions);
+                        renderAssistantChat(container);
+                    }).catch((err) => {
+                        inferTool.status = 'error';
+                        inferTool.progress = undefined;
+                        inferTool.output = err?.message || String(err);
+                        assistMsg.text = `${parseResult.summaryMarkdown}\n\n---\n⚠️ **专属字段推断提示**：${err?.message || err}`;
+                        modalState.isAssistantExecuting = false;
+                        curSession.updatedAt = Date.now();
+                        saveChatSessionsToStorage(modalState.chatSessions);
+                        renderAssistantChat(container);
+                    });
+                }, 300);
+            } else {
+                modalState.isAssistantExecuting = false;
+                renderAssistantChat(container);
+            }
+        } catch (err: any) {
+            if (assistMsg.thinking) {
+                assistMsg.thinking.status = 'done';
+                assistMsg.thinking.durationMs = Date.now() - startTime;
+            }
+            const itinTool = assistMsg.toolCalls?.find(t => t.id === 'tool_parse_itin');
+            if (itinTool) {
+                itinTool.status = 'error';
+                itinTool.output = err?.message || String(err);
+            }
+            assistMsg.text = `排期解析异常: ${err?.message || '未知错误'}`;
+            modalState.isAssistantExecuting = false;
+            curSession.updatedAt = Date.now();
+            saveChatSessionsToStorage(modalState.chatSessions);
+            renderAssistantChat(container);
+        }
+    } else if (isInfer) {
+        const inferTool: ChatToolCall = {
+            id: 'tool_infer_fields',
+            name: 'inferRequiredFields',
+            title: `推断所选 ${selectedCount} 笔费用的专属必填项`,
+            icon: '🔮',
+            status: 'running',
+            progress: '正在穿透票据 OCR 链条并推导往返行程与住宿明细...'
+        };
+        const assistMsg: ChatMessage = {
+            id: `msg_${Date.now()}_a`,
+            role: 'assistant',
+            text: `已为您启动对已选 **${selectedCount}** 笔费用的专属必填字段智能推断！正在穿透票据 OCR 链条并推导往返行程与住宿明细...`,
+            time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+            toolCalls: [inferTool]
+        };
+        curSession.messages.push(assistMsg);
+        curSession.updatedAt = Date.now();
+        saveChatSessionsToStorage(modalState.chatSessions);
+        renderAssistantChat(container);
+
+        setTimeout(() => {
+            handleAiInference(container, undefined, (progress) => {
+                inferTool.progress = progress;
+                renderAssistantChat(container);
+            }).then((inferSummary) => {
+                inferTool.status = 'done';
+                inferTool.progress = undefined;
+                inferTool.output = inferSummary;
+                assistMsg.text = `✨ **专属必填字段智能推断完成**！\n• ${inferSummary}\n• 您可在大表格中复核推断结果并点击保存。`;
+                modalState.isAssistantExecuting = false;
+                curSession.updatedAt = Date.now();
+                saveChatSessionsToStorage(modalState.chatSessions);
+                renderAssistantChat(container);
+            }).catch((err) => {
+                inferTool.status = 'error';
+                inferTool.progress = undefined;
+                inferTool.output = err?.message || String(err);
+                assistMsg.text = `⚠️ **推断异常**：${err?.message || err}`;
+                modalState.isAssistantExecuting = false;
+                curSession.updatedAt = Date.now();
+                saveChatSessionsToStorage(modalState.chatSessions);
+                renderAssistantChat(container);
+            });
+        }, 300);
+    } else if (lowerText.includes('外驻') || lowerText.includes('代报销') || /x\d{4}-\d{3}/i.test(text)) {
+        const prjMatch = text.match(/(X\d{4}-\d{3}|[A-Z0-9]{2,8}-\d{3,4}|PRJ-[A-Z0-9\-]+)/i);
+        if (prjMatch) modalState.projectName = prjMatch[1].trim().toUpperCase();
+        const proxyMatch = text.match(/(?:代|外驻)[:\s]*([^\s,，。]+)/);
+        if (proxyMatch) {
+            modalState.isProxy = true;
+            modalState.proxyPersonName = proxyMatch[1].trim();
+        }
+        const assistMsg: ChatMessage = {
+            id: `msg_${Date.now()}_a`,
+            role: 'assistant',
+            text: `已解析批量参数：\n• **项目代码**：\`${modalState.projectName || '未指定'}\`\n• **外驻社员**：\`${modalState.proxyPersonName || '无'}\`\n• 费用说明模板已同步更新为：\`${computeFormattedDescription(modalState, modalState.groups[0])}\`。\n您可以点击底部悬浮岛的【批量设置】将其应用到已勾选记录。`,
+            time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+        };
+        curSession.messages.push(assistMsg);
+        curSession.updatedAt = Date.now();
+        modalState.isAssistantExecuting = false;
+        saveChatSessionsToStorage(modalState.chatSessions);
+        renderAssistantChat(container);
+        refreshTableView(container, 'STATS');
+    } else {
+        const warnCount = modalState.groups.filter(g => g.hasWarn).length;
+        const missingCount = modalState.groups.filter(g => isGroupMissingRequired(g)).length;
+        const assistMsg: ChatMessage = {
+            id: `msg_${Date.now()}_a`,
+            role: 'assistant',
+            text: `已收到您的指令：\n\n**当前费控账目快照**：\n• 费用总笔数：**${modalState.groups.length}** 笔 (已选 **${selectedCount}** 笔，总额 ¥**${totalAmountDecimal.toFixed(2)}**)\n• 必填待补项目：**${missingCount}** 笔\n• 日期预警项目：**${warnCount}** 处\n\n您可以随时告诉我：\n1. *"智能推断必填项"* 或键入 \`/infer\` — 自动提取交通与住宿专属字段\n2. *"规划出差行程"* 或键入 \`/itinerary\` — 按排期自动切分聚类 Trip\n3. *"外驻社员名 项目号"* 或键入 \`/proxy\` — 批量规范化生成企业费控说明`,
+            time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+        };
+        curSession.messages.push(assistMsg);
+        curSession.updatedAt = Date.now();
+        modalState.isAssistantExecuting = false;
+        saveChatSessionsToStorage(modalState.chatSessions);
+        renderAssistantChat(container);
+    }
+}
+
+function bindEvents(container: HTMLElement, doc: Document) {
+    const win = doc.defaultView || (typeof window !== 'undefined' ? window : null);
+    const globalState = getInvoicePoolGlobalState();
+
+    // 1. 关闭按钮
+    container.querySelector('#yn-bem-close-btn')?.addEventListener('click', closeBatchEditModal);
+    container.querySelector('#yn-bem-btn-cancel')?.addEventListener('click', closeBatchEditModal);
+
+    // 2. 独立批量修改属性居中弹窗触发
+    container.querySelector('#yn-bem-btn-batch-dialog-trigger')?.addEventListener('click', () => {
+        openBatchSettingsDialog(container);
     });
 
-    // 11. 模糊搜索 (带 300ms 防抖与筛选联动裁剪)
+    // 2.1 兼容旧版折叠按钮 (若仍存在)
+    const btnToggleSettings = container.querySelector<HTMLButtonElement>('#yn-bem-btn-toggle-settings');
+    btnToggleSettings?.addEventListener('click', () => {
+        openBatchSettingsDialog(container);
+    });
+
+    // 导出所选费用清单 CSV
+    const executeExportSelected = () => {
+        const filteredGroups = getFilteredGroups(modalState);
+        const selectedGroups = filteredGroups.filter(g => modalState.selectedRecordIds.has(g.expenseRecordId));
+        if (selectedGroups.length === 0) {
+            showToast('warning', '请先勾选需要导出的费用记录');
+            return;
+        }
+
+        // 展平为发票清单，带上修改后的说明与业务日期
+        const exportRows: ExpenseRecordExportRow[] = [];
+        selectedGroups.forEach(group => {
+            const effectiveDesc = group.newDescription !== undefined ? group.newDescription : group.description;
+            const effectiveBizDate = group.newBusinessDate || group.businessDate;
+            const effectiveTypeId = group.newExpenseTypeId || group.expenseTypeId;
+            const effectiveTypeName = group.newExpenseTypeName
+                ? `${group.newExpenseTypeName} (原: ${group.expenseTypeName})`
+                : group.expenseTypeName;
+            const dynSummary = group.dynamicFields
+                ? Object.entries(group.dynamicFields).filter(([_, v]) => Boolean(v)).map(([k, v]) => `${k}:${v}`).join('; ')
+                : '';
+
+            if (group.invoices.length === 0) {
+                exportRows.push({
+                    expenseRecordId: group.expenseRecordId,
+                    status: '未报销',
+                    expenseTypeId: effectiveTypeId,
+                    expenseTypeName: effectiveTypeName,
+                    expenseAmount: group.expenseAmount,
+                    businessDate: effectiveBizDate,
+                    description: effectiveDesc,
+                    invoiceCount: group.invoiceCount,
+                    applicantName: group.applicantName,
+                    createDate: group.createDate,
+                    invoiceIndex: 0,
+                    invoiceType: '',
+                    invoiceCode: '',
+                    invoiceNo: '',
+                    invoiceDate: '',
+                    amountTax: '',
+                    totalAmount: '',
+                    totalTax: '',
+                    departureDate: '',
+                    departureTime: '',
+                    timeGetOff: '',
+                    stationGetOn: group.dynamicFields?.startAddress || '',
+                    stationGetOff: group.dynamicFields?.endAddress || '',
+                    trainNo: group.dynamicFields?.trainNum || group.dynamicFields?.flightNum || '',
+                    salesName: group.dynamicFields?.hotelName || '',
+                    purchaserName: '',
+                    commodityNames: '',
+                    fileName: '',
+                    remarks: dynSummary,
+                    reconciliationNote: '无挂载发票'
+                });
+            } else {
+                group.invoices.forEach(inv => {
+                    exportRows.push({
+                        expenseRecordId: group.expenseRecordId,
+                        status: '未报销',
+                        expenseTypeId: effectiveTypeId,
+                        expenseTypeName: effectiveTypeName,
+                        expenseAmount: group.expenseAmount,
+                        businessDate: effectiveBizDate,
+                        description: effectiveDesc,
+                        invoiceCount: group.invoiceCount,
+                        applicantName: group.applicantName,
+                        createDate: group.createDate,
+                        invoiceIndex: inv.invoiceIndex,
+                        invoiceType: inv.invoiceType,
+                        invoiceCode: inv.invoiceCode,
+                        invoiceNo: inv.invoiceNo,
+                        invoiceDate: inv.invoiceDate,
+                        amountTax: inv.amountTax,
+                        totalAmount: inv.totalAmount,
+                        totalTax: inv.totalTax || '',
+                        departureDate: inv.departureDate,
+                        departureTime: inv.departureTime,
+                        timeGetOff: inv.timeGetOff,
+                        stationGetOn: inv.stationGetOn || group.dynamicFields?.startAddress || '',
+                        stationGetOff: inv.stationGetOff || group.dynamicFields?.endAddress || '',
+                        trainNo: inv.trainNo || group.dynamicFields?.trainNum || group.dynamicFields?.flightNum || '',
+                        salesName: inv.salesName,
+                        purchaserName: '',
+                        commodityNames: '',
+                        fileName: inv.fileName,
+                        remarks: [inv.remarks, dynSummary].filter(Boolean).join(' | '),
+                        reconciliationNote: inv.reconciliationNote
+                    });
+                });
+            }
+        });
+
+        const csv = convertExpenseRecordsToCsv(exportRows);
+        const now = new Date();
+        const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
+        downloadCsvFile(csv, `费用记录聚合核对清单_${ts}.csv`, win);
+        showToast('success', `成功导出已选 ${selectedGroups.length} 笔费用 (共 ${exportRows.length} 条发票明细)！已开始下载`);
+    };
+
+    // 确认保存到系统
+    const executeSaveSelected = async () => {
+        const updates: ExpenseRecordUpdateItem[] = [];
+
+        modalState.groups.forEach(group => {
+            if (modalState.selectedRecordIds.has(group.expenseRecordId)) {
+                const hasDescChange = group.newDescription !== undefined && group.newDescription !== group.description;
+                const hasDateChange = group.newBusinessDate !== undefined && group.newBusinessDate !== group.businessDate;
+                const hasTypeChange = Boolean(group.newExpenseTypeId && group.newExpenseTypeId !== group.expenseTypeId);
+                const hasDynChange = Boolean(group.dynamicFields && Object.values(group.dynamicFields).some(v => v !== undefined && v !== '' && v !== 0));
+                const hasAddrChange = Boolean(group.newStartAddress || group.newEndAddress);
+
+                if (hasDescChange || hasDateChange || hasTypeChange || hasDynChange || hasAddrChange) {
+                    updates.push({
+                        expenseRecordId: group.expenseRecordId,
+                        expenseTypeId: group.expenseTypeId,
+                        originalExpenseTypeId: group.expenseTypeId,
+                        targetExpenseTypeId: group.newExpenseTypeId,
+                        targetExpenseTypeName: group.newExpenseTypeName,
+                        newDescription: group.newDescription,
+                        newBusinessDate: group.newBusinessDate,
+                        startAddress: group.newStartAddress || group.dynamicFields?.startAddress,
+                        endAddress: group.newEndAddress || group.dynamicFields?.endAddress,
+                        dynamicFields: group.dynamicFields
+                    });
+                }
+            }
+        });
+
+        if (updates.length === 0) {
+            showToast('warning', '未检测到任何内容变动。请先批量修改属性或就地修改说明后再保存');
+            return;
+        }
+
+        const typeChangeCount = updates.filter(u => Boolean(u.targetExpenseTypeId && u.targetExpenseTypeId !== u.originalExpenseTypeId)).length;
+
+        // 保存前超标说明必填校验守卫
+        const overStandardMissing = updates.filter(u => {
+            const group = modalState.groups.find(g => g.expenseRecordId === u.expenseRecordId);
+            if (!group) return false;
+            if (getGroupCategory(group) === 'HOTEL' && isHotelGroupOverStandard(group)) {
+                const val = (u.dynamicFields?.overStandardDescription || '').trim();
+                return !val;
+            }
+            return false;
+        });
+
+        if (overStandardMissing.length > 0) {
+            showToast('error', `⚠️ 保存拦截：有 ${overStandardMissing.length} 笔住宿费单价已超标，超标说明为必填项！请在表格中输入理由或点击 📋 拷贝“费用说明”后再保存。`, 7000);
+            const firstMissing = overStandardMissing[0];
+            const firstInp = container.querySelector<HTMLInputElement>(`input[data-recordid="${firstMissing.expenseRecordId}"][data-dynkey="dynOverStandard"]`);
+            if (firstInp) {
+                firstInp.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                firstInp.focus();
+                firstInp.closest('td')?.classList.add('yn-bem-dyn-cell-empty');
+            }
+            return;
+        }
+
+        const confirmed = confirm(
+            `确定要将批量修改的内容持久化保存到系统吗？\n\n` +
+            `• 待更新费用记录数: ${updates.length} 笔\n` +
+            (typeChangeCount > 0 ? `• 其中包含报销类型变更: ${typeChangeCount} 笔 (将重置对应类型槽位并注入必填字段)\n` : '') +
+            `• 状态: 仅保存为草稿 (符合禁止自动提交铁律)`
+        );
+        if (!confirmed) return;
+
+        const islandSaveBtn = container.querySelector<HTMLButtonElement>('#yn-bem-island-btn-save');
+        if (islandSaveBtn) {
+            islandSaveBtn.disabled = true;
+            islandSaveBtn.innerText = `正在保存 (0/${updates.length})...`;
+        }
+
+        try {
+            const res = await batchUpdateExpenseRecordsApi(
+                updates,
+                globalState,
+                (curr, total) => {
+                    if (islandSaveBtn) islandSaveBtn.innerText = `正在保存 (${curr}/${total})...`;
+                },
+                win
+            );
+
+            if (res.failCount === 0) {
+                if (res.hasOverStandard) {
+                    showToast('info', `💡 提示：本次保存包含 ${res.overStandardCount} 笔超标住宿费，已成功按您填写的超标说明合规入库。`, 6000);
+                }
+                showToast('success', `成功批量保存 ${res.successCount} 笔费用记录！页面即将刷新`, 4000);
+                if (islandSaveBtn) islandSaveBtn.innerText = `保存成功 (${res.successCount} 笔)`;
+                setTimeout(() => {
+                    closeBatchEditModal();
+                    if (win) {
+                        win.location.reload();
+                    } else if (typeof window !== 'undefined') {
+                        window.location.reload();
+                    }
+                }, 1500);
+            } else {
+                const errDetail = res.errors && res.errors.length > 0
+                    ? res.errors.slice(0, 3).map(e => e.error).join('；')
+                    : '部分记录存在未满足的必填校验';
+                AutopilotLogger.error(`[BatchEditModal] 批量保存部分失败: ${JSON.stringify(res.errors)}`);
+                showToast('warning', `保存完成: 成功 ${res.successCount} 笔，失败 ${res.failCount} 笔: ${errDetail}`, 8000);
+                if (islandSaveBtn) {
+                    islandSaveBtn.disabled = false;
+                    islandSaveBtn.innerText = `💾 批量保存`;
+                }
+            }
+        } catch (err: any) {
+            AutopilotLogger.error(`[BatchEditModal] 保存异常: ${err.message}`);
+            showToast('error', `保存失败: ${err.message || '网络或系统异常'}`);
+            if (islandSaveBtn) {
+                islandSaveBtn.disabled = false;
+                islandSaveBtn.innerText = `💾 批量保存`;
+            }
+        }
+    };
+
+    // 2.2 底部悬浮操作岛 (Floating Action Island) 按钮
+    container.querySelector('#yn-bem-island-btn-batch-settings')?.addEventListener('click', () => {
+        openBatchSettingsDialog(container);
+    });
+    container.querySelector('#yn-bem-island-btn-ai')?.addEventListener('click', () => {
+        openAiAssistantWithSkill(container, 'infer');
+    });
+    container.querySelector('#yn-bem-island-btn-export')?.addEventListener('click', () => {
+        executeExportSelected();
+    });
+    container.querySelector('#yn-bem-island-btn-save')?.addEventListener('click', () => {
+        executeSaveSelected();
+    });
+    container.querySelector('#yn-bem-island-btn-clear')?.addEventListener('click', () => {
+        modalState.selectedRecordIds.clear();
+        refreshTableView(container, 'CHECKBOXES');
+        showToast('info', '已取消选择全部条目');
+    });
+
+    // 3. 面板展开切换：【✨ AI 助手】(右侧悬浮抽屉面板，零布局抖动)
+    bindAiPanelResizer(container);
+
+    const btnToggleAi = container.querySelector<HTMLButtonElement>('#yn-bem-btn-toggle-ai');
+    btnToggleAi?.addEventListener('click', () => {
+        modalState.aiPanelOpen = !modalState.aiPanelOpen;
+        const aiWrap = container.querySelector<HTMLElement>('#yn-bem-ai-panel-wrap');
+        const w = modalState.aiPanelWidth || 440;
+        if (aiWrap) {
+            aiWrap.style.width = `${w}px`;
+            if (modalState.aiPanelOpen) {
+                renderAssistantChat(container);
+                aiWrap.classList.add('is-open');
+            } else {
+                aiWrap.classList.remove('is-open');
+            }
+        }
+        btnToggleAi.classList.toggle('is-active', modalState.aiPanelOpen);
+        btnToggleAi.innerHTML = `<span class="yn-gemini-sparkle-icon">✦</span> AI 助手 ${modalState.aiPanelOpen ? '✕' : '✨'}`;
+    });
+
+    // 初始状态若展开，立即渲染并挂载 React 智能副驾
+    if (modalState.aiPanelOpen) {
+        renderAssistantChat(container);
+    }
+
+    // 4. 点击外部时自动收起项目下拉与列筛选浮层
+    doc.addEventListener('click', (e) => {
+        const target = e.target as HTMLElement;
+        const dropdownProject = container.querySelector<HTMLElement>('#yn-bem-project-dropdown');
+        if (dropdownProject && !target.closest('#yn-bem-project-wrapper')) {
+            dropdownProject.style.display = 'none';
+        }
+        if (modalState.activePopoverCol && !target.closest('#yn-bem-filter-popover') && !target.closest('.yn-bem-th-filter-trigger')) {
+            modalState.activePopoverCol = null;
+            modalState.popoverKeyword = '';
+            refreshTableView(container, 'ROWS');
+        }
+    });
+
+    // 5. 活跃筛选条件微标签移除与全部清除
+    container.querySelector('.yn-bem-top-bar')?.addEventListener('click', (e) => {
+        const target = e.target as HTMLElement;
+        if (target && target.classList.contains('yn-bem-remove-filter')) {
+            const col = target.dataset.col;
+            if (col) {
+                delete modalState.columnFilters[col];
+                refreshTableView(container, 'ROWS');
+            }
+            return;
+        }
+        if (target && target.id === 'yn-bem-clear-all-filters') {
+            modalState.columnFilters = {};
+            refreshTableView(container, 'ROWS');
+            return;
+        }
+    });
+
+    // 6. 模糊搜索 (带 250ms 防抖与筛选联动裁剪)
     const searchInput = container.querySelector<HTMLInputElement>('#yn-bem-search');
     let searchDebounceTimer: any = null;
     searchInput?.addEventListener('input', () => {
@@ -3356,29 +6211,28 @@ function bindEvents(container: HTMLElement, doc: Document) {
         searchDebounceTimer = setTimeout(() => {
             modalState.searchQuery = searchInput.value;
             pruneSelectedRecordIds();
-            refreshTableView(container);
-        }, 300);
+            refreshTableView(container, 'ROWS');
+        }, 250);
     });
 
-    // 12. 预警与待补必填项筛选过滤
+    // 7. 预警与待补必填项筛选过滤
     const filterSelect = container.querySelector<HTMLSelectElement>('#yn-bem-filter-mode');
     filterSelect?.addEventListener('change', () => {
         modalState.filterMode = filterSelect.value as any;
         pruneSelectedRecordIds();
-        refreshTableView(container);
+        refreshTableView(container, 'ROWS');
     });
 
-    // 13. 快捷全选 / 全不选 / 反选 / 仅选待补 / 仅选预警
+    // 8. 快捷全选 / 全不选 / 反选 / 仅选待补 / 仅选预警 (全量改为 CHECKBOXES 模式，< 5ms)
     container.querySelector('#yn-bem-qa-select-all')?.addEventListener('click', () => {
         const filtered = getFilteredGroups(modalState);
-        // 全选严格仅针对当前筛选结果集
         modalState.selectedRecordIds = new Set(filtered.map(g => g.expenseRecordId));
-        refreshTableView(container);
+        refreshTableView(container, 'CHECKBOXES');
     });
 
     container.querySelector('#yn-bem-qa-deselect')?.addEventListener('click', () => {
         modalState.selectedRecordIds.clear();
-        refreshTableView(container);
+        refreshTableView(container, 'CHECKBOXES');
     });
 
     container.querySelector('#yn-bem-qa-invert')?.addEventListener('click', () => {
@@ -3391,7 +6245,7 @@ function bindEvents(container: HTMLElement, doc: Document) {
             }
         });
         pruneSelectedRecordIds();
-        refreshTableView(container);
+        refreshTableView(container, 'CHECKBOXES');
     });
 
     container.querySelector('#yn-bem-qa-select-missing')?.addEventListener('click', () => {
@@ -3402,7 +6256,7 @@ function bindEvents(container: HTMLElement, doc: Document) {
                 modalState.selectedRecordIds.add(g.expenseRecordId);
             }
         });
-        refreshTableView(container);
+        refreshTableView(container, 'CHECKBOXES');
     });
 
     container.querySelector('#yn-bem-qa-select-warn')?.addEventListener('click', () => {
@@ -3413,19 +6267,201 @@ function bindEvents(container: HTMLElement, doc: Document) {
                 modalState.selectedRecordIds.add(g.expenseRecordId);
             }
         });
-        refreshTableView(container);
+        refreshTableView(container, 'CHECKBOXES');
     });
 
-    // 13.1 底部操作浮条取消选择按钮
+    // 9. 底部操作浮条取消选择按钮
     container.querySelector('#yn-bem-btn-clear-selection')?.addEventListener('click', () => {
         modalState.selectedRecordIds.clear();
-        refreshTableView(container);
+        refreshTableView(container, 'CHECKBOXES');
         showToast('info', '已取消选择全部条目');
+    });
+
+    // 10. 分组视图切换与单按钮全部展开 / 全部折叠
+    const optGrouping = container.querySelector<HTMLSelectElement>('#yn-bem-opt-grouping');
+    const toggleAllBtn = container.querySelector<HTMLButtonElement>('#yn-bem-btn-toggle-all-groups');
+
+    optGrouping?.addEventListener('change', () => {
+        modalState.groupingMode = optGrouping.value as GroupingMode;
+        modalState.collapsedGroupKeys.clear();
+        refreshTableView(container, 'ROWS');
+        if (toggleAllBtn) {
+            if (modalState.groupingMode === 'NONE') {
+                toggleAllBtn.disabled = true;
+                toggleAllBtn.style.opacity = '0.4';
+                toggleAllBtn.style.cursor = 'not-allowed';
+            } else {
+                toggleAllBtn.disabled = false;
+                toggleAllBtn.style.opacity = '1';
+                toggleAllBtn.style.cursor = 'pointer';
+                toggleAllBtn.innerText = '折叠';
+            }
+        }
+    });
+
+    toggleAllBtn?.addEventListener('click', () => {
+        if (modalState.groupingMode === 'NONE') return;
+        const tbodies = container.querySelectorAll<HTMLElement>('.yn-bem-group-tbody');
+        const shouldExpand = modalState.collapsedGroupKeys.size > 0;
+        if (shouldExpand) {
+            modalState.collapsedGroupKeys.clear();
+            tbodies.forEach(tb => {
+                tb.classList.remove('is-collapsed');
+                const btn = tb.querySelector<HTMLElement>('.yn-bem-group-toggle-btn');
+                if (btn) { btn.innerText = '▼'; btn.title = '点击折叠'; }
+            });
+            toggleAllBtn.innerText = '折叠';
+            toggleAllBtn.title = '折叠所有分组';
+        } else {
+            tbodies.forEach(tb => {
+                tb.classList.add('is-collapsed');
+                const key = tb.dataset.groupKey;
+                if (key) modalState.collapsedGroupKeys.add(key);
+                const btn = tb.querySelector<HTMLElement>('.yn-bem-group-toggle-btn');
+                if (btn) { btn.innerText = '▶'; btn.title = '点击展开'; }
+            });
+            toggleAllBtn.innerText = '展开';
+            toggleAllBtn.title = '展开所有分组';
+        }
+    });
+
+    // 11. 绑定 EventBus 监听：当异步推断完成时追加 feed card
+    batchEditEventBus.subscribe('INFERENCE_COMPLETE', (e) => {
+        if (e.type === 'INFERENCE_COMPLETE') {
+            const now = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+            modalState.aiFeedMessages.unshift({
+                type: 'success',
+                text: `智能推断完成，已成功补全 ${e.payload.updatedCount} 笔费用的专属字段`,
+                time: now
+            });
+            const feedStream = container.querySelector('#yn-gemini-feed-stream');
+            if (feedStream) {
+                feedStream.innerHTML = modalState.aiFeedMessages.map(msg => `
+                    <div class="yn-gemini-feed-card ${msg.type}">
+                        <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-size:10px; color:#94a3b8;">
+                            <span>${msg.type === 'success' ? '✅ 执行成功' : 'ℹ️ 系统'}</span>
+                            <span>${msg.time}</span>
+                        </div>
+                        <div>${msg.text}</div>
+                    </div>
+                `).join('');
+            }
+        }
     });
 
     // 14. 表格委托事件：表头全选、行选择、就地修改说明、表头排序与列筛选
     container.querySelector('#yn-bem-table-wrap')?.addEventListener('click', (e) => {
         const target = e.target as HTMLElement;
+
+        // 折叠 / 展开分组 (纯 CSS 切换 is-collapsed，0ms 零 DOM 重建，保留所有输入态)
+        const toggleBtn = target.closest<HTMLElement>('.yn-bem-group-toggle-btn');
+        if (toggleBtn && toggleBtn.dataset.groupKey) {
+            e.stopPropagation();
+            const groupKey = toggleBtn.dataset.groupKey;
+            const tbody = container.querySelector<HTMLElement>(`tbody.yn-bem-group-tbody[data-group-key="${groupKey}"]`);
+            if (tbody) {
+                const willCollapse = !tbody.classList.contains('is-collapsed');
+                tbody.classList.toggle('is-collapsed', willCollapse);
+                toggleBtn.innerText = willCollapse ? '▶' : '▼';
+                toggleBtn.title = willCollapse ? '点击展开' : '点击折叠';
+                if (willCollapse) {
+                    modalState.collapsedGroupKeys.add(groupKey);
+                } else {
+                    modalState.collapsedGroupKeys.delete(groupKey);
+                }
+                if (toggleAllBtn) {
+                    toggleAllBtn.innerText = modalState.collapsedGroupKeys.size > 0 ? '展开' : '折叠';
+                }
+            }
+            return;
+        }
+
+        // 分组三态复选框 (点击全选/反选该分组内记录)
+        if (target && target.classList.contains('yn-bem-group-cb')) {
+            const gcb = target as HTMLInputElement;
+            const groupKey = gcb.dataset.groupKey;
+            if (groupKey) {
+                const tbody = container.querySelector<HTMLElement>(`tbody.yn-bem-group-tbody[data-group-key="${groupKey}"]`);
+                if (tbody) {
+                    const rowCbs = tbody.querySelectorAll<HTMLInputElement>('.yn-bem-record-cb');
+                    const isChecked = gcb.checked;
+                    rowCbs.forEach(rcb => {
+                        const rid = rcb.dataset.recordid;
+                        if (rid) {
+                            if (isChecked) modalState.selectedRecordIds.add(rid);
+                            else modalState.selectedRecordIds.delete(rid);
+                        }
+                    });
+                    refreshTableView(container, 'CHECKBOXES');
+                }
+            }
+            return;
+        }
+
+        // 智能错配纠错灯泡点击 (一键切换 差旅出租车 vs 市内交通)
+        const bulbBtn = target.closest<HTMLElement>('.yn-bem-type-misclass-bulb');
+        if (bulbBtn && bulbBtn.dataset.recordid) {
+            e.stopPropagation();
+            const rid = bulbBtn.dataset.recordid;
+            const targetType = bulbBtn.dataset.targetType;
+            const group = modalState.groups.find(g => g.expenseRecordId === rid);
+            if (group) {
+                if (targetType === 'TRIP_TAXI') {
+                    group.newExpenseTypeId = '0356c4cef03345af7f1906ec05cc0000';
+                    group.newExpenseTypeName = '出租车（taxi）';
+                    showToast('success', '已将此笔费用类型修正为【差旅·出租车(taxi)】，归入出差费用报销单(BC)');
+                } else if (targetType === 'CITY_TAXI') {
+                    group.newExpenseTypeId = '0356c529e72de1653e55bb00bc610001';
+                    group.newExpenseTypeName = '市内交通费';
+                    showToast('success', '已将此笔费用类型修正为【交通费·市内交通费】，归入日常经费报销单(BJ)');
+                }
+                modalState.selectedRecordIds.add(rid);
+                refreshTableView(container, 'ROWS');
+            }
+            return;
+        }
+
+        // 组表头编辑/打磨 Trip 按钮
+        const editTripBtn = target.closest<HTMLElement>('[data-trip-edit-id]');
+        if (editTripBtn && editTripBtn.dataset.tripEditId) {
+            e.stopPropagation();
+            const tripId = editTripBtn.dataset.tripEditId;
+            openEditTripModal(tripId, container);
+            return;
+        }
+
+        // 组表头导出出差报告草稿按钮
+        const reportTripBtn = target.closest<HTMLElement>('[data-trip-report-id]');
+        if (reportTripBtn && reportTripBtn.dataset.tripReportId) {
+            e.stopPropagation();
+            const tripId = reportTripBtn.dataset.tripReportId;
+            const trip = modalState.tripPlans.find(t => t.id === tripId);
+            if (trip) {
+                const tripItems = modalState.groups.filter(g => g.tripId === trip.id);
+                const reportMd = generateTripReportMarkdown(trip, tripItems);
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(reportMd).then(() => {
+                        showToast('success', `✨ 已复制 Trip ${trip.tripNo} 的出差总结报告草稿到剪贴板！`);
+                    }).catch(() => {
+                        copyFallback(reportMd);
+                        showToast('success', `✨ 已复制 Trip ${trip.tripNo} 的出差总结报告草稿到剪贴板！`);
+                    });
+                } else {
+                    copyFallback(reportMd);
+                    showToast('success', `✨ 已复制 Trip ${trip.tripNo} 的出差总结报告草稿到剪贴板！`);
+                }
+            }
+            return;
+        }
+
+        // 组表头一键快捷生成出差申请单按钮
+        const createScBtn = target.closest<HTMLElement>('.yn-bem-btn-trip-create-sc');
+        if (createScBtn && createScBtn.dataset.tripId) {
+            e.stopPropagation();
+            const tripId = createScBtn.dataset.tripId;
+            openAutopilotDecisionDashboard(container, tripId);
+            return;
+        }
 
         // 点击清空筛选按钮 (空状态)
         if (target && target.id === 'yn-bem-empty-clear-filters') {
@@ -3436,7 +6472,7 @@ function bindEvents(container: HTMLElement, doc: Document) {
             if (searchInp) searchInp.value = '';
             const filterSel = container.querySelector<HTMLSelectElement>('#yn-bem-filter-mode');
             if (filterSel) filterSel.value = 'ALL';
-            refreshTableView(container);
+            refreshTableView(container, 'ROWS');
             showToast('info', '已清空全部筛选条件');
             return;
         }
@@ -3481,13 +6517,12 @@ function bindEvents(container: HTMLElement, doc: Document) {
             const cb = target as HTMLInputElement;
             const filtered = getFilteredGroups(modalState);
             if (cb.checked) {
-                // 有筛选的情况下，全选严格仅针对当前筛选结果
                 filtered.forEach(g => modalState.selectedRecordIds.add(g.expenseRecordId));
             } else {
                 filtered.forEach(g => modalState.selectedRecordIds.delete(g.expenseRecordId));
             }
             pruneSelectedRecordIds();
-            refreshTableView(container);
+            refreshTableView(container, 'CHECKBOXES');
             return;
         }
 
@@ -3513,8 +6548,6 @@ function bindEvents(container: HTMLElement, doc: Document) {
                             } else {
                                 modalState.selectedRecordIds.delete(gid);
                             }
-                            container.querySelectorAll<HTMLInputElement>(`input.yn-bem-record-cb[data-recordid="${gid}"]`).forEach(c => c.checked = targetChecked);
-                            container.querySelectorAll(`tr[data-recordid="${gid}"]`).forEach(r => r.classList.toggle('is-selected', targetChecked));
                         }
                     }
                 } else {
@@ -3523,28 +6556,16 @@ function bindEvents(container: HTMLElement, doc: Document) {
                     } else {
                         modalState.selectedRecordIds.delete(recordId);
                     }
-                    const rows = container.querySelectorAll(`tr[data-recordid="${recordId}"]`);
-                    rows.forEach(r => r.classList.toggle('is-selected', cb.checked));
                 }
 
                 modalState.lastSelectedRecordId = recordId;
-
-                const thAll = container.querySelector<HTMLInputElement>('#yn-bem-th-select-all');
-                if (thAll) {
-                    const selectedInFiltered = filtered.filter(g => modalState.selectedRecordIds.has(g.expenseRecordId));
-                    thAll.checked = filtered.length > 0 && selectedInFiltered.length === filtered.length;
-                    thAll.indeterminate = selectedInFiltered.length > 0 && selectedInFiltered.length < filtered.length;
-                }
-
-                const stats = container.querySelector('#yn-bem-footer-stats');
-                if (stats) stats.innerHTML = renderFooterStatsHtml();
-                updateFooterActionButtons(container);
+                refreshTableView(container, 'CHECKBOXES');
             }
             return;
         }
 
-        // 行级专属字段触发按钮
-        const dynTrigger = target.closest<HTMLElement>('.yn-bem-cell-dyn-trigger');
+        // 行级专属字段触发按钮与空白胶囊快捷触发
+        const dynTrigger = target.closest<HTMLElement>('.yn-bem-cell-dyn-trigger, .yn-bem-route-capsule.is-empty');
         if (dynTrigger && dynTrigger.dataset.recordid) {
             e.stopPropagation();
             openRowDynamicModal(dynTrigger.dataset.recordid, container);
@@ -3778,20 +6799,19 @@ function bindEvents(container: HTMLElement, doc: Document) {
             return;
         }
 
-        // 说明文本框就地编辑
-        if (target && target.classList.contains('yn-bem-desc-box')) {
-            const textarea = target as HTMLTextAreaElement;
-            const recordId = textarea.dataset.recordid;
+        // 说明文本框就地编辑 (兼容多行 .yn-bem-desc-box 与单行 .yn-bem-desc-input)
+        if (target && (target.classList.contains('yn-bem-desc-box') || target.classList.contains('yn-bem-desc-input'))) {
+            const inputEl = target as HTMLInputElement | HTMLTextAreaElement;
+            const recordId = inputEl.dataset.recordid;
             if (recordId) {
                 const group = modalState.groups.find(g => g.expenseRecordId === recordId);
                 if (group) {
-                    group.newDescription = textarea.value;
-                    textarea.classList.toggle('has-changed', textarea.value !== group.description);
+                    group.newDescription = inputEl.value;
+                    inputEl.classList.toggle('has-changed', inputEl.value !== group.description);
                     modalState.selectedRecordIds.add(recordId);
                     container.querySelectorAll<HTMLInputElement>(`input.yn-bem-record-cb[data-recordid="${recordId}"]`).forEach(c => c.checked = true);
                     container.querySelectorAll(`tr[data-recordid="${recordId}"]`).forEach(r => r.classList.add('is-selected'));
-                    const stats = container.querySelector('#yn-bem-footer-stats');
-                    if (stats) stats.innerHTML = renderFooterStatsHtml();
+                    updateStatsAndFooter(container);
                 }
             }
             return;
@@ -3944,222 +6964,11 @@ function bindEvents(container: HTMLElement, doc: Document) {
         }
     });
 
-    // 15.1 AI 智能推断专属字段按钮 (弹出出差排期辅助模态框)
+    // 15.1 AI 智能推断专属字段按钮
     container.querySelector('#yn-bem-btn-ai-infer')?.addEventListener('click', () => {
-        openItineraryModal(container);
+        openAiAssistantWithSkill(container, 'infer');
     });
 
-    // 16. 导出所选费用清单 CSV 按钮
-    container.querySelector('#yn-bem-btn-export')?.addEventListener('click', () => {
-        const filteredGroups = getFilteredGroups(modalState);
-        const selectedGroups = filteredGroups.filter(g => modalState.selectedRecordIds.has(g.expenseRecordId));
-        if (selectedGroups.length === 0) {
-            showToast('warning', '请先勾选需要导出的费用记录');
-            return;
-        }
-
-        // 展平为发票清单，带上修改后的说明与业务日期
-        const exportRows: ExpenseRecordExportRow[] = [];
-        selectedGroups.forEach(group => {
-            const effectiveDesc = group.newDescription !== undefined ? group.newDescription : group.description;
-            const effectiveBizDate = group.newBusinessDate || group.businessDate;
-            const effectiveTypeId = group.newExpenseTypeId || group.expenseTypeId;
-            const effectiveTypeName = group.newExpenseTypeName
-                ? `${group.newExpenseTypeName} (原: ${group.expenseTypeName})`
-                : group.expenseTypeName;
-            const dynSummary = group.dynamicFields
-                ? Object.entries(group.dynamicFields).filter(([_, v]) => Boolean(v)).map(([k, v]) => `${k}:${v}`).join('; ')
-                : '';
-
-            if (group.invoices.length === 0) {
-                exportRows.push({
-                    expenseRecordId: group.expenseRecordId,
-                    status: '未报销',
-                    expenseTypeId: effectiveTypeId,
-                    expenseTypeName: effectiveTypeName,
-                    expenseAmount: group.expenseAmount,
-                    businessDate: effectiveBizDate,
-                    description: effectiveDesc,
-                    invoiceCount: group.invoiceCount,
-                    applicantName: group.applicantName,
-                    createDate: group.createDate,
-                    invoiceIndex: 0,
-                    invoiceType: '',
-                    invoiceCode: '',
-                    invoiceNo: '',
-                    invoiceDate: '',
-                    amountTax: '',
-                    totalAmount: '',
-                    totalTax: '',
-                    departureDate: '',
-                    departureTime: '',
-                    timeGetOff: '',
-                    stationGetOn: group.dynamicFields?.startAddress || '',
-                    stationGetOff: group.dynamicFields?.endAddress || '',
-                    trainNo: group.dynamicFields?.trainNum || group.dynamicFields?.flightNum || '',
-                    salesName: group.dynamicFields?.hotelName || '',
-                    purchaserName: '',
-                    commodityNames: '',
-                    fileName: '',
-                    remarks: dynSummary,
-                    reconciliationNote: '无挂载发票'
-                });
-            } else {
-                group.invoices.forEach(inv => {
-                    exportRows.push({
-                        expenseRecordId: group.expenseRecordId,
-                        status: '未报销',
-                        expenseTypeId: effectiveTypeId,
-                        expenseTypeName: effectiveTypeName,
-                        expenseAmount: group.expenseAmount,
-                        businessDate: effectiveBizDate,
-                        description: effectiveDesc,
-                        invoiceCount: group.invoiceCount,
-                        applicantName: group.applicantName,
-                        createDate: group.createDate,
-                        invoiceIndex: inv.invoiceIndex,
-                        invoiceType: inv.invoiceType,
-                        invoiceCode: inv.invoiceCode,
-                        invoiceNo: inv.invoiceNo,
-                        invoiceDate: inv.invoiceDate,
-                        amountTax: inv.amountTax,
-                        totalAmount: inv.totalAmount,
-                        totalTax: inv.totalTax || '',
-                        departureDate: inv.departureDate,
-                        departureTime: inv.departureTime,
-                        timeGetOff: inv.timeGetOff,
-                        stationGetOn: inv.stationGetOn || group.dynamicFields?.startAddress || '',
-                        stationGetOff: inv.stationGetOff || group.dynamicFields?.endAddress || '',
-                        trainNo: inv.trainNo || group.dynamicFields?.trainNum || group.dynamicFields?.flightNum || '',
-                        salesName: inv.salesName,
-                        purchaserName: '',
-                        commodityNames: '',
-                        fileName: inv.fileName,
-                        remarks: [inv.remarks, dynSummary].filter(Boolean).join(' | '),
-                        reconciliationNote: inv.reconciliationNote
-                    });
-                });
-            }
-        });
-
-        const csv = convertExpenseRecordsToCsv(exportRows);
-        const now = new Date();
-        const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
-        downloadCsvFile(csv, `费用记录聚合核对清单_${ts}.csv`, win);
-        showToast('success', `成功导出已选 ${selectedGroups.length} 笔费用 (共 ${exportRows.length} 条发票明细)！已开始下载`);
-    });
-
-    // 17. 确认保存到系统
-    const btnSaveAll = container.querySelector<HTMLButtonElement>('#yn-bem-btn-save-all');
-    btnSaveAll?.addEventListener('click', async () => {
-        const updates: ExpenseRecordUpdateItem[] = [];
-
-        modalState.groups.forEach(group => {
-            if (modalState.selectedRecordIds.has(group.expenseRecordId)) {
-                const hasDescChange = group.newDescription !== undefined && group.newDescription !== group.description;
-                const hasDateChange = group.newBusinessDate !== undefined && group.newBusinessDate !== group.businessDate;
-                const hasTypeChange = Boolean(group.newExpenseTypeId && group.newExpenseTypeId !== group.expenseTypeId);
-                const hasDynChange = Boolean(group.dynamicFields && Object.values(group.dynamicFields).some(v => v !== undefined && v !== '' && v !== 0));
-                const hasAddrChange = Boolean(group.newStartAddress || group.newEndAddress);
-
-                if (hasDescChange || hasDateChange || hasTypeChange || hasDynChange || hasAddrChange) {
-                    updates.push({
-                        expenseRecordId: group.expenseRecordId,
-                        expenseTypeId: group.expenseTypeId,
-                        originalExpenseTypeId: group.expenseTypeId,
-                        targetExpenseTypeId: group.newExpenseTypeId,
-                        targetExpenseTypeName: group.newExpenseTypeName,
-                        newDescription: group.newDescription,
-                        newBusinessDate: group.newBusinessDate,
-                        startAddress: group.newStartAddress || group.dynamicFields?.startAddress,
-                        endAddress: group.newEndAddress || group.dynamicFields?.endAddress,
-                        dynamicFields: group.dynamicFields
-                    });
-                }
-            }
-        });
-
-        if (updates.length === 0) {
-            showToast('warning', '未检测到任何内容变动。请先点击“应用到已选”或就地修改说明后再保存');
-            return;
-        }
-
-        const typeChangeCount = updates.filter(u => Boolean(u.targetExpenseTypeId && u.targetExpenseTypeId !== u.originalExpenseTypeId)).length;
-
-        // 保存前超标说明必填校验守卫：超标说明绝不伪造硬编码理由，必须由用户自主填写或拷贝费用说明
-        const overStandardMissing = updates.filter(u => {
-            const group = modalState.groups.find(g => g.expenseRecordId === u.expenseRecordId);
-            if (!group) return false;
-            if (getGroupCategory(group) === 'HOTEL' && isHotelGroupOverStandard(group)) {
-                const val = (u.dynamicFields?.overStandardDescription || '').trim();
-                return !val;
-            }
-            return false;
-        });
-
-        if (overStandardMissing.length > 0) {
-            showToast('error', `⚠️ 保存拦截：有 ${overStandardMissing.length} 笔住宿费单价已超标，超标说明为必填项！请在表格中输入理由或点击 📋 拷贝“费用说明”后再保存。`, 7000);
-            const firstMissing = overStandardMissing[0];
-            const firstInp = container.querySelector<HTMLInputElement>(`input[data-recordid="${firstMissing.expenseRecordId}"][data-dynkey="dynOverStandard"]`);
-            if (firstInp) {
-                firstInp.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                firstInp.focus();
-                firstInp.closest('td')?.classList.add('yn-bem-dyn-cell-empty');
-            }
-            return;
-        }
-
-        const confirmed = confirm(
-            `确定要将批量修改的内容持久化保存到系统吗？\n\n` +
-            `• 待更新费用记录数: ${updates.length} 笔\n` +
-            (typeChangeCount > 0 ? `• 其中包含报销类型变更: ${typeChangeCount} 笔 (将重置对应类型槽位并注入必填字段)\n` : '') +
-            `• 状态: 仅保存为草稿 (符合禁止自动提交铁律)`
-        );
-        if (!confirmed) return;
-
-        btnSaveAll.disabled = true;
-        btnSaveAll.innerText = `正在保存 (0/${updates.length})...`;
-
-        try {
-            const res = await batchUpdateExpenseRecordsApi(
-                updates,
-                globalState,
-                (curr, total) => {
-                    btnSaveAll.innerText = `正在保存 (${curr}/${total})...`;
-                },
-                win
-            );
-
-            if (res.failCount === 0) {
-                if (res.hasOverStandard) {
-                    showToast('info', `💡 提示：本次保存包含 ${res.overStandardCount} 笔超标住宿费，已成功按您填写的超标说明合规入库。`, 6000);
-                }
-                showToast('success', `成功批量保存 ${res.successCount} 笔费用记录！页面即将刷新`, 4000);
-                btnSaveAll.innerText = `保存成功 (${res.successCount} 笔)`;
-                setTimeout(() => {
-                    closeBatchEditModal();
-                    if (win) {
-                        win.location.reload();
-                    } else if (typeof window !== 'undefined') {
-                        window.location.reload();
-                    }
-                }, 1500);
-            } else {
-                const errDetail = res.errors && res.errors.length > 0
-                    ? res.errors.slice(0, 3).map(e => e.error).join('；')
-                    : '部分记录存在未满足的必填校验';
-                AutopilotLogger.error(`[BatchEditModal] 批量保存部分失败: ${JSON.stringify(res.errors)}`);
-                showToast('warning', `保存完成: 成功 ${res.successCount} 笔，失败 ${res.failCount} 笔: ${errDetail}`, 8000);
-                btnSaveAll.disabled = false;
-                btnSaveAll.innerText = `确认批量修改并保存`;
-            }
-        } catch (err: any) {
-            AutopilotLogger.error(`[BatchEditModal] 保存异常: ${err.message}`);
-            showToast('error', `保存失败: ${err.message || '网络或系统异常'}`);
-            btnSaveAll.disabled = false;
-            btnSaveAll.innerText = `确认批量修改并保存`;
-        }
-    });
 }
 
 if (typeof window !== 'undefined') {

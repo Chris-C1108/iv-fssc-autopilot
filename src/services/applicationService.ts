@@ -798,7 +798,16 @@ function parseTimelineActivityTable(
     const blocks: RawRow[][] = [];
     let currentBlock: RawRow[] = [];
 
-    const isBaseCity = (c: string) => (c || '').includes('上海');
+    // 动态推导常驻出发基准地（遵照 AGENTS.md 0.1 核心铁律，严禁硬编码特定城市，保障 Agent 通用性）
+    const firstMoveRow = rawRows.find(r => r.origin && r.dest);
+    const detectedBaseCity = firstMoveRow ? firstMoveRow.origin.replace(/(?:市|省)$/, '') : '';
+    const isBaseCity = (c: string) => {
+        if (!c) return false;
+        if (detectedBaseCity) {
+            return c.includes(detectedBaseCity) || detectedBaseCity.includes(c);
+        }
+        return false;
+    };
 
     for (let i = 0; i < rawRows.length; i++) {
         const row = rawRows[i];
@@ -862,9 +871,13 @@ function parseTimelineActivityTable(
             destination = '外地调研';
         }
 
-        // 同城有住宿特殊处理（例如上海市金山区）
-        if (destination.includes('上海') && blk.some(r => (r.factory + r.company + r.hotel).includes('金山'))) {
-            destination = '上海金山';
+        // 同城/周边有住宿特殊出差处理（例如金山区、经开区等据点园区）
+        if (isBaseCity(destination)) {
+            const locDetails = blk.flatMap(r => [r.factory, r.company, r.hotel]).join(' ');
+            const districtMatch = locDetails.match(/([^\s\-_()（）]{2,6}(?:区|园区|高新区|经开区|新城))/);
+            if (districtMatch) {
+                destination = `${destination}${districtMatch[1]}`;
+            }
         }
         destination = destination.replace(/省|市/g, '');
 
@@ -918,7 +931,7 @@ function parseTimelineActivityTable(
             if (!hasOutbound) {
                 legs.push({
                     date: period.start,
-                    fromCity: '上海',
+                    fromCity: detectedBaseCity || '出发地',
                     toCity: destination,
                     transport: '飞机/高铁',
                     travelerName: t
@@ -928,7 +941,7 @@ function parseTimelineActivityTable(
                 legs.push({
                     date: period.end,
                     fromCity: destination,
-                    toCity: '上海',
+                    toCity: detectedBaseCity || '返回地',
                     transport: '飞机/高铁',
                     travelerName: t
                 });

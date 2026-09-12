@@ -234,6 +234,11 @@ export function updateDockBadge(dock?: HTMLElement) {
             return el.style.display !== 'none';
         }).length;
         badge.textContent = String(visibleCount);
+        if (visibleCount === 0) {
+            d.style.display = 'none';
+        } else {
+            d.style.display = 'flex';
+        }
     }
 }
 

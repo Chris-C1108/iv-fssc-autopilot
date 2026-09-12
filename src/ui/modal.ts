@@ -10,12 +10,14 @@ export function createModalDOM(state: GlobalState): { btn: HTMLElement; modal: H
         return b;
     });
 
-    const shouldShow = state.pageMode === 'BILL' || state.pageMode === 'POOL' || state.pageMode === 'EXPENSE';
+    // 仅在报销单编辑页 (#billWrite) 展示 Mode A: 报销单预算批量修改
+    // 旧版 Mode B (费用记录批量助手) 已由 batchEditExpenseModal 彻底取代并下线
+    const shouldShow = state.pageMode === 'BILL';
     btn.style.display = shouldShow ? 'flex' : 'none';
 
     btn.innerHTML = `
         <span class="yn-badge ${state.loginToken ? '' : 'offline'}"></span>
-        <span>${state.pageMode === 'BILL' ? '⚡ 报销单预算批量修改' : '⚡ 报销批量助手'}</span>
+        <span>⚡ 报销单预算批量修改</span>
     `;
     updateDockBadge();
 

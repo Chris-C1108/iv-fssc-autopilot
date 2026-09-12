@@ -433,6 +433,11 @@ export function scanAndEnhanceExpenseRecordDOM(doc: Document) {
         // 监听表头全选联动：当用户勾选全选时，若列表未展开完，自动流式加载所有剩余记录并全选
         doc.addEventListener('click', (e) => {
             const target = e.target as HTMLElement;
+            // 隔离批量修改弹窗内的交互，防止主界面监听器被高频触发布局抖动
+            if (target && target.closest && (target.closest('#yn-batch-edit-modal') || target.closest('#yn-batch-edit-mask'))) {
+                return;
+            }
+
             if (target && target.closest && (
                 target.closest('[id*="selectAll"]') ||
                 target.closest('[class*="lists_header"] .ant-checkbox-wrapper') ||
@@ -476,6 +481,10 @@ export function scanAndEnhanceExpenseRecordDOM(doc: Document) {
 
         doc.addEventListener('change', (e) => {
             const target = e.target as HTMLElement;
+            // 隔离批量修改弹窗内的输入与勾选变更
+            if (target && target.closest && (target.closest('#yn-batch-edit-modal') || target.closest('#yn-batch-edit-mask'))) {
+                return;
+            }
             if (target && target.matches && (target.matches('.ant-checkbox-input') || target.matches('input[type="checkbox"]'))) {
                 setTimeout(updateSelectionBtn, 50);
             }
@@ -501,7 +510,25 @@ function ensureDocObserver(doc: Document, onChange: () => void) {
     observedDocs.add(doc);
 
     try {
-        const obs = new MutationObserver(() => {
+        const obs = new MutationObserver((mutations) => {
+            // 现代化事件隔离：忽略所有发生在批量修改弹窗内部或悬浮岛内部的 DOM 变更
+            // 彻底杜绝弹窗内部的分组切换、折叠/展开、单元格输入触发后台页面的全量扫描与 React Fiber 遍历
+            const isBatchModalMutation = mutations.every(m => {
+                const target = m.target as HTMLElement;
+                if (!target) return false;
+                return Boolean(
+                    target.id === 'yn-batch-edit-modal' ||
+                    target.id === 'yn-batch-edit-mask' ||
+                    target.id === 'autopilot-floating-dock' ||
+                    (target.closest && (
+                        target.closest('#yn-batch-edit-modal') ||
+                        target.closest('#yn-batch-edit-mask') ||
+                        target.closest('#autopilot-floating-dock')
+                    ))
+                );
+            });
+            if (isBatchModalMutation) return;
+
             onChange();
         });
         obs.observe(doc.body, { childList: true, subtree: true });
