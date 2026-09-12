@@ -662,3 +662,117 @@
   4. **依赖解耦与架构单向化**：
      - 将 `detectTypeCategory`、`getGroupCategory`、`isUnknownTypeGroup` 等核心领域判定收敛至 `inferenceService.ts`；
      - UI 模块单向依赖服务模块，彻底消除 Rollup 编译的 Circular Dependency 隐患。
+
+---
+
+### 38. 住宿费多间房合报超标误报根治与批量保存错误精准定位穿透 (v4.52.2)
+
+- **现象**：
+  - 用户保存 121 笔费用时，提示：
+    `保存完成: 成功 119 笔，失败 2 笔: 住宿费单价已超标，超标说明为必填项，请填写理由或点击 📋 拷贝“费用说明”后再保存！；住宿费单价已超标，超标说明为必填项，请填写理由或点击 📋 拷贝“费用说明”后再保存！`
+  - 但页面上没有指出具体哪 2 笔出错，用户在宿主大表及插件表格中找不到出错条目。
+- **踩坑与根因**：
+  1. **间夜单价计算漏乘房间数**：
+     - 当一张住宿发票包含多间房（例如 3 间房入住 4 晚，总金额 ¥4265.47）时，系统如果只用 `AMOUNT / NIGHTS` 计算间夜单价，得出 `¥4265.47 / 4 = ¥1066.37`；
+     - 这一金额超过了城市住宿标准（¥700），从而被误判定为“已超标”，要求填写超标说明；
+     - 实际上，该笔费用有 3 间房，总间夜数为 `4 晚 × 3 间 = 12 间夜`，真实单价仅为 `¥4265.47 / 12 = ¥355.45/间夜`，远未超标！
+  2. **错误定位信息丢失**：
+     - 旧保存逻辑在捕获失败后，只返回了后端的错误文本字符串，没有把出错的单据 ID (`id`) 或行索引 (`rowIndex`) 传递给前端；
+     - 模态框表格没有接收到具体出错行，导致无法呈现视觉警示，用户面对 120+ 行表格如同“大海捞针”。
+- **终极解法**：
+  1. **计算公式修正**：
+     - 在 `src/services/expenseService.ts` 中修正住宿费单价测算：
+       `const totalRoomNights = Math.max(1, stayDays) * Math.max(1, roomCount);`
+       `const unitPrice = totalAmount / totalRoomNights;`
+     - 真实单价准确判断超标与否，彻底消除多间房合报导致的虚假超标；
+  2. **错误精准穿透与全景定位**：
+     - 扩展 `batchUpdateExpenseRecordsApi` 的返回值，为每个失败项返回详细结构：`{ id, index, message, invoiceDetails }`；
+     - 在 `src/services/expenseRecordDomService.ts` 中提供 `markHostPageRowError(recordId, reason)`；
+     - 模态框顶部挂载显式错误横幅（`.yn-bem-error-banner`），罗列具体出错行与错误原因；
+     - 表格中对应行自动注入红色警示背景（`.yn-bem-row-error`）与跳动警示徽标（`.yn-bem-error-badge`），并自动执行 `scrollIntoView({ behavior: 'smooth', block: 'center' })` 聚焦首个出错行。
+
+---
+
+### 39. 出差排期缓存初始化 naive 聚类覆盖陷阱与权威排期权威继承 (v4.52.3)
+
+- **现象**：
+  - 用户在智能副驾中成功解析排期并在表格中呈现了精细的 Trip 分组（如 7 轮独立出差）。
+  - 用户点击“批量保存”，退出插件后再次进入插件，表格中的 Trip 却退化回了旧的粗糙聚类状态，用户已确认的排期似乎丢失了。
+- **踩坑与根因**：
+  1. **初始化代码的无参盲目覆盖**：
+     - 在 `openBatchEditExpenseModal` 步骤 7 中，代码无条件执行了：
+       `const trips = clusterExpensesIntoTrips(modalState.groups, modalState.businessDate, modalState.tripTickets);`
+     - 注意：这里没有传入第 4 个参数 `customTrips`！
+     - `clusterExpensesIntoTrips` 的内部实现是：如果没有传入 `customTrips`，它就会回退到内置的 naive 算法（基于相邻费用相差不超过 3 天进行粗糙聚类）；
+     - 更致命的是，`clusterExpensesIntoTrips` 在函数执行末尾，无条件调用了：
+       `saveTripPlansToStorage(tripConfigs);`
+     - 这意味着：**每次打开批量修改弹窗，系统都会用粗糙的默认 3 天聚类强制覆盖 localStorage 中的权威排期缓存！** 用户之前确认的所有精准排期瞬间被抹杀。
+- **终极解法**：
+  1. **权威排期优先继承**：
+     - 在弹窗初始化步骤 7 聚类之前，先检查是否存在 `cachedTrips`（或 `modalState.tripPlans`）：
+       `const existingTrips = (modalState.tripPlans && modalState.tripPlans.length > 0) ? modalState.tripPlans : cachedTrips;`
+     - 聚类调用显式透传该权威排期：
+       `const trips = clusterExpensesIntoTrips(modalState.groups, modalState.businessDate, modalState.tripTickets, existingTrips);`
+     - 仅当真正没有任何缓存与暂存时，才允许默认算法聚类；
+  2. **双重持久化防线**：
+     - 在 `executeSaveSelected` 批量保存成功后，显式调用 `saveTripPlansToStorage(modalState.tripPlans)`；
+     - 确保用户确认的排期无论在弹窗关闭重开、页面刷新还是保存后，都 100% 权威继承。
+
+---
+
+### 40. 侧边栏 Resizer 拖拽 60fps 丝滑化与 `fit-content` 布局瓶颈重构 (v4.52.3)
+
+- **现象**：
+  - 用户在拖拽调整智能副驾侧边栏宽度时，明显感觉到卡顿、掉帧、拉伸阻尼感严重，甚至鼠标指针脱轨。
+- **踩坑与根因**：
+  1. **高频 DOM 操作与未节流**：
+     - 原 `mousemove` 事件监听直接同步修改 `element.style.width`；物理鼠标采样率高达 125Hz~1000Hz，远超屏幕刷新率，导致每个事件都触发浏览器同步 reflow/layout；
+  2. **React Fiber 内部事件风暴**：
+     - 拖拽过程中，鼠标划过右侧抽屉内部的富文本 Markdown 容器、折叠面板和代码块，触发组件树上海量的 `mouseenter`/`mouseover`/`hover` 状态检查与 cursor 重算；
+  3. **`fit-content` 递归计算回流瓶颈**：
+     - CSS 中 `.aui-bubble-assistant` 原本设定了 `width: fit-content`；
+     - 当外层面板宽度改变 1px 时，浏览器为了计算 `fit-content`，必须自底向上递归测量内部所有排期表格、代码块和文本的 `min-content` 与 `max-content` 几何尺寸，导致极其昂贵的全量布局重排。
+- **终极解法**：
+  1. **`requestAnimationFrame` 防抖与节流**：
+     - 重构 `bindAiPanelResizer`，在 move 事件中仅记录最新的 `pendingWidth`，并将样式的真实写入收敛在 `requestAnimationFrame` 批处理帧中；
+     - 事件监听器使用 `{ passive: true }`；
+  2. **拖拽期间事件与过渡物理隔离**：
+     - 拖拽启动时在 `document.body` 挂载 `.yn-resizing-active`（锁定 `cursor: col-resize !important`，`user-select: none`）；
+     - 在面板包裹层添加 `.is-resizing`（强制 `transition: none !important;` 消除 CSS 过渡引起的抖动）；
+     - 为 React 根节点挂载 `pointer-events: none !important; user-select: none !important;`，彻底静默内部一切 hover 与鼠标事件；
+     - 拖拽把手热区从 4px 拓宽至 14px；
+  3. **布局宽度模型重构**：
+     - 彻底废除 `.aui-bubble-assistant` 的 `fit-content`，改为 `width: 100%; box-sizing: border-box;`；
+     - Markdown 容器增加 `overflow-x: auto`，内部排期大表格设定 `min-width: 480px` 并支持横向滚动，彻底解放浏览器自底向上的宽度回溯计算；
+     - 快捷卡片采用自适应网格 `repeat(auto-fit, minmax(200px, 1fr))`，实测拖拽帧率从 15fps 飙升至满帧 60fps。
+
+---
+
+### 41. 人在回路 (HITL) 排期应用确认体系：拒绝大模型私自篡改表格 (v4.52.3)
+
+- **现象与风险**：
+  - 大模型解析用户出差日程后，旧代码自动调用 `clusterExpensesIntoTrips` 并强制修改了前端表格已有的分组和 Trip 属性；
+  - 若大模型推断出现细微时间差偏差，用户的已有成果直接被覆盖破坏，无法撤回。
+- **核心铁律规范 (AGENTS.md 0.2)**：
+  - AI 智能副驾是概率认知决策引擎，属于建议者与赋能者，绝对不能越俎代庖直接篡改最终数据；
+  - 核心状态的流转与落库必须严格遵循“人在回路 (Human-in-the-loop, HITL)”原则，由用户复核确认后方可应用。
+- **终极解法**：
+  1. **认知与状态解耦**：
+     - `parseItineraryWithAiDetailed` 仅负责概率认知推理并返回结构化 `tripConfigs`；
+     - 将原先在消息处理函数中“自动聚类、自动写表格”的逻辑全部剥离；
+  2. **交互式结构化卡片 (`TripPlanConfirmationAction`)**：
+     - 在 `AssistantChatPanel` 中扩展 `confirmationAction` 接口：
+       ```ts
+       export interface TripPlanConfirmationAction {
+         type: 'apply_trip_plans';
+         tripConfigs: TripConfig[];
+         summary: string;
+         status: 'pending' | 'applied';
+       }
+       ```
+     - 消息气泡下方渲染专属操作卡片（`.aui-confirmation-card`），展示排期摘要、城市流转、往返轮次与入住酒店；
+     - 提供显著的 **`✓ 确认应用到表格 (Apply to Table)`** 操作按钮；
+  3. **单向受控应用**：
+     - 用户点击按钮后，卡片状态流转为 `applied`（显示 `✓ 已生效应用到表格` 绿色微徽标，按钮禁用）；
+     - 触发 `onApplyTripPlans(action.tripConfigs)` 回调，将排期正式注入表格、更新内存状态、持久化存储，并触发后续字段对齐。
+
