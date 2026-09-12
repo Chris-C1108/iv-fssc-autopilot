@@ -29,6 +29,14 @@ export interface ChatToolCall {
     isExpanded?: boolean;
 }
 
+export interface TripPlanConfirmationAction {
+    type: 'APPLY_TRIP_PLANS';
+    trips: any[];
+    rawText?: string;
+    applied?: boolean;
+    appliedTime?: string;
+}
+
 export interface ChatMessage {
     id: string;
     role: 'user' | 'assistant';
@@ -39,6 +47,7 @@ export interface ChatMessage {
     thinking?: ThinkingData;
     toolCalls?: ChatToolCall[];
     isStreaming?: boolean;
+    confirmationAction?: TripPlanConfirmationAction;
 }
 
 export interface ChatSession {
@@ -71,6 +80,7 @@ interface AssistantChatPanelProps {
     onSendMessage: (text: string, attachments: ChatAttachment[]) => Promise<void> | void;
     onApplySkill?: (skillId: string) => void;
     onSuggestionClick?: (key: 'infer' | 'itinerary' | 'autopilot-plan' | 'dashboard') => void;
+    onApplyTripPlans?: (messageId: string, action: TripPlanConfirmationAction) => void;
     selectedExpenseCount: number;
     selectedExpenseAmount: number;
     attachedExpenseContextEnabled: boolean;
@@ -246,7 +256,9 @@ export const AssistantThread: React.FC<{
     employeeName: string;
     onSuggestionClick?: (key: 'infer' | 'itinerary' | 'autopilot-plan' | 'dashboard') => void;
     onImagePreview?: (url: string) => void;
-}> = ({ messages, employeeName, onSuggestionClick, onImagePreview }) => {
+    onApplyTripPlans?: (messageId: string, action: TripPlanConfirmationAction) => void;
+    isExecuting?: boolean;
+}> = ({ messages, employeeName, onSuggestionClick, onImagePreview, onApplyTripPlans, isExecuting }) => {
     const viewportRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
@@ -397,6 +409,46 @@ export const AssistantThread: React.FC<{
                                 {/* Markdown 消息正文 (表格、加粗、排期等) */}
                                 {msg.text && (
                                     <MarkdownContent content={msg.text} isStreaming={msg.isStreaming} />
+                                )}
+
+                                {/* HITL 出差排期确认操作卡片 (人类在回路确认，绝不私自覆盖修改表格) */}
+                                {msg.confirmationAction && msg.confirmationAction.type === 'APPLY_TRIP_PLANS' && (
+                                    <div className={`aui-confirmation-card ${msg.confirmationAction.applied ? 'is-applied' : ''}`}>
+                                        <div className="aui-confirmation-header">
+                                            <div className="aui-confirmation-title">
+                                                <span className="aui-confirmation-icon">{msg.confirmationAction.applied ? '✅' : '📋'}</span>
+                                                <span className="aui-confirmation-title-text">
+                                                    {msg.confirmationAction.applied ? '出差排期规划已生效' : '待确认：应用出差排期至表格 (HITL)'}
+                                                </span>
+                                            </div>
+                                            <span className="aui-confirmation-badge">
+                                                {msg.confirmationAction.trips.length} 轮 Trip
+                                            </span>
+                                        </div>
+                                        <div className="aui-confirmation-desc">
+                                            {msg.confirmationAction.applied ? (
+                                                <>已将 AI 规划的 <strong>{msg.confirmationAction.trips.length}</strong> 轮出差往返 Trip 应用至费用明细表。{msg.confirmationAction.appliedTime ? `(确认时间: ${msg.confirmationAction.appliedTime})` : ''}</>
+                                            ) : (
+                                                <>AI 已完成排期深度认知解析并识别 <strong>{msg.confirmationAction.trips.length}</strong> 轮往返闭环。请复核上方排期推断表格，确认无误后点击下方按钮应用到当前表格并自动对齐发票必填项。</>
+                                            )}
+                                        </div>
+                                        {!msg.confirmationAction.applied ? (
+                                            <div className="aui-confirmation-actions">
+                                                <button
+                                                    type="button"
+                                                    className="aui-confirmation-btn-primary"
+                                                    disabled={isExecuting}
+                                                    onClick={() => onApplyTripPlans?.(msg.id, msg.confirmationAction!)}
+                                                >
+                                                    ✓ 确认应用到表格并对齐字段 ({msg.confirmationAction.trips.length} 轮 Trip)
+                                                </button>
+                                            </div>
+                                        ) : (
+                                            <div className="aui-confirmation-applied-note">
+                                                <span>✓ 表格已按此排期完成时空分组</span>
+                                            </div>
+                                        )}
+                                    </div>
                                 )}
                             </div>
                         )}
@@ -790,6 +842,7 @@ export const AssistantChatPanel: React.FC<AssistantChatPanelProps> = ({
     onSendMessage,
     onApplySkill,
     onSuggestionClick,
+    onApplyTripPlans,
     selectedExpenseCount,
     selectedExpenseAmount,
     attachedExpenseContextEnabled,
@@ -919,6 +972,8 @@ export const AssistantChatPanel: React.FC<AssistantChatPanelProps> = ({
                 employeeName={employeeName}
                 onSuggestionClick={onSuggestionClick}
                 onImagePreview={(url) => setPreviewImageUrl(url)}
+                onApplyTripPlans={onApplyTripPlans}
+                isExecuting={isExecuting}
             />
 
             {/* 底部复合输入卡片 Composer */}

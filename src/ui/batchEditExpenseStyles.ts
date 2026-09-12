@@ -3077,7 +3077,22 @@ td.yn-bem-cell-interactive {
 .yn-bem-ai-resizer:hover,
 .yn-bem-ai-resizer.is-resizing {
     background: #2563eb;
-    box-shadow: 0 0 6px rgba(37, 99, 235, 0.5);
+    box-shadow: 0 0 8px rgba(37, 99, 235, 0.6);
+}
+.yn-bem-ai-resizer.is-resizing {
+    width: 14px;
+    left: -7px;
+}
+#yn-bem-ai-panel-wrap.is-resizing {
+    transition: none !important;
+}
+#yn-bem-ai-panel-wrap.is-resizing #yn-bem-ai-panel-react-root {
+    pointer-events: none !important;
+    user-select: none !important;
+}
+body.yn-resizing-active {
+    cursor: col-resize !important;
+    user-select: none !important;
 }
 @keyframes ynBemSlideInRight {
     from { transform: translateX(100%); opacity: 0; }

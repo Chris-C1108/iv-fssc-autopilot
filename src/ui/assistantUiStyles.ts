@@ -102,11 +102,11 @@ ${getMarkstreamCss()}
 }
 
 .aui-suggestions-grid {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
     gap: 8px;
     width: 100%;
-    max-width: 380px;
+    max-width: 720px;
 }
 
 .aui-suggestion-card {
@@ -250,13 +250,116 @@ ${getMarkstreamCss()}
     border: 1px solid #e2e8f0;
     border-radius: 16px 16px 16px 4px;
     padding: 14px 16px;
-    max-width: 95%;
-    width: fit-content;
-    min-width: 280px;
+    max-width: 100%;
+    width: 100%;
+    box-sizing: border-box;
     box-shadow: 0 2px 10px rgba(0, 0, 0, 0.04);
     display: flex;
     flex-direction: column;
     gap: 10px;
+}
+
+/* ==========================================================================
+   HITL Confirmation Card 人在回路操作卡片 (用于出差排期规划与字段应用)
+   ========================================================================== */
+.aui-confirmation-card {
+    margin-top: 10px;
+    border: 1px solid #bfdbfe;
+    border-radius: 12px;
+    background: linear-gradient(180deg, #f0f7ff 0%, #ffffff 100%);
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    box-shadow: 0 2px 8px rgba(37, 99, 235, 0.06);
+    transition: all 0.2s ease;
+}
+.aui-confirmation-card.is-applied {
+    border-color: #bbf7d0;
+    background: linear-gradient(180deg, #f0fdf4 0%, #ffffff 100%);
+    box-shadow: 0 1px 4px rgba(22, 163, 74, 0.05);
+}
+
+.aui-confirmation-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+.aui-confirmation-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.aui-confirmation-icon {
+    font-size: 15px;
+}
+.aui-confirmation-title-text {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: #1e293b;
+}
+.aui-confirmation-badge {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 9999px;
+    background: #dbeafe;
+    color: #1d4ed8;
+}
+.aui-confirmation-card.is-applied .aui-confirmation-badge {
+    background: #dcfce7;
+    color: #15803d;
+}
+
+.aui-confirmation-desc {
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: #475569;
+}
+.aui-confirmation-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+}
+.aui-confirmation-btn-primary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 7px 16px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+    color: #ffffff;
+    font-size: 12px;
+    font-weight: 600;
+    border: none;
+    cursor: pointer;
+    box-shadow: 0 2px 6px rgba(37, 99, 235, 0.25);
+    transition: all 0.15s ease;
+}
+.aui-confirmation-btn-primary:hover:not(:disabled) {
+    background: linear-gradient(135deg, #1d4ed8 0%, #1e40af 100%);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 10px rgba(37, 99, 235, 0.35);
+}
+.aui-confirmation-btn-primary:active:not(:disabled) {
+    transform: scale(0.98);
+}
+.aui-confirmation-btn-primary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.aui-confirmation-applied-note {
+    font-size: 11px;
+    font-weight: 600;
+    color: #16a34a;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 2px;
 }
 
 /* ==========================================================================
@@ -458,6 +561,10 @@ ${getMarkstreamCss()}
     line-height: 1.65;
     color: #1e293b;
     word-break: break-word;
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    box-sizing: border-box;
 }
 .aui-markdown p {
     margin: 0 0 8px 0;
@@ -532,6 +639,7 @@ ${getMarkstreamCss()}
 .aui-markdown table,
 .markstream table {
     width: 100%;
+    min-width: 480px;
     border-collapse: separate;
     border-spacing: 0;
     font-size: 11.5px;

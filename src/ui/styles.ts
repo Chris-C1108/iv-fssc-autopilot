@@ -725,9 +725,11 @@ export const MODAL_STYLES = `
 `;
 
 export function injectStyles() {
-    if (document.getElementById('yn-injected-styles')) return;
-    const styleEl = document.createElement('style');
-    styleEl.id = 'yn-injected-styles';
+    let styleEl = document.getElementById('yn-injected-styles') as HTMLStyleElement;
+    if (!styleEl) {
+        styleEl = document.createElement('style');
+        styleEl.id = 'yn-injected-styles';
+        document.head.appendChild(styleEl);
+    }
     styleEl.innerHTML = MODAL_STYLES;
-    document.head.appendChild(styleEl);
 }

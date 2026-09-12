@@ -64,7 +64,8 @@ import {
     ChatSession,
     ChatAttachment,
     ThinkingData,
-    ChatToolCall
+    ChatToolCall,
+    TripPlanConfirmationAction
 } from './AssistantChatPanel';
 
 declare const unsafeWindow: any;
@@ -748,12 +749,13 @@ export async function openBatchEditExpenseModal(doc: Document, preselectedIds?: 
     const win = doc.defaultView || (typeof window !== 'undefined' ? window : null);
     const targetDoc = (typeof window !== 'undefined' && window.top && window.top.document) ? window.top.document : doc;
 
-    if (!targetDoc.getElementById('yn-injected-styles')) {
-        const styleEl = targetDoc.createElement('style');
+    let styleEl = targetDoc.getElementById('yn-injected-styles') as HTMLStyleElement;
+    if (!styleEl) {
+        styleEl = targetDoc.createElement('style');
         styleEl.id = 'yn-injected-styles';
-        styleEl.innerHTML = MODAL_STYLES;
         (targetDoc.head || targetDoc.body).appendChild(styleEl);
     }
+    styleEl.innerHTML = MODAL_STYLES;
 
     // 恢复本地暂存的 Trip 规划信息
     if (modalState.tripPlans.length === 0) {
@@ -925,13 +927,25 @@ export async function openBatchEditExpenseModal(doc: Document, preselectedIds?: 
         }
         modalState.currentEmployeeName = empName || '';
 
-        // 7. 初始自动执行时空锚点智能聚类 (将费用按出差 Trip 轮次与日常经费分类)
+        // 7. 初始自动执行时空锚点智能聚类 (优先恢复已确认的权威 Trip 规划，防止被 naive 默认聚类抹除)
         try {
-            clusterExpensesIntoTrips(
-                modalState.groups,
-                modalState.proxyPersonName || modalState.currentEmployeeName,
-                modalState.projectName
-            );
+            const cachedTrips = modalState.tripPlans.length > 0 ? modalState.tripPlans : loadTripPlansFromStorage();
+            if (cachedTrips && cachedTrips.length > 0) {
+                modalState.tripPlans = cachedTrips;
+                clusterExpensesIntoTrips(
+                    modalState.groups,
+                    modalState.proxyPersonName || modalState.currentEmployeeName,
+                    modalState.projectName,
+                    cachedTrips
+                );
+                AutopilotLogger.info(`[BatchEditModal] 成功基于本地权威暂存的 ${cachedTrips.length} 轮 Trip 规划恢复费用时空归集`);
+            } else {
+                clusterExpensesIntoTrips(
+                    modalState.groups,
+                    modalState.proxyPersonName || modalState.currentEmployeeName,
+                    modalState.projectName
+                );
+            }
         } catch (e: any) {
             AutopilotLogger.warn(`[BatchEditModal] 初始 Trip 聚类跳过: ${e?.message || e}`);
         }
@@ -2909,6 +2923,83 @@ function renderAssistantChat(container: HTMLElement) {
                         );
                     }
                     openAutopilotDecisionDashboard(container);
+                }
+            },
+            onApplyTripPlans: async (msgId: string, action: TripPlanConfirmationAction) => {
+                if (!action || !action.trips || action.trips.length === 0) return;
+                action.applied = true;
+                action.appliedTime = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+
+                // 1. 聚类排期并应用至明细表格
+                clusterExpensesIntoTrips(
+                    modalState.groups,
+                    modalState.proxyPersonName || modalState.currentEmployeeName,
+                    modalState.projectName,
+                    action.trips
+                );
+                modalState.groupingMode = 'TRIP';
+                const optGrouping = container.querySelector<HTMLSelectElement>('#yn-bem-opt-grouping');
+                if (optGrouping) optGrouping.value = 'TRIP';
+                modalState.collapsedGroupKeys.clear();
+                saveTripPlansToStorage(modalState.tripPlans);
+                refreshTableView(container, 'ROWS');
+
+                showToast('success', `已成功将 ${action.trips.length} 轮 Trip 行程应用至明细表格！正在对齐发票必填字段...`);
+
+                // 2. 找到对应消息，更新状态并展示工具流式进度
+                const curSession = modalState.chatSessions.find(s => s.id === modalState.currentSessionId) || modalState.chatSessions[0];
+                const msg = curSession?.messages.find(m => m.id === msgId);
+                let inferTool: ChatToolCall | undefined;
+                if (msg) {
+                    msg.confirmationAction = { ...action };
+                    inferTool = {
+                        id: 'tool_infer_fields',
+                        name: 'inferRequiredFields',
+                        title: '发票专属必填字段智能推断',
+                        icon: '🔮',
+                        status: 'running',
+                        progress: '正在对齐发票 OCR 票据链与已确认行程...'
+                    };
+                    msg.toolCalls = msg.toolCalls || [];
+                    const existingIdx = msg.toolCalls.findIndex(t => t.id === 'tool_infer_fields');
+                    if (existingIdx >= 0) {
+                        msg.toolCalls[existingIdx] = inferTool;
+                    } else {
+                        msg.toolCalls.push(inferTool);
+                    }
+                }
+
+                modalState.isAssistantExecuting = true;
+                saveChatSessionsToStorage(modalState.chatSessions);
+                renderAssistantChat(container);
+
+                // 3. 异步启动专属必填字段推断
+                try {
+                    const inferSummary = await handleAiInference(container, action.rawText || '', (progress) => {
+                        if (inferTool) {
+                            inferTool.progress = progress;
+                            renderAssistantChat(container);
+                        }
+                    });
+
+                    if (inferTool && msg) {
+                        inferTool.status = 'done';
+                        inferTool.progress = undefined;
+                        inferTool.output = inferSummary;
+                        msg.text = `${msg.text}\n\n---\n✅ **专属字段推断就绪**：${inferSummary}。\n您可直接在大表格中复核每笔明细，或点击保存。`;
+                    }
+                } catch (err: any) {
+                    if (inferTool && msg) {
+                        inferTool.status = 'error';
+                        inferTool.progress = undefined;
+                        inferTool.output = err?.message || String(err);
+                        msg.text = `${msg.text}\n\n---\n⚠️ **专属字段推断提示**：${err?.message || err}`;
+                    }
+                } finally {
+                    modalState.isAssistantExecuting = false;
+                    if (curSession) curSession.updatedAt = Date.now();
+                    saveChatSessionsToStorage(modalState.chatSessions);
+                    renderAssistantChat(container);
                 }
             },
             selectedExpenseCount: selectedCount,
@@ -5573,12 +5664,16 @@ function bindAiPanelResizer(container: HTMLElement) {
     const resizer = container.querySelector<HTMLElement>('#yn-bem-ai-resizer');
     if (resizer && aiWrap) {
         let isResizing = false;
+        let rafId: number | null = null;
+        let pendingWidth: number | null = null;
 
         const onMouseDown = (e: MouseEvent) => {
             e.preventDefault();
             e.stopPropagation();
             isResizing = true;
             resizer.classList.add('is-resizing');
+            aiWrap.classList.add('is-resizing');
+            document.body.classList.add('yn-resizing-active');
             document.body.style.cursor = 'col-resize';
             document.body.style.userSelect = 'none';
 
@@ -5586,19 +5681,37 @@ function bindAiPanelResizer(container: HTMLElement) {
                 if (!isResizing) return;
                 const winWidth = window.innerWidth;
                 let newWidth = winWidth - moveEv.clientX;
-                const minWidth = 320;
+                const minWidth = 360;
                 const maxWidth = Math.round(winWidth * 0.85);
                 if (newWidth < minWidth) newWidth = minWidth;
                 if (newWidth > maxWidth) newWidth = maxWidth;
 
-                modalState.aiPanelWidth = newWidth;
-                aiWrap.style.width = `${newWidth}px`;
+                pendingWidth = newWidth;
+                if (!rafId) {
+                    rafId = requestAnimationFrame(() => {
+                        if (pendingWidth !== null && aiWrap) {
+                            aiWrap.style.width = `${pendingWidth}px`;
+                            modalState.aiPanelWidth = pendingWidth;
+                        }
+                        rafId = null;
+                    });
+                }
             };
 
             const onMouseUp = () => {
                 if (isResizing) {
                     isResizing = false;
+                    if (rafId) {
+                        cancelAnimationFrame(rafId);
+                        rafId = null;
+                    }
+                    if (pendingWidth !== null && aiWrap) {
+                        aiWrap.style.width = `${pendingWidth}px`;
+                        modalState.aiPanelWidth = pendingWidth;
+                    }
                     resizer.classList.remove('is-resizing');
+                    aiWrap.classList.remove('is-resizing');
+                    document.body.classList.remove('yn-resizing-active');
                     document.body.style.cursor = '';
                     document.body.style.userSelect = '';
                     try {
@@ -5609,7 +5722,7 @@ function bindAiPanelResizer(container: HTMLElement) {
                 window.removeEventListener('mouseup', onMouseUp);
             };
 
-            window.addEventListener('mousemove', onMouseMove);
+            window.addEventListener('mousemove', onMouseMove, { passive: true });
             window.addEventListener('mouseup', onMouseUp);
         };
 
@@ -5785,58 +5898,17 @@ async function handleAssistantSendMessage(
             renderAssistantChat(container);
 
             if (detectedTrips.length > 0) {
-                clusterExpensesIntoTrips(
-                    modalState.groups,
-                    modalState.proxyPersonName || modalState.currentEmployeeName,
-                    modalState.projectName,
-                    detectedTrips
-                );
-                modalState.groupingMode = 'TRIP';
-                const groupSelect = container.querySelector<HTMLSelectElement>('#yn-bem-grouping-select');
-                if (groupSelect) groupSelect.value = 'TRIP';
-                refreshTableView(container);
-
-                // 随后异步启动专属必填字段推断，提供实时进度流式反馈
-                const inferTool: ChatToolCall = {
-                    id: 'tool_infer_fields',
-                    name: 'inferRequiredFields',
-                    title: '发票专属必填字段智能推断',
-                    icon: '🔮',
-                    status: 'running',
-                    progress: '正在初始化发票 OCR 票据链与行程对齐...'
+                assistMsg.confirmationAction = {
+                    type: 'APPLY_TRIP_PLANS',
+                    trips: detectedTrips,
+                    rawText: text,
+                    applied: false
                 };
-                assistMsg.toolCalls = assistMsg.toolCalls || [];
-                assistMsg.toolCalls.push(inferTool);
-                renderAssistantChat(container);
-
-                setTimeout(() => {
-                    handleAiInference(container, text, (progress) => {
-                        inferTool.progress = progress;
-                        renderAssistantChat(container);
-                    }).then((inferSummary) => {
-                        inferTool.status = 'done';
-                        inferTool.progress = undefined;
-                        inferTool.output = inferSummary;
-                        assistMsg.text = `${parseResult.summaryMarkdown}\n\n---\n✅ **专属字段推断就绪**：${inferSummary}。\n您可直接在大表格中复核每笔明细，或点击保存。`;
-                        modalState.isAssistantExecuting = false;
-                        curSession.updatedAt = Date.now();
-                        saveChatSessionsToStorage(modalState.chatSessions);
-                        renderAssistantChat(container);
-                    }).catch((err) => {
-                        inferTool.status = 'error';
-                        inferTool.progress = undefined;
-                        inferTool.output = err?.message || String(err);
-                        assistMsg.text = `${parseResult.summaryMarkdown}\n\n---\n⚠️ **专属字段推断提示**：${err?.message || err}`;
-                        modalState.isAssistantExecuting = false;
-                        curSession.updatedAt = Date.now();
-                        saveChatSessionsToStorage(modalState.chatSessions);
-                        renderAssistantChat(container);
-                    });
-                }, 300);
-            } else {
-                modalState.isAssistantExecuting = false;
-                renderAssistantChat(container);
             }
+            modalState.isAssistantExecuting = false;
+            curSession.updatedAt = Date.now();
+            saveChatSessionsToStorage(modalState.chatSessions);
+            renderAssistantChat(container);
         } catch (err: any) {
             if (assistMsg.thinking) {
                 assistMsg.thinking.status = 'done';
@@ -6139,6 +6211,10 @@ function bindEvents(container: HTMLElement, doc: Document) {
 
             if (res.failCount === 0) {
                 modalState.saveErrors.clear();
+                // 显式将当前生效的 Trip 规划持久化保存至 localStorage，防止页面刷新后丢失权威排期
+                if (modalState.tripPlans && modalState.tripPlans.length > 0) {
+                    saveTripPlansToStorage(modalState.tripPlans);
+                }
                 if (res.hasOverStandard) {
                     showToast('info', `💡 提示：本次保存包含 ${res.overStandardCount} 笔超标住宿费，已成功按您填写的超标说明合规入库。`, 6000);
                 }
