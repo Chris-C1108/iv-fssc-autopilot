@@ -297,7 +297,8 @@ export interface BatchEditExpenseModalState {
     sortKey: string; // 任意 ColumnDef 的 key
     sortAsc: boolean;
     searchQuery: string;
-    filterMode: 'ALL' | 'WARN' | 'MISSING_REQUIRED' | 'OK';
+    filterMode: 'ALL' | 'WARN' | 'MISSING_REQUIRED' | 'OK' | 'SAVE_ERROR';
+    saveErrors: Map<string, string>; // expenseRecordId -> 错误具体原因说明
 
     // 分组展示与折叠
     groupingMode: GroupingMode;
@@ -366,6 +367,7 @@ let modalState: BatchEditExpenseModalState = {
     sortAsc: true,
     searchQuery: '',
     filterMode: 'ALL',
+    saveErrors: new Map(),
 
     groupingMode: 'TRIP',
     collapsedGroupKeys: new Set(),
@@ -871,6 +873,7 @@ export async function openBatchEditExpenseModal(doc: Document, preselectedIds?: 
         modalState.popoverKeyword = '';
         modalState.searchQuery = '';
         modalState.filterMode = 'ALL';
+        modalState.saveErrors = new Map();
         modalState.lastSelectedRecordId = null;
 
         // 2. 聚合为 ExpenseRecordGroup
@@ -1096,7 +1099,8 @@ function getDistinctValuesForColumn(groups: ExpenseRecordGroup[], colKey: string
  */
 function getFilteredGroups(state: BatchEditExpenseModalState): ExpenseRecordGroup[] {
     return state.groups.filter(g => {
-        // 1. 预警与待补必填项过滤
+        // 1. 预警、待补必填项与保存失败项过滤
+        if (state.filterMode === 'SAVE_ERROR' && (!state.saveErrors || !state.saveErrors.has(g.expenseRecordId))) return false;
         if (state.filterMode === 'WARN' && !g.hasWarn) return false;
         if (state.filterMode === 'MISSING_REQUIRED' && !isGroupMissingRequired(g)) return false;
         if (state.filterMode === 'OK' && (g.hasWarn || isGroupMissingRequired(g))) return false;
@@ -2076,11 +2080,17 @@ function renderDynamicFieldCellHtml(group: ExpenseRecordGroup, col: ColumnDef, s
     const readOnlyAttr = isCityTypeCol ? 'readonly style="background:#f9fafb; color:#374151; cursor:not-allowed;"' : '';
     let cellTitle = isCityTypeCol ? `住宿城市类型 · 依据出差城市自动联动 (北上广深: 境内-北上广深 ¥800/晚, 其他: 境内-其他 ¥700/晚): ${val || '待录入出差城市'}` : titleText;
 
+    const saveError = modalState.saveErrors ? modalState.saveErrors.get(group.expenseRecordId) : undefined;
+    const isSaveError = Boolean(saveError);
+    const hasSaveErrorReason = isSaveError && Boolean(saveError?.includes('超标'));
+
     if (isOverStandardCol) {
         const detail = getHotelPricingDetail(group);
-        if (isHotelOver) {
+        if (isHotelOver || hasSaveErrorReason) {
             placeholderText = '超标必填 (自主填写或点击📋拷贝)';
-            cellTitle = `⚠️ 住宿费已超标：${detail ? detail.formulaText : ''}！超标说明为必填项，请自主输入理由，或点击右侧 📋 拷贝“费用说明”`;
+            cellTitle = isSaveError
+                ? `❌ 保存失败：${saveError}！超标说明为必填项，请自主输入理由，或点击右侧 📋 拷贝“费用说明”`
+                : `⚠️ 住宿费已超标：${detail ? detail.formulaText : ''}！超标说明为必填项，请自主输入理由，或点击右侧 📋 拷贝“费用说明”`;
         } else {
             placeholderText = '未超标(选填)';
             cellTitle = detail
@@ -2089,13 +2099,16 @@ function renderDynamicFieldCellHtml(group: ExpenseRecordGroup, col: ColumnDef, s
         }
     }
 
+    const saveErrorCellClass = (isSaveError && isOverStandardCol && (isHotelOver || hasSaveErrorReason || isEmpty)) ? 'has-save-error yn-bem-dyn-cell-empty' : '';
+    const saveErrorInputClass = (isSaveError && isOverStandardCol && (isHotelOver || hasSaveErrorReason || isEmpty)) ? 'has-save-error' : '';
+
     return `
-        <td class="yn-bem-group-cell yn-bem-cell-interactive ${catClass} ${warnClass} ${aiClass}"
+        <td class="yn-bem-group-cell yn-bem-cell-interactive ${catClass} ${warnClass} ${aiClass} ${saveErrorCellClass}"
             rowspan="${span}"
             title="${cellTitle}">
             <div class="yn-bem-dyn-cell-inner">
                 <input type="${inputType}"
-                       class="yn-bem-dyn-input ${isMono ? 'mono' : ''} ${isAiInferred ? 'is-ai-inferred' : ''}"
+                       class="yn-bem-dyn-input ${isMono ? 'mono' : ''} ${isAiInferred ? 'is-ai-inferred' : ''} ${saveErrorInputClass}"
                        data-recordid="${group.expenseRecordId}"
                        data-dynkey="${col.key}"
                        value="${escapeHtml(val)}"
@@ -2629,6 +2642,7 @@ function renderTopBarHtml(filteredGroups: ExpenseRecordGroup[]): string {
     const totalGroups = modalState.groups.length;
     const warnCount = modalState.groups.filter(g => g.hasWarn).length;
     const missingRequiredCount = modalState.groups.filter(g => isGroupMissingRequired(g)).length;
+    const saveErrorCount = modalState.saveErrors ? modalState.saveErrors.size : 0;
     const isAllCollapsed = modalState.collapsedGroupKeys.size > 0;
 
     return `
@@ -2658,10 +2672,12 @@ function renderTopBarHtml(filteredGroups: ExpenseRecordGroup[]): string {
                     <span class="yn-bem-quick-link" id="yn-bem-qa-select-all">全选</span>
                     <span class="yn-bem-quick-link" id="yn-bem-qa-deselect">全不选</span>
                     <span class="yn-bem-quick-link" id="yn-bem-qa-invert">反选</span>
+                    ${saveErrorCount > 0 ? `<span class="yn-bem-quick-link" id="yn-bem-qa-select-failed" style="color:#b91c1c; border-color:#fca5a5; background:#fef2f2; font-weight:700;">❌ 仅看失败 (${saveErrorCount})</span>` : ''}
                     ${missingRequiredCount > 0 ? `<span class="yn-bem-quick-link" id="yn-bem-qa-select-missing" style="color:#dc2626; border-color:#fee2e2; background:#fef2f2;">仅选待补 (${missingRequiredCount})</span>` : ''}
                     ${warnCount > 0 ? `<span class="yn-bem-quick-link" id="yn-bem-qa-select-warn" style="color:#b45309; border-color:#fef3c7; background:#fffbeb;">仅选预警 (${warnCount})</span>` : ''}
 
                     <select id="yn-bem-filter-mode" class="yn-bem-select" style="font-size:11px; padding:2px 6px; margin-left:2px;">
+                        ${saveErrorCount > 0 ? `<option value="SAVE_ERROR" ${modalState.filterMode === 'SAVE_ERROR' ? 'selected' : ''}>❌ 保存失败 (${saveErrorCount})</option>` : ''}
                         <option value="ALL" ${modalState.filterMode === 'ALL' ? 'selected' : ''}>全部 (${totalGroups})</option>
                         <option value="MISSING_REQUIRED" ${modalState.filterMode === 'MISSING_REQUIRED' ? 'selected' : ''}>待补必填 (${missingRequiredCount})</option>
                         <option value="WARN" ${modalState.filterMode === 'WARN' ? 'selected' : ''}>预警 (${warnCount})</option>
@@ -3245,6 +3261,9 @@ function renderGroupRowsHtml(group: ExpenseRecordGroup): string {
     const isAiDateInferred = Boolean(group.inferredFields?.['businessDate']);
     const flow = getGroupBillFlow(group);
 
+    const saveError = modalState.saveErrors ? modalState.saveErrors.get(group.expenseRecordId) : undefined;
+    const isSaveError = Boolean(saveError);
+
     // 智能错配检测
     const tripIntervals = modalState.tripPlans.map(t => ({ tripNo: t.tripNo, destination: t.destination, start: t.startDate, end: t.endDate }));
     const misclass = checkTaxiMisclassification(group, tripIntervals);
@@ -3260,10 +3279,11 @@ function renderGroupRowsHtml(group: ExpenseRecordGroup): string {
     const inv0 = invList[0];
 
     let rowsHtml = `
-        <tr class="${isSelected ? 'is-selected' : ''} yn-bem-group-first yn-bem-data-row" data-recordid="${group.expenseRecordId}">
+        <tr class="${isSelected ? 'is-selected' : ''} ${isSaveError ? 'is-save-error' : ''} yn-bem-group-first yn-bem-data-row" data-recordid="${group.expenseRecordId}">
             <!-- 费用主体聚合列 1: 复选框 -->
             <td class="yn-bem-col-sticky-cb yn-bem-group-cell" rowspan="${span}">
                 <input type="checkbox" class="yn-bem-record-cb" data-recordid="${group.expenseRecordId}" ${isSelected ? 'checked' : ''} />
+                ${isSaveError ? `<span class="yn-bem-save-error-badge" title="${escapeHtml(saveError || '')}">❌ 失败</span>` : ''}
             </td>
 
             <!-- 费用主体聚合列 2: 最早开票日 -->
@@ -3308,11 +3328,12 @@ function renderGroupRowsHtml(group: ExpenseRecordGroup): string {
             </td>
 
             <!-- 费用主体聚合列 6: 合并费用说明文本框 (100% 满高贴合) -->
-            <td class="yn-bem-group-cell yn-bem-cell-interactive" rowspan="${span}">
-                <input type="text" class="yn-bem-desc-input ${isDescChanged ? 'has-changed' : ''}"
+            <td class="yn-bem-group-cell yn-bem-cell-interactive ${isSaveError ? 'has-save-error' : ''}" rowspan="${span}">
+                <input type="text" class="yn-bem-desc-input ${isDescChanged ? 'has-changed' : ''} ${isSaveError ? 'has-save-error' : ''}"
                        data-recordid="${group.expenseRecordId}"
                        value="${escapeHtml(group.newDescription !== undefined ? group.newDescription : group.description)}"
                        placeholder="输入或修改费用说明..." title="直接就地编辑费用说明" />
+                ${isSaveError ? `<div class="yn-bem-row-error-hint" title="${escapeHtml(saveError || '')}">❌ ${escapeHtml(saveError || '')}</div>` : ''}
             </td>
 
             <!-- 费用主体聚合列 7: 发票张数 -->
@@ -3333,7 +3354,7 @@ function renderGroupRowsHtml(group: ExpenseRecordGroup): string {
         for (let k = 1; k < invList.length; k++) {
             const invK = invList[k];
             rowsHtml += `
-                <tr class="${isSelected ? 'is-selected' : ''} yn-bem-data-row" data-recordid="${group.expenseRecordId}">
+                <tr class="${isSelected ? 'is-selected' : ''} ${isSaveError ? 'is-save-error' : ''} yn-bem-data-row" data-recordid="${group.expenseRecordId}">
                     ${renderInvoiceDetailCells(invK, group.invoiceCount, group)}
                 </tr>
             `;
@@ -5075,6 +5096,31 @@ function refreshTableView(container: HTMLElement, mode: RefreshMode = 'ROWS') {
     if (activeFiltersWrap) {
         activeFiltersWrap.innerHTML = renderActiveFilterTagsHtml();
     }
+
+    const quickWrap = container.querySelector<HTMLElement>('.yn-bem-quick-select-wrap');
+    if (quickWrap) {
+        const totalGroups = modalState.groups.length;
+        const warnCount = modalState.groups.filter(g => g.hasWarn).length;
+        const missingRequiredCount = modalState.groups.filter(g => isGroupMissingRequired(g)).length;
+        const saveErrorCount = modalState.saveErrors ? modalState.saveErrors.size : 0;
+
+        quickWrap.innerHTML = `
+            <span class="yn-bem-quick-link" id="yn-bem-qa-select-all">全选</span>
+            <span class="yn-bem-quick-link" id="yn-bem-qa-deselect">全不选</span>
+            <span class="yn-bem-quick-link" id="yn-bem-qa-invert">反选</span>
+            ${saveErrorCount > 0 ? `<span class="yn-bem-quick-link" id="yn-bem-qa-select-failed" style="color:#b91c1c; border-color:#fca5a5; background:#fef2f2; font-weight:700;">❌ 仅看失败 (${saveErrorCount})</span>` : ''}
+            ${missingRequiredCount > 0 ? `<span class="yn-bem-quick-link" id="yn-bem-qa-select-missing" style="color:#dc2626; border-color:#fee2e2; background:#fef2f2;">仅选待补 (${missingRequiredCount})</span>` : ''}
+            ${warnCount > 0 ? `<span class="yn-bem-quick-link" id="yn-bem-qa-select-warn" style="color:#b45309; border-color:#fef3c7; background:#fffbeb;">仅选预警 (${warnCount})</span>` : ''}
+
+            <select id="yn-bem-filter-mode" class="yn-bem-select" style="font-size:11px; padding:2px 6px; margin-left:2px;">
+                ${saveErrorCount > 0 ? `<option value="SAVE_ERROR" ${modalState.filterMode === 'SAVE_ERROR' ? 'selected' : ''}>❌ 保存失败 (${saveErrorCount})</option>` : ''}
+                <option value="ALL" ${modalState.filterMode === 'ALL' ? 'selected' : ''}>全部 (${totalGroups})</option>
+                <option value="MISSING_REQUIRED" ${modalState.filterMode === 'MISSING_REQUIRED' ? 'selected' : ''}>待补必填 (${missingRequiredCount})</option>
+                <option value="WARN" ${modalState.filterMode === 'WARN' ? 'selected' : ''}>预警 (${warnCount})</option>
+                <option value="OK" ${modalState.filterMode === 'OK' ? 'selected' : ''}>正常 (${totalGroups - warnCount - missingRequiredCount})</option>
+            </select>
+        `;
+    }
 }
 
 /**
@@ -6092,6 +6138,7 @@ function bindEvents(container: HTMLElement, doc: Document) {
             );
 
             if (res.failCount === 0) {
+                modalState.saveErrors.clear();
                 if (res.hasOverStandard) {
                     showToast('info', `💡 提示：本次保存包含 ${res.overStandardCount} 笔超标住宿费，已成功按您填写的超标说明合规入库。`, 6000);
                 }
@@ -6106,14 +6153,58 @@ function bindEvents(container: HTMLElement, doc: Document) {
                     }
                 }, 1500);
             } else {
-                const errDetail = res.errors && res.errors.length > 0
-                    ? res.errors.slice(0, 3).map(e => e.error).join('；')
-                    : '部分记录存在未满足的必填校验';
+                modalState.saveErrors.clear();
+                res.errors.forEach(e => {
+                    modalState.saveErrors.set(e.expenseRecordId, e.error);
+                });
+
+                // 同步高亮标记宿主页面中的错误费用记录行 (通过全局事件彻底解耦，消除循环依赖)
+                if (typeof window !== 'undefined') {
+                    window.dispatchEvent(new CustomEvent('yn_expense_records_save_error', {
+                        detail: { failedMap: modalState.saveErrors }
+                    }));
+                }
+
+                // 自动切换为“仅看失败”筛选模式，隔离排查
+                modalState.filterMode = 'SAVE_ERROR';
+
+                // 重新渲染表格视图并裁剪非失败行的勾选
+                pruneSelectedRecordIds();
+                refreshTableView(container, 'ROWS');
+
+                // 自动平滑滚动并聚焦到首个失败条目
+                const firstError = res.errors[0];
+                if (firstError) {
+                    setTimeout(() => {
+                        const rowEl = container.querySelector<HTMLElement>(`tr[data-recordid="${firstError.expenseRecordId}"]`);
+                        if (rowEl) {
+                            rowEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        }
+                        const targetInp = container.querySelector<HTMLInputElement>(`input[data-recordid="${firstError.expenseRecordId}"][data-dynkey="dynOverStandard"]`) ||
+                            container.querySelector<HTMLInputElement>(`input[data-recordid="${firstError.expenseRecordId}"]`);
+                        if (targetInp) {
+                            targetInp.focus();
+                        }
+                    }, 100);
+                }
+
+                // 构建友好的条目级报错明细清单
+                const itemizedErrorMsg = res.errors.slice(0, 5).map((e, idx) => {
+                    const g = modalState.groups.find(item => item.expenseRecordId === e.expenseRecordId);
+                    const dateDesc = g ? `${g.earliestInvoiceDate || g.businessDate || ''} ¥${g.expenseAmount}` : '';
+                    return `• [条目 ${idx + 1}] ${dateDesc} ${e.error}`;
+                }).join('\n');
+
                 AutopilotLogger.error(`[BatchEditModal] 批量保存部分失败: ${JSON.stringify(res.errors)}`);
-                showToast('warning', `保存完成: 成功 ${res.successCount} 笔，失败 ${res.failCount} 笔: ${errDetail}`, 8000);
+                showToast(
+                    'warning',
+                    `⚠️ 保存完成: 成功 ${res.successCount} 笔，失败 ${res.failCount} 笔！\n已为您自动筛选定位至失败条目：\n${itemizedErrorMsg}${res.errors.length > 5 ? `\n...等共 ${res.errors.length} 笔` : ''}`,
+                    10000
+                );
+
                 if (islandSaveBtn) {
                     islandSaveBtn.disabled = false;
-                    islandSaveBtn.innerText = `💾 批量保存`;
+                    islandSaveBtn.innerText = `💾 重新保存 (${res.failCount} 笔失败)`;
                 }
             }
         } catch (err: any) {
@@ -6215,59 +6306,80 @@ function bindEvents(container: HTMLElement, doc: Document) {
         }, 250);
     });
 
-    // 7. 预警与待补必填项筛选过滤
-    const filterSelect = container.querySelector<HTMLSelectElement>('#yn-bem-filter-mode');
-    filterSelect?.addEventListener('change', () => {
-        modalState.filterMode = filterSelect.value as any;
-        pruneSelectedRecordIds();
-        refreshTableView(container, 'ROWS');
+    // 7. 预警、待补必填与保存失败项筛选过滤 (事件委托，无畏 DOM 局部更新)
+    container.addEventListener('change', (e) => {
+        const target = e.target as HTMLElement;
+        if (target && target.id === 'yn-bem-filter-mode') {
+            modalState.filterMode = (target as HTMLSelectElement).value as any;
+            pruneSelectedRecordIds();
+            refreshTableView(container, 'ROWS');
+        }
     });
 
-    // 8. 快捷全选 / 全不选 / 反选 / 仅选待补 / 仅选预警 (全量改为 CHECKBOXES 模式，< 5ms)
-    container.querySelector('#yn-bem-qa-select-all')?.addEventListener('click', () => {
-        const filtered = getFilteredGroups(modalState);
-        modalState.selectedRecordIds = new Set(filtered.map(g => g.expenseRecordId));
-        refreshTableView(container, 'CHECKBOXES');
-    });
+    // 8. 快捷全选 / 全不选 / 反选 / 仅看失败 / 仅选待补 / 仅选预警 (事件委托)
+    container.addEventListener('click', (e) => {
+        const target = e.target as HTMLElement;
+        if (!target) return;
 
-    container.querySelector('#yn-bem-qa-deselect')?.addEventListener('click', () => {
-        modalState.selectedRecordIds.clear();
-        refreshTableView(container, 'CHECKBOXES');
-    });
+        if (target.closest('#yn-bem-qa-select-all')) {
+            const filtered = getFilteredGroups(modalState);
+            modalState.selectedRecordIds = new Set(filtered.map(g => g.expenseRecordId));
+            refreshTableView(container, 'CHECKBOXES');
+            return;
+        }
 
-    container.querySelector('#yn-bem-qa-invert')?.addEventListener('click', () => {
-        const filtered = getFilteredGroups(modalState);
-        filtered.forEach(g => {
-            if (modalState.selectedRecordIds.has(g.expenseRecordId)) {
-                modalState.selectedRecordIds.delete(g.expenseRecordId);
-            } else {
-                modalState.selectedRecordIds.add(g.expenseRecordId);
-            }
-        });
-        pruneSelectedRecordIds();
-        refreshTableView(container, 'CHECKBOXES');
-    });
+        if (target.closest('#yn-bem-qa-deselect')) {
+            modalState.selectedRecordIds.clear();
+            refreshTableView(container, 'CHECKBOXES');
+            return;
+        }
 
-    container.querySelector('#yn-bem-qa-select-missing')?.addEventListener('click', () => {
-        modalState.selectedRecordIds.clear();
-        const filtered = getFilteredGroups(modalState);
-        filtered.forEach(g => {
-            if (isGroupMissingRequired(g)) {
-                modalState.selectedRecordIds.add(g.expenseRecordId);
-            }
-        });
-        refreshTableView(container, 'CHECKBOXES');
-    });
+        if (target.closest('#yn-bem-qa-invert')) {
+            const filtered = getFilteredGroups(modalState);
+            filtered.forEach(g => {
+                if (modalState.selectedRecordIds.has(g.expenseRecordId)) {
+                    modalState.selectedRecordIds.delete(g.expenseRecordId);
+                } else {
+                    modalState.selectedRecordIds.add(g.expenseRecordId);
+                }
+            });
+            pruneSelectedRecordIds();
+            refreshTableView(container, 'CHECKBOXES');
+            return;
+        }
 
-    container.querySelector('#yn-bem-qa-select-warn')?.addEventListener('click', () => {
-        modalState.selectedRecordIds.clear();
-        const filtered = getFilteredGroups(modalState);
-        filtered.forEach(g => {
-            if (g.hasWarn) {
-                modalState.selectedRecordIds.add(g.expenseRecordId);
-            }
-        });
-        refreshTableView(container, 'CHECKBOXES');
+        if (target.closest('#yn-bem-qa-select-failed')) {
+            modalState.filterMode = 'SAVE_ERROR';
+            const filterSel = container.querySelector<HTMLSelectElement>('#yn-bem-filter-mode');
+            if (filterSel) filterSel.value = 'SAVE_ERROR';
+            pruneSelectedRecordIds();
+            refreshTableView(container, 'ROWS');
+            return;
+        }
+
+        if (target.closest('#yn-bem-qa-select-missing')) {
+            modalState.selectedRecordIds.clear();
+            const filtered = getFilteredGroups(modalState);
+            filtered.forEach(g => {
+                if (isGroupMissingRequired(g)) {
+                    modalState.selectedRecordIds.add(g.expenseRecordId);
+                }
+            });
+            refreshTableView(container, 'CHECKBOXES');
+            return;
+        }
+
+        if (target.closest('#yn-bem-qa-select-warn')) {
+            modalState.selectedRecordIds.clear();
+            const filtered = getFilteredGroups(modalState);
+            filtered.forEach(g => {
+                if (g.hasWarn) {
+                    modalState.selectedRecordIds.add(g.expenseRecordId);
+                }
+            });
+            refreshTableView(container, 'CHECKBOXES');
+            return;
+        }
     });
 
     // 9. 底部操作浮条取消选择按钮

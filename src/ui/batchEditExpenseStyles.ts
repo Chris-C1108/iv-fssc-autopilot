@@ -3624,4 +3624,72 @@ td.yn-bem-cell-interactive {
     cursor: pointer;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
+
+/* ==========================================================================
+   保存失败视觉指示器与高亮系统 (Save Error Feedback System)
+   ========================================================================== */
+.yn-bem-data-row.is-save-error {
+    background-color: #fef2f2 !important;
+}
+.yn-bem-data-row.is-save-error td {
+    background-color: #fef2f2 !important;
+    border-top: 1px solid #fca5a5 !important;
+    border-bottom: 1px solid #fca5a5 !important;
+}
+.yn-bem-data-row.is-save-error td.yn-bem-col-sticky-cb {
+    border-left: 4px solid #dc2626 !important;
+}
+.yn-bem-save-error-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: #dc2626;
+    color: #ffffff;
+    font-size: 11px;
+    font-weight: 600;
+    margin-top: 4px;
+    cursor: help;
+    white-space: nowrap;
+    box-shadow: 0 1px 3px rgba(220, 38, 38, 0.3);
+}
+.yn-bem-row-error-hint {
+    margin-top: 4px;
+    font-size: 11px;
+    color: #991b1b;
+    background: #fee2e2;
+    padding: 3px 6px;
+    border-radius: 4px;
+    border: 1px solid #f87171;
+    line-height: 1.35;
+    word-break: break-all;
+    font-weight: 500;
+    display: flex;
+    align-items: flex-start;
+    gap: 4px;
+}
+.yn-bem-dyn-cell-inner .yn-bem-dyn-input.has-save-error,
+td.has-save-error {
+    border: 2px solid #dc2626 !important;
+    background-color: #fff1f2 !important;
+    box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.25) !important;
+}
+.yn-host-expense-error-row {
+    border-left: 4px solid #dc2626 !important;
+    background-color: #fff5f5 !important;
+}
+.yn-host-expense-error-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: #fee2e2;
+    border: 1px solid #fca5a5;
+    color: #b91c1c;
+    font-size: 11px;
+    font-weight: 600;
+    margin-left: 6px;
+}
 `;

@@ -1052,14 +1052,16 @@ export async function saveSingleExpenseItemApi(row: InvoiceItem, state: GlobalSt
             stayDays = diff > 0 ? diff : 1;
         }
 
+        const roomNum = Math.max(1, Number((row as any).roomNum) || 1);
         const totalAmount = (row.amount && row.amount > 0) ? row.amount : (rowDatas.AMOUNT?.value?.amount || 0);
-        const unitPriceVal = Math.round((totalAmount / stayDays) * 100) / 100;
+        const totalRoomNights = Math.max(1, stayDays * roomNum);
+        const unitPriceVal = Math.round((totalAmount / totalRoomNights) * 100) / 100;
 
         if (rowDatas.HOTEL_NAME) rowDatas.HOTEL_NAME.value = row.hotelName || row.endAddress || '';
         if (rowDatas.CHECK_IN_DATE && checkIn) rowDatas.CHECK_IN_DATE.value = `${checkIn} 00:00:00`;
         if (rowDatas.CHECK_OUT_DATE && checkOut) rowDatas.CHECK_OUT_DATE.value = `${checkOut} 00:00:00`;
         if (rowDatas.STAY_DAYS) rowDatas.STAY_DAYS.value = stayDays;
-        if (rowDatas.ROOM_NUM) rowDatas.ROOM_NUM.value = 1;
+        if (rowDatas.ROOM_NUM) rowDatas.ROOM_NUM.value = roomNum;
 
         if (rowDatas.UNIT_PRICE) {
             rowDatas.UNIT_PRICE.value = {
@@ -2567,7 +2569,8 @@ function ensureExpenseRowField(
                 ensureExpenseRowField(rowDatas, 'STAY_DAYS', stayDays, 'NUMBER');
 
                 const totalAmount = Number(rowDatas.AMOUNT?.value?.amount) || 0;
-                const unitPriceVal = Math.round((totalAmount / stayDays) * 100) / 100;
+                const totalRoomNights = Math.max(1, stayDays * roomNum);
+                const unitPriceVal = Math.round((totalAmount / totalRoomNights) * 100) / 100;
                 rowDatas.UNIT_PRICE = {
                     dataType: 'MONEY',
                     required: true,
@@ -2673,7 +2676,11 @@ function ensureExpenseRowField(
                             hasChanged = true;
                         }
                     } else if (isOverStandard) {
-                        throw new Error(`住宿费单价已超标，超标说明为必填项，请填写理由或点击 📋 拷贝“费用说明”后再保存！`);
+                        const itemDate = dyn.checkInDate || (rowDatas.CHECK_IN_DATE?.value ? String(rowDatas.CHECK_IN_DATE.value).slice(0, 10) : '') || '';
+                        const hotelOrCity = dyn.hotelName || dyn.city || (rowDatas.HOTEL_NAME?.value ? String(rowDatas.HOTEL_NAME.value) : '') || '';
+                        const itemAmount = totalAmount ? `¥${totalAmount}` : '';
+                        const itemLabel = [itemDate, hotelOrCity, itemAmount].filter(Boolean).join(' ');
+                        throw new Error(`[${itemLabel || item.expenseRecordId}] 住宿费单价已超标，超标说明为必填项，请填写理由或点击 📋 拷贝“费用说明”后再保存！`);
                     }
                 }
             }

@@ -572,3 +572,46 @@ export function initExpenseRecordDomService(state: GlobalState) {
 
     AutopilotLogger.info('✨ [ExpenseRecordDomService] 费用记录清单导出与开票行程核对服务已成功启动！');
 }
+
+/**
+ * 高亮宿主页面列表中的错误费用记录行 (增加红色警示边框与具体错误理由标记)
+ */
+export function markHostExpenseRecordsError(failedMap: Map<string, string>): void {
+    if (!failedMap || failedMap.size === 0) return;
+    try {
+        const docs = getExpenseRecordTargetDocs();
+        docs.forEach(doc => {
+            const rows = Array.from(doc.querySelectorAll<HTMLElement>('[class*="list_item"], tr, [class*="table_row"], [class*="record-item"]'));
+            rows.forEach(row => {
+                const rec = getExpenseRecordFromRow(row);
+                const id = rec?.expenseRecordId || rec?.id;
+                if (id && failedMap.has(id)) {
+                    row.classList.add('yn-host-expense-error-row');
+                    row.style.borderLeft = '4px solid #dc2626';
+                    row.style.backgroundColor = '#fff5f5';
+                    const errMsg = failedMap.get(id);
+                    let badge = row.querySelector<HTMLElement>('.yn-host-expense-error-badge');
+                    if (!badge) {
+                        badge = doc.createElement('span');
+                        badge.className = 'yn-host-expense-error-badge';
+                        badge.style.cssText = 'color:#dc2626; font-size:12px; font-weight:600; margin-left:8px; display:inline-flex; align-items:center; gap:2px;';
+                        row.appendChild(badge);
+                    }
+                    badge.innerText = `❌ 保存失败: ${errMsg}`;
+                    badge.title = errMsg || '';
+                }
+            });
+        });
+    } catch (e) {
+        AutopilotLogger.warn(`[markHostExpenseRecordsError] 标记宿主错误行失败: ${e}`);
+    }
+}
+
+if (typeof window !== 'undefined') {
+    window.addEventListener('yn_expense_records_save_error', (e: any) => {
+        if (e.detail?.failedMap) {
+            markHostExpenseRecordsError(e.detail.failedMap);
+        }
+    });
+}
+

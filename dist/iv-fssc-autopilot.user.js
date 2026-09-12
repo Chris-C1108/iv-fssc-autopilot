@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVision FSSC Autopilot (元年云费控极速自动驾驶副驾)
 // @namespace    https://github.com/Chris-C1108/iv-fssc-autopilot
-// @version      4.52.1
+// @version      4.52.2
 // @description  元年云报销全流程超级副驾：①【发票夹 & 费用记录】全量OCR数据穿透补全(乘车时间/里程100%恢复)、自动识别通信费、自由切换分类、早晚行程智能推断、拖拽多附件；②【经费报销单页】丰富多维菜单Item(科目/项目/成本中心/向客户请款)、自动聚合备注TAG(如X2605-001)、智能检索匹配项目、蝴蝶效应引擎链式联动、一键自动持久化保存(saveBillData)并自动刷新单据视图；③【极速模式】首行蝴蝶+内存克隆+单次入库(30倍提速)。
 // @author       Chris-C1108
 // @match        https://ync37.yuanian.com/*
@@ -5033,8 +5033,10 @@
                 const diff = Math.round((d2 - d1) / (1000 * 60 * 60 * 24));
                 stayDays = diff > 0 ? diff : 1;
             }
+            const roomNum = Math.max(1, Number(row.roomNum) || 1);
             const totalAmount = (row.amount && row.amount > 0) ? row.amount : (rowDatas.AMOUNT?.value?.amount || 0);
-            const unitPriceVal = Math.round((totalAmount / stayDays) * 100) / 100;
+            const totalRoomNights = Math.max(1, stayDays * roomNum);
+            const unitPriceVal = Math.round((totalAmount / totalRoomNights) * 100) / 100;
             if (rowDatas.HOTEL_NAME)
                 rowDatas.HOTEL_NAME.value = row.hotelName || row.endAddress || '';
             if (rowDatas.CHECK_IN_DATE && checkIn)
@@ -5044,7 +5046,7 @@
             if (rowDatas.STAY_DAYS)
                 rowDatas.STAY_DAYS.value = stayDays;
             if (rowDatas.ROOM_NUM)
-                rowDatas.ROOM_NUM.value = 1;
+                rowDatas.ROOM_NUM.value = roomNum;
             if (rowDatas.UNIT_PRICE) {
                 rowDatas.UNIT_PRICE.value = {
                     amount: unitPriceVal,
@@ -6332,7 +6334,8 @@
                             }
                             ensureExpenseRowField(rowDatas, 'STAY_DAYS', stayDays, 'NUMBER');
                             const totalAmount = Number(rowDatas.AMOUNT?.value?.amount) || 0;
-                            const unitPriceVal = Math.round((totalAmount / stayDays) * 100) / 100;
+                            const totalRoomNights = Math.max(1, stayDays * roomNum);
+                            const unitPriceVal = Math.round((totalAmount / totalRoomNights) * 100) / 100;
                             rowDatas.UNIT_PRICE = {
                                 dataType: 'MONEY',
                                 required: true,
@@ -6432,7 +6435,11 @@
                                     }
                                 }
                                 else if (isOverStandard) {
-                                    throw new Error(`住宿费单价已超标，超标说明为必填项，请填写理由或点击 📋 拷贝“费用说明”后再保存！`);
+                                    const itemDate = dyn.checkInDate || (rowDatas.CHECK_IN_DATE?.value ? String(rowDatas.CHECK_IN_DATE.value).slice(0, 10) : '') || '';
+                                    const hotelOrCity = dyn.hotelName || dyn.city || (rowDatas.HOTEL_NAME?.value ? String(rowDatas.HOTEL_NAME.value) : '') || '';
+                                    const itemAmount = totalAmount ? `¥${totalAmount}` : '';
+                                    const itemLabel = [itemDate, hotelOrCity, itemAmount].filter(Boolean).join(' ');
+                                    throw new Error(`[${itemLabel || item.expenseRecordId}] 住宿费单价已超标，超标说明为必填项，请填写理由或点击 📋 拷贝“费用说明”后再保存！`);
                                 }
                             }
                         }
@@ -53896,6 +53903,74 @@ td.yn-bem-cell-interactive {
     cursor: pointer;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
+
+/* ==========================================================================
+   保存失败视觉指示器与高亮系统 (Save Error Feedback System)
+   ========================================================================== */
+.yn-bem-data-row.is-save-error {
+    background-color: #fef2f2 !important;
+}
+.yn-bem-data-row.is-save-error td {
+    background-color: #fef2f2 !important;
+    border-top: 1px solid #fca5a5 !important;
+    border-bottom: 1px solid #fca5a5 !important;
+}
+.yn-bem-data-row.is-save-error td.yn-bem-col-sticky-cb {
+    border-left: 4px solid #dc2626 !important;
+}
+.yn-bem-save-error-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: #dc2626;
+    color: #ffffff;
+    font-size: 11px;
+    font-weight: 600;
+    margin-top: 4px;
+    cursor: help;
+    white-space: nowrap;
+    box-shadow: 0 1px 3px rgba(220, 38, 38, 0.3);
+}
+.yn-bem-row-error-hint {
+    margin-top: 4px;
+    font-size: 11px;
+    color: #991b1b;
+    background: #fee2e2;
+    padding: 3px 6px;
+    border-radius: 4px;
+    border: 1px solid #f87171;
+    line-height: 1.35;
+    word-break: break-all;
+    font-weight: 500;
+    display: flex;
+    align-items: flex-start;
+    gap: 4px;
+}
+.yn-bem-dyn-cell-inner .yn-bem-dyn-input.has-save-error,
+td.has-save-error {
+    border: 2px solid #dc2626 !important;
+    background-color: #fff1f2 !important;
+    box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.25) !important;
+}
+.yn-host-expense-error-row {
+    border-left: 4px solid #dc2626 !important;
+    background-color: #fff5f5 !important;
+}
+.yn-host-expense-error-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: #fee2e2;
+    border: 1px solid #fca5a5;
+    color: #b91c1c;
+    font-size: 11px;
+    font-weight: 600;
+    margin-left: 6px;
+}
 `;
 
     const MODAL_STYLES = `
@@ -64100,6 +64175,7 @@ JSON 输出格式：
         sortAsc: true,
         searchQuery: '',
         filterMode: 'ALL',
+        saveErrors: new Map(),
         groupingMode: 'TRIP',
         collapsedGroupKeys: new Set(),
         tripPlans: [],
@@ -64591,6 +64667,7 @@ JSON 输出格式：
             modalState.popoverKeyword = '';
             modalState.searchQuery = '';
             modalState.filterMode = 'ALL';
+            modalState.saveErrors = new Map();
             modalState.lastSelectedRecordId = null;
             // 2. 聚合为 ExpenseRecordGroup
             modalState.groups = groupExpenseRows(rows);
@@ -64844,7 +64921,9 @@ JSON 输出格式：
      */
     function getFilteredGroups(state) {
         return state.groups.filter(g => {
-            // 1. 预警与待补必填项过滤
+            // 1. 预警、待补必填项与保存失败项过滤
+            if (state.filterMode === 'SAVE_ERROR' && (!state.saveErrors || !state.saveErrors.has(g.expenseRecordId)))
+                return false;
             if (state.filterMode === 'WARN' && !g.hasWarn)
                 return false;
             if (state.filterMode === 'MISSING_REQUIRED' && !isGroupMissingRequired(g))
@@ -65741,11 +65820,16 @@ JSON 输出格式：
         let placeholderText = isEmpty ? (isCityTypeCol ? '自动推导' : '必填') : '';
         const readOnlyAttr = isCityTypeCol ? 'readonly style="background:#f9fafb; color:#374151; cursor:not-allowed;"' : '';
         let cellTitle = isCityTypeCol ? `住宿城市类型 · 依据出差城市自动联动 (北上广深: 境内-北上广深 ¥800/晚, 其他: 境内-其他 ¥700/晚): ${val || '待录入出差城市'}` : titleText;
+        const saveError = modalState.saveErrors ? modalState.saveErrors.get(group.expenseRecordId) : undefined;
+        const isSaveError = Boolean(saveError);
+        const hasSaveErrorReason = isSaveError && Boolean(saveError?.includes('超标'));
         if (isOverStandardCol) {
             const detail = getHotelPricingDetail(group);
-            if (isHotelOver) {
+            if (isHotelOver || hasSaveErrorReason) {
                 placeholderText = '超标必填 (自主填写或点击📋拷贝)';
-                cellTitle = `⚠️ 住宿费已超标：${detail ? detail.formulaText : ''}！超标说明为必填项，请自主输入理由，或点击右侧 📋 拷贝“费用说明”`;
+                cellTitle = isSaveError
+                    ? `❌ 保存失败：${saveError}！超标说明为必填项，请自主输入理由，或点击右侧 📋 拷贝“费用说明”`
+                    : `⚠️ 住宿费已超标：${detail ? detail.formulaText : ''}！超标说明为必填项，请自主输入理由，或点击右侧 📋 拷贝“费用说明”`;
             }
             else {
                 placeholderText = '未超标(选填)';
@@ -65754,13 +65838,15 @@ JSON 输出格式：
                     : '超标说明 · 系统测算未超标，无需填写';
             }
         }
+        const saveErrorCellClass = (isSaveError && isOverStandardCol && (isHotelOver || hasSaveErrorReason || isEmpty)) ? 'has-save-error yn-bem-dyn-cell-empty' : '';
+        const saveErrorInputClass = (isSaveError && isOverStandardCol && (isHotelOver || hasSaveErrorReason || isEmpty)) ? 'has-save-error' : '';
         return `
-        <td class="yn-bem-group-cell yn-bem-cell-interactive ${catClass} ${warnClass} ${aiClass}"
+        <td class="yn-bem-group-cell yn-bem-cell-interactive ${catClass} ${warnClass} ${aiClass} ${saveErrorCellClass}"
             rowspan="${span}"
             title="${cellTitle}">
             <div class="yn-bem-dyn-cell-inner">
                 <input type="${inputType}"
-                       class="yn-bem-dyn-input ${isMono ? 'mono' : ''} ${isAiInferred ? 'is-ai-inferred' : ''}"
+                       class="yn-bem-dyn-input ${isMono ? 'mono' : ''} ${isAiInferred ? 'is-ai-inferred' : ''} ${saveErrorInputClass}"
                        data-recordid="${group.expenseRecordId}"
                        data-dynkey="${col.key}"
                        value="${escapeHtml(val)}"
@@ -66146,6 +66232,7 @@ JSON 输出格式：
         const totalGroups = modalState.groups.length;
         const warnCount = modalState.groups.filter(g => g.hasWarn).length;
         const missingRequiredCount = modalState.groups.filter(g => isGroupMissingRequired(g)).length;
+        const saveErrorCount = modalState.saveErrors ? modalState.saveErrors.size : 0;
         const isAllCollapsed = modalState.collapsedGroupKeys.size > 0;
         return `
         <div class="yn-bem-top-bar" id="yn-bem-top-bar">
@@ -66174,10 +66261,12 @@ JSON 输出格式：
                     <span class="yn-bem-quick-link" id="yn-bem-qa-select-all">全选</span>
                     <span class="yn-bem-quick-link" id="yn-bem-qa-deselect">全不选</span>
                     <span class="yn-bem-quick-link" id="yn-bem-qa-invert">反选</span>
+                    ${saveErrorCount > 0 ? `<span class="yn-bem-quick-link" id="yn-bem-qa-select-failed" style="color:#b91c1c; border-color:#fca5a5; background:#fef2f2; font-weight:700;">❌ 仅看失败 (${saveErrorCount})</span>` : ''}
                     ${missingRequiredCount > 0 ? `<span class="yn-bem-quick-link" id="yn-bem-qa-select-missing" style="color:#dc2626; border-color:#fee2e2; background:#fef2f2;">仅选待补 (${missingRequiredCount})</span>` : ''}
                     ${warnCount > 0 ? `<span class="yn-bem-quick-link" id="yn-bem-qa-select-warn" style="color:#b45309; border-color:#fef3c7; background:#fffbeb;">仅选预警 (${warnCount})</span>` : ''}
 
                     <select id="yn-bem-filter-mode" class="yn-bem-select" style="font-size:11px; padding:2px 6px; margin-left:2px;">
+                        ${saveErrorCount > 0 ? `<option value="SAVE_ERROR" ${modalState.filterMode === 'SAVE_ERROR' ? 'selected' : ''}>❌ 保存失败 (${saveErrorCount})</option>` : ''}
                         <option value="ALL" ${modalState.filterMode === 'ALL' ? 'selected' : ''}>全部 (${totalGroups})</option>
                         <option value="MISSING_REQUIRED" ${modalState.filterMode === 'MISSING_REQUIRED' ? 'selected' : ''}>待补必填 (${missingRequiredCount})</option>
                         <option value="WARN" ${modalState.filterMode === 'WARN' ? 'selected' : ''}>预警 (${warnCount})</option>
@@ -66653,6 +66742,8 @@ JSON 输出格式：
         const isTypeChanged = Boolean(group.newExpenseTypeId && group.newExpenseTypeId !== group.expenseTypeId);
         const isAiDateInferred = Boolean(group.inferredFields?.['businessDate']);
         const flow = getGroupBillFlow(group);
+        const saveError = modalState.saveErrors ? modalState.saveErrors.get(group.expenseRecordId) : undefined;
+        const isSaveError = Boolean(saveError);
         // 智能错配检测
         const tripIntervals = modalState.tripPlans.map(t => ({ tripNo: t.tripNo, destination: t.destination, start: t.startDate, end: t.endDate }));
         const misclass = checkTaxiMisclassification(group, tripIntervals);
@@ -66666,10 +66757,11 @@ JSON 输出格式：
         const span = Math.max(1, invList.length);
         const inv0 = invList[0];
         let rowsHtml = `
-        <tr class="${isSelected ? 'is-selected' : ''} yn-bem-group-first yn-bem-data-row" data-recordid="${group.expenseRecordId}">
+        <tr class="${isSelected ? 'is-selected' : ''} ${isSaveError ? 'is-save-error' : ''} yn-bem-group-first yn-bem-data-row" data-recordid="${group.expenseRecordId}">
             <!-- 费用主体聚合列 1: 复选框 -->
             <td class="yn-bem-col-sticky-cb yn-bem-group-cell" rowspan="${span}">
                 <input type="checkbox" class="yn-bem-record-cb" data-recordid="${group.expenseRecordId}" ${isSelected ? 'checked' : ''} />
+                ${isSaveError ? `<span class="yn-bem-save-error-badge" title="${escapeHtml(saveError || '')}">❌ 失败</span>` : ''}
             </td>
 
             <!-- 费用主体聚合列 2: 最早开票日 -->
@@ -66714,11 +66806,12 @@ JSON 输出格式：
             </td>
 
             <!-- 费用主体聚合列 6: 合并费用说明文本框 (100% 满高贴合) -->
-            <td class="yn-bem-group-cell yn-bem-cell-interactive" rowspan="${span}">
-                <input type="text" class="yn-bem-desc-input ${isDescChanged ? 'has-changed' : ''}"
+            <td class="yn-bem-group-cell yn-bem-cell-interactive ${isSaveError ? 'has-save-error' : ''}" rowspan="${span}">
+                <input type="text" class="yn-bem-desc-input ${isDescChanged ? 'has-changed' : ''} ${isSaveError ? 'has-save-error' : ''}"
                        data-recordid="${group.expenseRecordId}"
                        value="${escapeHtml(group.newDescription !== undefined ? group.newDescription : group.description)}"
                        placeholder="输入或修改费用说明..." title="直接就地编辑费用说明" />
+                ${isSaveError ? `<div class="yn-bem-row-error-hint" title="${escapeHtml(saveError || '')}">❌ ${escapeHtml(saveError || '')}</div>` : ''}
             </td>
 
             <!-- 费用主体聚合列 7: 发票张数 -->
@@ -66738,7 +66831,7 @@ JSON 输出格式：
             for (let k = 1; k < invList.length; k++) {
                 const invK = invList[k];
                 rowsHtml += `
-                <tr class="${isSelected ? 'is-selected' : ''} yn-bem-data-row" data-recordid="${group.expenseRecordId}">
+                <tr class="${isSelected ? 'is-selected' : ''} ${isSaveError ? 'is-save-error' : ''} yn-bem-data-row" data-recordid="${group.expenseRecordId}">
                     ${renderInvoiceDetailCells(invK, group.invoiceCount, group)}
                 </tr>
             `;
@@ -68363,6 +68456,29 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
         if (activeFiltersWrap) {
             activeFiltersWrap.innerHTML = renderActiveFilterTagsHtml();
         }
+        const quickWrap = container.querySelector('.yn-bem-quick-select-wrap');
+        if (quickWrap) {
+            const totalGroups = modalState.groups.length;
+            const warnCount = modalState.groups.filter(g => g.hasWarn).length;
+            const missingRequiredCount = modalState.groups.filter(g => isGroupMissingRequired(g)).length;
+            const saveErrorCount = modalState.saveErrors ? modalState.saveErrors.size : 0;
+            quickWrap.innerHTML = `
+            <span class="yn-bem-quick-link" id="yn-bem-qa-select-all">全选</span>
+            <span class="yn-bem-quick-link" id="yn-bem-qa-deselect">全不选</span>
+            <span class="yn-bem-quick-link" id="yn-bem-qa-invert">反选</span>
+            ${saveErrorCount > 0 ? `<span class="yn-bem-quick-link" id="yn-bem-qa-select-failed" style="color:#b91c1c; border-color:#fca5a5; background:#fef2f2; font-weight:700;">❌ 仅看失败 (${saveErrorCount})</span>` : ''}
+            ${missingRequiredCount > 0 ? `<span class="yn-bem-quick-link" id="yn-bem-qa-select-missing" style="color:#dc2626; border-color:#fee2e2; background:#fef2f2;">仅选待补 (${missingRequiredCount})</span>` : ''}
+            ${warnCount > 0 ? `<span class="yn-bem-quick-link" id="yn-bem-qa-select-warn" style="color:#b45309; border-color:#fef3c7; background:#fffbeb;">仅选预警 (${warnCount})</span>` : ''}
+
+            <select id="yn-bem-filter-mode" class="yn-bem-select" style="font-size:11px; padding:2px 6px; margin-left:2px;">
+                ${saveErrorCount > 0 ? `<option value="SAVE_ERROR" ${modalState.filterMode === 'SAVE_ERROR' ? 'selected' : ''}>❌ 保存失败 (${saveErrorCount})</option>` : ''}
+                <option value="ALL" ${modalState.filterMode === 'ALL' ? 'selected' : ''}>全部 (${totalGroups})</option>
+                <option value="MISSING_REQUIRED" ${modalState.filterMode === 'MISSING_REQUIRED' ? 'selected' : ''}>待补必填 (${missingRequiredCount})</option>
+                <option value="WARN" ${modalState.filterMode === 'WARN' ? 'selected' : ''}>预警 (${warnCount})</option>
+                <option value="OK" ${modalState.filterMode === 'OK' ? 'selected' : ''}>正常 (${totalGroups - warnCount - missingRequiredCount})</option>
+            </select>
+        `;
+        }
     }
     /**
      * 绑定专属必填字段卡片内部的交互输入与快捷操作事件
@@ -69329,6 +69445,7 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
                         islandSaveBtn.innerText = `正在保存 (${curr}/${total})...`;
                 }, win);
                 if (res.failCount === 0) {
+                    modalState.saveErrors.clear();
                     if (res.hasOverStandard) {
                         showToast('info', `💡 提示：本次保存包含 ${res.overStandardCount} 笔超标住宿费，已成功按您填写的超标说明合规入库。`, 6000);
                     }
@@ -69346,14 +69463,47 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
                     }, 1500);
                 }
                 else {
-                    const errDetail = res.errors && res.errors.length > 0
-                        ? res.errors.slice(0, 3).map(e => e.error).join('；')
-                        : '部分记录存在未满足的必填校验';
+                    modalState.saveErrors.clear();
+                    res.errors.forEach(e => {
+                        modalState.saveErrors.set(e.expenseRecordId, e.error);
+                    });
+                    // 同步高亮标记宿主页面中的错误费用记录行 (通过全局事件彻底解耦，消除循环依赖)
+                    if (typeof window !== 'undefined') {
+                        window.dispatchEvent(new CustomEvent('yn_expense_records_save_error', {
+                            detail: { failedMap: modalState.saveErrors }
+                        }));
+                    }
+                    // 自动切换为“仅看失败”筛选模式，隔离排查
+                    modalState.filterMode = 'SAVE_ERROR';
+                    // 重新渲染表格视图并裁剪非失败行的勾选
+                    pruneSelectedRecordIds();
+                    refreshTableView(container, 'ROWS');
+                    // 自动平滑滚动并聚焦到首个失败条目
+                    const firstError = res.errors[0];
+                    if (firstError) {
+                        setTimeout(() => {
+                            const rowEl = container.querySelector(`tr[data-recordid="${firstError.expenseRecordId}"]`);
+                            if (rowEl) {
+                                rowEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            }
+                            const targetInp = container.querySelector(`input[data-recordid="${firstError.expenseRecordId}"][data-dynkey="dynOverStandard"]`) ||
+                                container.querySelector(`input[data-recordid="${firstError.expenseRecordId}"]`);
+                            if (targetInp) {
+                                targetInp.focus();
+                            }
+                        }, 100);
+                    }
+                    // 构建友好的条目级报错明细清单
+                    const itemizedErrorMsg = res.errors.slice(0, 5).map((e, idx) => {
+                        const g = modalState.groups.find(item => item.expenseRecordId === e.expenseRecordId);
+                        const dateDesc = g ? `${g.earliestInvoiceDate || g.businessDate || ''} ¥${g.expenseAmount}` : '';
+                        return `• [条目 ${idx + 1}] ${dateDesc} ${e.error}`;
+                    }).join('\n');
                     AutopilotLogger.error(`[BatchEditModal] 批量保存部分失败: ${JSON.stringify(res.errors)}`);
-                    showToast('warning', `保存完成: 成功 ${res.successCount} 笔，失败 ${res.failCount} 笔: ${errDetail}`, 8000);
+                    showToast('warning', `⚠️ 保存完成: 成功 ${res.successCount} 笔，失败 ${res.failCount} 笔！\n已为您自动筛选定位至失败条目：\n${itemizedErrorMsg}${res.errors.length > 5 ? `\n...等共 ${res.errors.length} 笔` : ''}`, 10000);
                     if (islandSaveBtn) {
                         islandSaveBtn.disabled = false;
-                        islandSaveBtn.innerText = `💾 批量保存`;
+                        islandSaveBtn.innerText = `💾 重新保存 (${res.failCount} 笔失败)`;
                     }
                 }
             }
@@ -69449,55 +69599,76 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
                 refreshTableView(container, 'ROWS');
             }, 250);
         });
-        // 7. 预警与待补必填项筛选过滤
-        const filterSelect = container.querySelector('#yn-bem-filter-mode');
-        filterSelect?.addEventListener('change', () => {
-            modalState.filterMode = filterSelect.value;
-            pruneSelectedRecordIds();
-            refreshTableView(container, 'ROWS');
+        // 7. 预警、待补必填与保存失败项筛选过滤 (事件委托，无畏 DOM 局部更新)
+        container.addEventListener('change', (e) => {
+            const target = e.target;
+            if (target && target.id === 'yn-bem-filter-mode') {
+                modalState.filterMode = target.value;
+                pruneSelectedRecordIds();
+                refreshTableView(container, 'ROWS');
+            }
         });
-        // 8. 快捷全选 / 全不选 / 反选 / 仅选待补 / 仅选预警 (全量改为 CHECKBOXES 模式，< 5ms)
-        container.querySelector('#yn-bem-qa-select-all')?.addEventListener('click', () => {
-            const filtered = getFilteredGroups(modalState);
-            modalState.selectedRecordIds = new Set(filtered.map(g => g.expenseRecordId));
-            refreshTableView(container, 'CHECKBOXES');
-        });
-        container.querySelector('#yn-bem-qa-deselect')?.addEventListener('click', () => {
-            modalState.selectedRecordIds.clear();
-            refreshTableView(container, 'CHECKBOXES');
-        });
-        container.querySelector('#yn-bem-qa-invert')?.addEventListener('click', () => {
-            const filtered = getFilteredGroups(modalState);
-            filtered.forEach(g => {
-                if (modalState.selectedRecordIds.has(g.expenseRecordId)) {
-                    modalState.selectedRecordIds.delete(g.expenseRecordId);
-                }
-                else {
-                    modalState.selectedRecordIds.add(g.expenseRecordId);
-                }
-            });
-            pruneSelectedRecordIds();
-            refreshTableView(container, 'CHECKBOXES');
-        });
-        container.querySelector('#yn-bem-qa-select-missing')?.addEventListener('click', () => {
-            modalState.selectedRecordIds.clear();
-            const filtered = getFilteredGroups(modalState);
-            filtered.forEach(g => {
-                if (isGroupMissingRequired(g)) {
-                    modalState.selectedRecordIds.add(g.expenseRecordId);
-                }
-            });
-            refreshTableView(container, 'CHECKBOXES');
-        });
-        container.querySelector('#yn-bem-qa-select-warn')?.addEventListener('click', () => {
-            modalState.selectedRecordIds.clear();
-            const filtered = getFilteredGroups(modalState);
-            filtered.forEach(g => {
-                if (g.hasWarn) {
-                    modalState.selectedRecordIds.add(g.expenseRecordId);
-                }
-            });
-            refreshTableView(container, 'CHECKBOXES');
+        // 8. 快捷全选 / 全不选 / 反选 / 仅看失败 / 仅选待补 / 仅选预警 (事件委托)
+        container.addEventListener('click', (e) => {
+            const target = e.target;
+            if (!target)
+                return;
+            if (target.closest('#yn-bem-qa-select-all')) {
+                const filtered = getFilteredGroups(modalState);
+                modalState.selectedRecordIds = new Set(filtered.map(g => g.expenseRecordId));
+                refreshTableView(container, 'CHECKBOXES');
+                return;
+            }
+            if (target.closest('#yn-bem-qa-deselect')) {
+                modalState.selectedRecordIds.clear();
+                refreshTableView(container, 'CHECKBOXES');
+                return;
+            }
+            if (target.closest('#yn-bem-qa-invert')) {
+                const filtered = getFilteredGroups(modalState);
+                filtered.forEach(g => {
+                    if (modalState.selectedRecordIds.has(g.expenseRecordId)) {
+                        modalState.selectedRecordIds.delete(g.expenseRecordId);
+                    }
+                    else {
+                        modalState.selectedRecordIds.add(g.expenseRecordId);
+                    }
+                });
+                pruneSelectedRecordIds();
+                refreshTableView(container, 'CHECKBOXES');
+                return;
+            }
+            if (target.closest('#yn-bem-qa-select-failed')) {
+                modalState.filterMode = 'SAVE_ERROR';
+                const filterSel = container.querySelector('#yn-bem-filter-mode');
+                if (filterSel)
+                    filterSel.value = 'SAVE_ERROR';
+                pruneSelectedRecordIds();
+                refreshTableView(container, 'ROWS');
+                return;
+            }
+            if (target.closest('#yn-bem-qa-select-missing')) {
+                modalState.selectedRecordIds.clear();
+                const filtered = getFilteredGroups(modalState);
+                filtered.forEach(g => {
+                    if (isGroupMissingRequired(g)) {
+                        modalState.selectedRecordIds.add(g.expenseRecordId);
+                    }
+                });
+                refreshTableView(container, 'CHECKBOXES');
+                return;
+            }
+            if (target.closest('#yn-bem-qa-select-warn')) {
+                modalState.selectedRecordIds.clear();
+                const filtered = getFilteredGroups(modalState);
+                filtered.forEach(g => {
+                    if (g.hasWarn) {
+                        modalState.selectedRecordIds.add(g.expenseRecordId);
+                    }
+                });
+                refreshTableView(container, 'CHECKBOXES');
+                return;
+            }
         });
         // 9. 底部操作浮条取消选择按钮
         container.querySelector('#yn-bem-btn-clear-selection')?.addEventListener('click', () => {
@@ -70740,6 +70911,48 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
             });
         }, 2500);
         AutopilotLogger.info('✨ [ExpenseRecordDomService] 费用记录清单导出与开票行程核对服务已成功启动！');
+    }
+    /**
+     * 高亮宿主页面列表中的错误费用记录行 (增加红色警示边框与具体错误理由标记)
+     */
+    function markHostExpenseRecordsError(failedMap) {
+        if (!failedMap || failedMap.size === 0)
+            return;
+        try {
+            const docs = getExpenseRecordTargetDocs();
+            docs.forEach(doc => {
+                const rows = Array.from(doc.querySelectorAll('[class*="list_item"], tr, [class*="table_row"], [class*="record-item"]'));
+                rows.forEach(row => {
+                    const rec = getExpenseRecordFromRow(row);
+                    const id = rec?.expenseRecordId || rec?.id;
+                    if (id && failedMap.has(id)) {
+                        row.classList.add('yn-host-expense-error-row');
+                        row.style.borderLeft = '4px solid #dc2626';
+                        row.style.backgroundColor = '#fff5f5';
+                        const errMsg = failedMap.get(id);
+                        let badge = row.querySelector('.yn-host-expense-error-badge');
+                        if (!badge) {
+                            badge = doc.createElement('span');
+                            badge.className = 'yn-host-expense-error-badge';
+                            badge.style.cssText = 'color:#dc2626; font-size:12px; font-weight:600; margin-left:8px; display:inline-flex; align-items:center; gap:2px;';
+                            row.appendChild(badge);
+                        }
+                        badge.innerText = `❌ 保存失败: ${errMsg}`;
+                        badge.title = errMsg || '';
+                    }
+                });
+            });
+        }
+        catch (e) {
+            AutopilotLogger.warn(`[markHostExpenseRecordsError] 标记宿主错误行失败: ${e}`);
+        }
+    }
+    if (typeof window !== 'undefined') {
+        window.addEventListener('yn_expense_records_save_error', (e) => {
+            if (e.detail?.failedMap) {
+                markHostExpenseRecordsError(e.detail.failedMap);
+            }
+        });
     }
 
     // ==========================================
