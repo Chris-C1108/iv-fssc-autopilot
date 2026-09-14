@@ -328,6 +328,69 @@ export async function callDirectLlmJson<T = any>(
 }
 
 /**
+ * 直接调用大模型获取自然语言 / Markdown 文本响应 (用于报告撰写、对话问答等)
+ */
+export async function callDirectLlmText(
+    systemPrompt: string,
+    userPrompt: string,
+    signal?: AbortSignal,
+    timeoutMs: number = 180000
+): Promise<{ success: boolean; text?: string; error?: string }> {
+    const config = getLlmConfig();
+    if (!config.apiKey || !config.endpoint) {
+        return { success: false, error: '未配置大模型 API Key 或端点' };
+    }
+
+    const url = normalizeEndpoint(config.endpoint);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const activeSignal = signal || controller.signal;
+
+    try {
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${config.apiKey.trim()}`
+            },
+            body: JSON.stringify({
+                model: config.model.trim(),
+                messages: [
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: userPrompt }
+                ],
+                temperature: 0.3
+            }),
+            signal: activeSignal
+        });
+
+        clearTimeout(timeoutId);
+
+        if (!res.ok) {
+            const errText = await res.text();
+            return {
+                success: false,
+                error: extractCleanErrorMessage(errText, res.status)
+            };
+        }
+
+        const data = await res.json();
+        const content = data.choices?.[0]?.message?.content?.trim() || '';
+        // 过滤思维链标签 (如 <think>...</think> 或 <thought>...</thought>)
+        const cleanContent = content.replace(/<(?:think|thought)>[\s\S]*?<\/(?:think|thought)>/gi, '').trim();
+        return { success: true, text: cleanContent };
+    } catch (err: any) {
+        clearTimeout(timeoutId);
+        AutopilotLogger.warn(`[DirectLLMText] 调用大模型失败: ${err?.message || err}`);
+        const timeoutSec = Math.round(timeoutMs / 1000);
+        return {
+            success: false,
+            error: err.name === 'AbortError' ? `大模型请求超时 (超过 ${timeoutSec} 秒未响应)` : (err.message || '大模型请求异常')
+        };
+    }
+}
+
+/**
  * 转换 WebMCP 工具定义为 OpenAI Tool Calling 规范
  */
 function convertToolsToOpenAiFormat(toolDefs: WebMcpToolDef[]): any[] {

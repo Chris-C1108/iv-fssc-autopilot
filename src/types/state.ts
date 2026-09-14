@@ -278,6 +278,7 @@ export interface TripApplicationConfig {
     status: '就绪' | '创建中' | '已生成草稿' | '失败';
     billCode?: string;
     billMainId?: string;
+    travelReport?: string;
     error?: string;
 }
 
@@ -369,3 +370,20 @@ export interface GlobalState {
     lastInterceptedExpenseRecords?: any[];
     lastInterceptedInvoicePool?: any[];
 }
+
+export interface GenericExpenseGroup {
+    expenseAmount: number | string;
+    description?: string;
+    newDescription?: string;
+    expenseTypeName?: string;
+    newExpenseTypeName?: string;
+    businessDate?: string;
+    newBusinessDate?: string;
+    invoices?: Array<{
+        salesName?: string;
+        remarks?: string;
+        [key: string]: any;
+    }>;
+    [key: string]: any;
+}
+

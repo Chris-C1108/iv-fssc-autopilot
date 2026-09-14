@@ -1085,8 +1085,8 @@ export function renderA2UiExpenseBatchWidget(options: RenderA2UiExpenseBatchOpti
                 } else if (actionKey === 'openModal') {
                     if (onOpenModal) onOpenModal();
                     else {
-                        const helperBtn = document.getElementById('yn-batch-helper-btn');
-                        if (helperBtn) helperBtn.click();
+                        const topDoc = (typeof window !== 'undefined' && window.top?.document) ? window.top.document : document;
+                        import('./batchEditExpenseModal').then(m => m.openBatchEditExpenseModal(topDoc));
                     }
                 } else if (actionKey === 'batchSave') {
                     try {

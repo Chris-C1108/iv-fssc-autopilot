@@ -52,6 +52,23 @@ export function getInvoicePoolGlobalState(): GlobalState {
         if (capturedAuthHeaders['eicds']) st.eicds = capturedAuthHeaders['eicds'];
         if (capturedAuthHeaders['v']) st.v = capturedAuthHeaders['v'];
     }
+    if (!st.applicantId && typeof window !== 'undefined') {
+        try {
+            const uStr = window.sessionStorage?.getItem('ecs_currentUser') || window.localStorage?.getItem('ecs_currentUser');
+            if (uStr) {
+                const u = JSON.parse(uStr);
+                if (u && u.id) {
+                    st.applicantId = u.id;
+                    if (!st.currentUser) st.currentUser = {} as any;
+                    st.currentUser.userId = u.id;
+                    st.currentUser.userName = u.userName || u.name || '';
+                    st.currentUser.userCode = u.loginName || u.userCode || '';
+                    st.currentUser.email = u.email || '';
+                    st.applicantName = u.userName || u.name || '';
+                }
+            }
+        } catch (e) { }
+    }
     return st;
 }
 

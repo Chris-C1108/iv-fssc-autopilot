@@ -581,7 +581,12 @@ export async function getInvoiceDetailByDataIdApi(dataId: string, state: GlobalS
     return res.data;
 }
 
-export async function queryExpenseRecordListApi(state: GlobalState, win?: Window | null, forceRefresh: boolean = true) {
+export async function queryExpenseRecordListApi(
+    state: GlobalState,
+    win?: Window | null,
+    forceRefresh: boolean = true,
+    statusList: string[] = ['NO_REIMBURSE', 'REIMBURSING']
+) {
     // 只有在非强制刷新模式下，才允许复用最近拦截到的记录
     if (!forceRefresh && state.lastInterceptedExpenseRecords && state.lastInterceptedExpenseRecords.length > 0) {
         AutopilotLogger.info(`[ExpenseService] 复用最近拦截到的宿主费用记录 (${state.lastInterceptedExpenseRecords.length} 条)`);
@@ -590,10 +595,10 @@ export async function queryExpenseRecordListApi(state: GlobalState, win?: Window
 
     const applicantId = state.currentUser?.userId || state.applicantId;
 
-    // 1. 标准分页结构请求 (大分页 200 条)
+    // 1. 标准分页结构请求 (大分页 200 条，默认覆盖未报销与报销中)
     const standardPayload: any = {
         pageOrderParam: { pageNum: 1, pageSize: 200 },
-        status: ['NO_REIMBURSE'],
+        status: statusList && statusList.length > 0 ? [...statusList] : ['NO_REIMBURSE', 'REIMBURSING'],
         requestDate: null,
         sortOrder: 'DESC',
         sortColumnCode: 'CREATE_DATE'
@@ -1052,9 +1057,10 @@ export async function saveSingleExpenseItemApi(row: InvoiceItem, state: GlobalSt
             stayDays = diff > 0 ? diff : 1;
         }
 
-        const roomNum = row.roomNum || (rowDatas.ROOM_NUM?.value !== undefined && rowDatas.ROOM_NUM?.value !== null ? Number(rowDatas.ROOM_NUM.value) : 1) || 1;
+        const roomNum = Math.max(1, Number((row as any).roomNum) || 1);
         const totalAmount = (row.amount && row.amount > 0) ? row.amount : (rowDatas.AMOUNT?.value?.amount || 0);
-        const unitPriceVal = Math.round((totalAmount / (stayDays * roomNum)) * 100) / 100;
+        const totalRoomNights = Math.max(1, stayDays * roomNum);
+        const unitPriceVal = Math.round((totalAmount / totalRoomNights) * 100) / 100;
 
         if (rowDatas.HOTEL_NAME) rowDatas.HOTEL_NAME.value = row.hotelName || row.endAddress || '';
         if (rowDatas.CHECK_IN_DATE && checkIn) rowDatas.CHECK_IN_DATE.value = `${checkIn} 00:00:00`;
@@ -2058,13 +2064,14 @@ export async function fetchExpenseRecordsWithInvoiceDetails(
     state: GlobalState,
     targetRecordIds?: string[],
     onProgress?: (current: number, total: number) => void,
-    win?: Window | null
+    win?: Window | null,
+    statusList: string[] = ['NO_REIMBURSE', 'REIMBURSING']
 ): Promise<ExpenseRecordExportRow[]> {
     // 强制清除旧拦截缓存，保障穿透拉取最新全量数据
     state.lastInterceptedExpenseRecords = null;
 
-    // 1. 获取费用记录列表 (Network-First)
-    const allRecords = await queryExpenseRecordListApi(state, win, true);
+    // 1. 获取费用记录列表 (Network-First，默认查询未报销与报销中)
+    const allRecords = await queryExpenseRecordListApi(state, win, true, statusList);
     let targetRecords = allRecords;
     if (targetRecordIds && targetRecordIds.length > 0) {
         const idSet = new Set(targetRecordIds);
@@ -2568,7 +2575,8 @@ function ensureExpenseRowField(
                 ensureExpenseRowField(rowDatas, 'STAY_DAYS', stayDays, 'NUMBER');
 
                 const totalAmount = Number(rowDatas.AMOUNT?.value?.amount) || 0;
-                const unitPriceVal = Math.round((totalAmount / (stayDays * roomNum)) * 100) / 100;
+                const totalRoomNights = Math.max(1, stayDays * roomNum);
+                const unitPriceVal = Math.round((totalAmount / totalRoomNights) * 100) / 100;
                 rowDatas.UNIT_PRICE = {
                     dataType: 'MONEY',
                     required: true,
@@ -2655,41 +2663,30 @@ function ensureExpenseRowField(
                 }
 
                 // 5.2.1 住宿费超标说明自动自愈与必填守卫 (彻底解决“保存校验拦截: 超标说明必填”)
-                const currentStdAmount = Number(rowDatas.STANDARD_VALUE?.value?.amount) || stdAmt;
-                const isOverStandard = unitPriceVal > currentStdAmount;
-
-                // 同步更新 OVER_STANDARD 字段 (是 / 否)
-                const overValId = isOverStandard ? '6b8ff07f9ebe11e88b7247d35c1e5077' : '6b8ff0809ebe11e88b7219c3aed96e32';
-                const overTitle = isOverStandard ? '是' : '否';
-                if (rowDatas.OVER_STANDARD) {
-                    rowDatas.OVER_STANDARD.value = {
-                        icon: '',
-                        iconColor: '',
-                        title: { zh_CN: overTitle },
-                        value: overValId
-                    };
-                    hasChanged = true;
-                }
-
-                if (rowDatas.OVER_STANDARD_DESCRIPTION) {
-                    rowDatas.OVER_STANDARD_DESCRIPTION.required = isOverStandard;
-                }
+                const isOverStandard = rowDatas.OVER_STANDARD?.value?.title?.zh_CN === '是' ||
+                    rowDatas.OVER_STANDARD?.value === true ||
+                    rowDatas.OVER_STANDARD_DESCRIPTION?.required === true ||
+                    (rowDatas.UNIT_PRICE?.value?.amount && rowDatas.STANDARD_VALUE?.value?.amount &&
+                        rowDatas.UNIT_PRICE.value.amount > rowDatas.STANDARD_VALUE.value.amount);
 
                 if (isOverStandard) {
                     result.hasOverStandard = true;
                     result.overStandardCount = (result.overStandardCount || 0) + 1;
+                }
+
+                if (isOverStandard || (rowDatas.OVER_STANDARD_DESCRIPTION && !rowDatas.OVER_STANDARD_DESCRIPTION.value)) {
                     const overReason = (dyn.overStandardDescription && dyn.overStandardDescription.trim()) ||
                         (rowDatas.OVER_STANDARD_DESCRIPTION?.value ? String(rowDatas.OVER_STANDARD_DESCRIPTION.value).trim() : '');
                     if (overReason) {
                         if (ensureExpenseRowField(rowDatas, 'OVER_STANDARD_DESCRIPTION', overReason, 'MTEXT')) {
                             hasChanged = true;
                         }
-                    } else {
-                        throw new Error(`住宿费单价已超标（单价 ¥${unitPriceVal} > 标准 ¥${currentStdAmount}），超标说明为必填项，请填写理由或点击 📋 拷贝“费用说明”后再保存！`);
-                    }
-                } else {
-                    if (dyn.overStandardDescription !== undefined) {
-                        ensureExpenseRowField(rowDatas, 'OVER_STANDARD_DESCRIPTION', dyn.overStandardDescription, 'MTEXT');
+                    } else if (isOverStandard) {
+                        const itemDate = dyn.checkInDate || (rowDatas.CHECK_IN_DATE?.value ? String(rowDatas.CHECK_IN_DATE.value).slice(0, 10) : '') || '';
+                        const hotelOrCity = dyn.hotelName || dyn.city || (rowDatas.HOTEL_NAME?.value ? String(rowDatas.HOTEL_NAME.value) : '') || '';
+                        const itemAmount = totalAmount ? `¥${totalAmount}` : '';
+                        const itemLabel = [itemDate, hotelOrCity, itemAmount].filter(Boolean).join(' ');
+                        throw new Error(`[${itemLabel || item.expenseRecordId}] 住宿费单价已超标，超标说明为必填项，请填写理由或点击 📋 拷贝“费用说明”后再保存！`);
                     }
                 }
             }

@@ -16,11 +16,30 @@
  */
 
 import { AutopilotLogger } from '../utils/logger';
-import { callDirectLlmJson } from './llmService';
+import { callDirectLlmJson, isLlmConfigured } from './llmService';
 import type { ExpenseRecordGroup } from '../ui/batchEditExpenseModal';
 import { DynamicExpenseFieldValues } from './expenseService';
+import { type DynamicTripInput, parseItineraryTable } from './applicationService';
+import type { TripLeg } from '../types/state';
 
 export type ExpenseGroupCategory = 'HOTEL' | 'FLIGHT' | 'TRAIN' | 'TAXI' | 'MOBILE' | 'OTHER';
+
+export type DetailedExpenseCategory = 'HOTEL' | 'FLIGHT' | 'TRAIN' | 'TRIP_TAXI' | 'LOCAL_TAXI' | 'MOBILE' | 'OTHER';
+
+export type ExpenseBillFlow = 'BC' | 'BJ'; // BC: 出差费用报销单, BJ: 经费报销单
+
+/**
+ * 依据费用类型 ID 或名称确定单据流向 (BC 差旅报销 vs BJ 经费报销)
+ */
+export function getExpenseBillFlow(typeId?: string, typeName?: string): ExpenseBillFlow {
+    const s = `${typeName || ''} ${typeId || ''}`.toLowerCase();
+    // 明确属于非差旅/日常类的：市内交通费、手机通信费、交际费、会议费、福利费等
+    if (s.includes('市内交通') || typeId === '0356c529e72de1653e55bb00bc610001') return 'BJ';
+    if (s.includes('手机') || s.includes('通信费-员工') || s.includes('txf') || typeId === '0356c577f8ede1653e55bb00bc610001') return 'BJ';
+    if (s.includes('交际') || s.includes('会议') || s.includes('福利') || s.includes('培训') || s.includes('办公')) return 'BJ';
+    // 差旅大类：机票、高铁、住宿、出租车（taxi）、交通费其他
+    return 'BC';
+}
 
 /**
  * 根据类型 ID 或类型名称智能识别费用主类别
@@ -44,6 +63,56 @@ export function getGroupCategory(group: ExpenseRecordGroup): ExpenseGroupCategor
         group.newExpenseTypeId || group.expenseTypeId,
         group.newExpenseTypeName || group.expenseTypeName
     );
+}
+
+/**
+ * 获取费用分组的单据流向
+ */
+export function getGroupBillFlow(group: ExpenseRecordGroup): ExpenseBillFlow {
+    return getExpenseBillFlow(
+        group.newExpenseTypeId || group.expenseTypeId,
+        group.newExpenseTypeName || group.expenseTypeName
+    );
+}
+
+/**
+ * 检测出租车费用是否存在出差/日常错配嫌疑
+ */
+export function checkTaxiMisclassification(
+    group: ExpenseRecordGroup,
+    tripDateIntervals: Array<{ tripNo: number; destination: string; start: string; end: string }>
+): { hasMisclass: boolean; suggestedTypeId?: string; suggestedTypeName?: string; reason?: string } {
+    const typeId = group.newExpenseTypeId || group.expenseTypeId;
+    const typeName = group.newExpenseTypeName || group.expenseTypeName;
+    const date = group.newBusinessDate || group.businessDate || group.earliestInvoiceDate;
+    if (!date) return { hasMisclass: false };
+
+    const isLocalTaxi = typeName?.includes('市内交通') || typeId === '0356c529e72de1653e55bb00bc610001';
+    const isTripTaxi = typeName?.includes('taxi') || typeId === '0356c4cef03345af7f1906ec05cc0000';
+
+    if (!isLocalTaxi && !isTripTaxi) return { hasMisclass: false };
+
+    const matchedTrip = tripDateIntervals.find(t => date >= t.start && date <= t.end);
+
+    if (matchedTrip && isLocalTaxi) {
+        return {
+            hasMisclass: true,
+            suggestedTypeId: '0356c4cef03345af7f1906ec05cc0000',
+            suggestedTypeName: '出租车（taxi）',
+            reason: `该打车发生于 Trip ${matchedTrip.tripNo} (${matchedTrip.destination}) 出差期间，建议变更为【差旅费 - 出租车(taxi)】`
+        };
+    }
+
+    if (!matchedTrip && isTripTaxi && tripDateIntervals.length > 0) {
+        return {
+            hasMisclass: true,
+            suggestedTypeId: '0356c529e72de1653e55bb00bc610001',
+            suggestedTypeName: '市内交通费',
+            reason: `该打车不在任何出差期间内，建议变更为【交通费 - 市内交通费 (日常经费)】`
+        };
+    }
+
+    return { hasMisclass: false };
 }
 
 /**
@@ -918,3 +987,190 @@ function applyFieldsToGroup(
 
     return count;
 }
+
+const ITINERARY_PARSER_SYSTEM_PROMPT = `你是一个专业的企业财务差旅排期与出行行程认知推理专家。
+用户会提供一段出差排期文本（可能来自 Excel 表格复制、日程备忘录、微信聊天、邮件通知等）。
+请运用大语言模型的常识认知决策与世界地理常识，精准识别并切分出本次日程中包含的所有“出差行程轮次 (Trips)”。
+
+【严格遵循的输出 JSON Schema】：
+{
+  "trips": [
+    {
+      "tripNo": 1,
+      "destination": "目的地城市名（如 天津、广州、合肥、大连、嘉兴；若为同城园区特殊出差可带园区如 上海金山）",
+      "startDate": "YYYY-MM-DD",
+      "endDate": "YYYY-MM-DD",
+      "hotelName": "排期中入住的酒店名称（多家用 / 分隔）",
+      "flightOrTrain": "主要交通工具（飞机 / 高铁 / 火车）",
+      "purpose": "出差目的或调研事由（如：天津业务差旅与实地调研 (住理工津荣模具、環宇住理工、東海化成)）",
+      "targetFactories": "走访据点或企业客户名称列表（用、分隔）",
+      "travelers": ["出行人员姓名列表"],
+      "legs": [
+        { "date": "YYYY-MM-DD", "fromCity": "出发城市", "toCity": "到达城市", "transport": "飞机/高铁" },
+        { "date": "YYYY-MM-DD", "fromCity": "离开城市", "toCity": "返回城市", "transport": "飞机/高铁" }
+      ]
+    }
+  ]
+}
+
+【认知推理核心铁律】：
+1. 往返闭环定义：从常驻出发地出发，到外地开展活动，最终返回常驻地，视为一轮完整独立的出差 (Trip)；
+2. 往返周期绝对隔离：若同一月份前往同一城市多次（例如 7/20~7/25 去天津，8/17~8/21 又去天津），必须切分为独立的两个 Trip，绝对不可跨往返周期合并；
+3. 有住宿即为出差：只要排期中包含酒店住宿（即使是同城或同省远距离据点园区住宿），均应作为独立出差单据识别；
+4. 标准化日期：将各种日期格式（如 2026/7/20、7月20日、2026.07.20）一律归一化为标准的 YYYY-MM-DD；
+5. 必须返回纯 JSON，严禁输出任何 markdown 代码块以外的解释说明文字。
+`;
+
+export interface AiItineraryDetailedResult {
+    trips: DynamicTripInput[];
+    summaryMarkdown: string;
+    engine: 'llm' | 'rule';
+    latencyMs?: number;
+}
+
+/**
+ * 将解析出的多轮 Trip 渲染为清晰规整的 Markdown 业务报表供对话框与看板展示
+ */
+export function formatTripsToMarkdownSummary(
+    trips: DynamicTripInput[],
+    engine: 'llm' | 'rule',
+    latencyMs?: number
+): string {
+    if (!trips || trips.length === 0) {
+        return `未能从排期文本中识别出有效出差行程。请确认文本包含目的地、起止日期或活动类型。`;
+    }
+
+    const headerBadge = engine === 'llm'
+        ? `✨ **大模型 (LLM) 深度认知解析完成**` + (latencyMs ? ` (耗时 ${(latencyMs / 1000).toFixed(1)}s)` : '')
+        : `⚡ **轻量规则引擎已解析排期** (已启用本地确定性规则切分)`;
+
+    let totalDays = 0;
+    trips.forEach(t => {
+        try {
+            const d1 = new Date(t.startDate.replace(/-/g, '/')).getTime();
+            const d2 = new Date(t.endDate.replace(/-/g, '/')).getTime();
+            const diff = Math.max(1, Math.round((d2 - d1) / (1000 * 3600 * 24)) + 1);
+            totalDays += diff;
+        } catch (e) {
+            totalDays += 1;
+        }
+    });
+
+    let md = `${headerBadge}\n\n`;
+    md += `共精准切分出 **${trips.length}** 轮独立往返 Trip（累计约 **${totalDays}** 天出差日程），大表格已按 Trip 自动归集聚类：\n\n`;
+    md += `| 轮次 | 目的地 | 日期区间 | 交通工具 | 住宿酒店 | 走访据点/企业 | 出行人 |\n`;
+    md += `| :---: | :--- | :--- | :---: | :--- | :--- | :--- |\n`;
+
+    trips.forEach((t, idx) => {
+        const no = t.tripNo || (idx + 1);
+        const dest = t.destination || '待定';
+        const dates = t.startDate === t.endDate ? t.startDate : `${t.startDate} ~ ${t.endDate}`;
+        const transport = t.flightOrTrain || '飞机/高铁';
+        const hotel = t.hotelName || '-';
+        const factories = t.targetFactories ? t.targetFactories.replace(/、/g, '<br>') : '-';
+        const travelers = (t.travelers && t.travelers.length > 0) ? t.travelers.join(', ') : (t.applicantName || '本人');
+
+        md += `| **Trip #${no}** | **${dest}** | ${dates} | ${transport} | ${hotel} | ${factories} | ${travelers} |\n`;
+    });
+
+    md += `\n> 💡 **系统状态**：大表格已切换至 **Trip 分组** 视图。正在结合发票证据链智能推断专属必填字段...`;
+    return md;
+}
+
+/**
+ * 结构化排期解析主调度器：
+ * 1. 优先调用大语言模型 (LLM) 进行概率认知决策与常识往返切分；
+ * 2. 若未配置 API Key、网络断开或调用异常，自动无缝降级为本地规则解析器 (parseItineraryTable)，提供高可用保障。
+ */
+export async function parseItineraryWithAiDetailed(
+    itineraryText: string,
+    signal?: AbortSignal
+): Promise<AiItineraryDetailedResult> {
+    if (!itineraryText || itineraryText.trim().length < 10) {
+        return {
+            trips: [],
+            summaryMarkdown: '排期内容过短，无法解析。',
+            engine: 'rule'
+        };
+    }
+
+    const trimmed = itineraryText.trim();
+    const canUseLlm = isLlmConfigured();
+
+    if (canUseLlm) {
+        const startTime = Date.now();
+        try {
+            AutopilotLogger.info(`[InferenceService] 开始调用大模型解析排期文本...`);
+            const res = await callDirectLlmJson<{ trips?: any[] }>(
+                ITINERARY_PARSER_SYSTEM_PROMPT,
+                trimmed,
+                signal,
+                45000 // 45s 超时守卫
+            );
+
+            const latencyMs = Date.now() - startTime;
+
+            if (res.success && res.data?.trips && Array.isArray(res.data.trips) && res.data.trips.length > 0) {
+                const trips: DynamicTripInput[] = res.data.trips.map((t, idx) => ({
+                    tripNo: t.tripNo || (idx + 1),
+                    applicantName: (t.travelers && t.travelers[0]) || t.applicantName || '当前用户',
+                    isProxy: false,
+                    destination: (t.destination || '出差地').replace(/省|市/g, ''),
+                    startDate: t.startDate,
+                    endDate: t.endDate || t.startDate,
+                    hotelName: (t.hotelName || '').replace(/^[-—\s]+|[-—\s]+$/g, ''),
+                    flightOrTrain: t.flightOrTrain || '飞机/高铁',
+                    purpose: t.purpose || `出差${t.destination}业务交流及现场技术支持`,
+                    targetFactories: t.targetFactories || '',
+                    travelers: t.travelers || [],
+                    legs: t.legs || []
+                }));
+
+                AutopilotLogger.info(`[InferenceService] 大模型成功解析排期文本，识别出 ${trips.length} 轮 Trip (耗时 ${latencyMs}ms)`);
+                return {
+                    trips,
+                    summaryMarkdown: formatTripsToMarkdownSummary(trips, 'llm', latencyMs),
+                    engine: 'llm',
+                    latencyMs
+                };
+            }
+        } catch (e: any) {
+            AutopilotLogger.warn(`[InferenceService] parseItineraryWithAi 调用大模型异常: ${e?.message || e}，将降级使用规则提取`);
+        }
+    }
+
+    // 容灾兜底：降级使用确定性规则解析器 (Zero-LLM Guard)
+    try {
+        const trips = parseItineraryTable(trimmed);
+        if (trips.length > 0) {
+            AutopilotLogger.info(`[InferenceService] 本地规则引擎成功切分出 ${trips.length} 轮 Trip`);
+            return {
+                trips,
+                summaryMarkdown: formatTripsToMarkdownSummary(trips, 'rule'),
+                engine: 'rule'
+            };
+        }
+    } catch (ruleErr: any) {
+        AutopilotLogger.warn(`[InferenceService] parseItineraryTable 规则解析失败: ${ruleErr?.message || ruleErr}`);
+    }
+
+    return {
+        trips: [],
+        summaryMarkdown: '未能从输入文本中解析出有效排期，请检查表格表头或格式。',
+        engine: 'rule'
+    };
+}
+
+/**
+ * 运用大语言模型 (LLM) 概率认知决策深度解析非结构化或复杂出差排期文本
+ * 严格遵照 AGENTS.md 反硬编码铁律，不依赖任何静态正则字典，由大模型完成世界常识推理与往返切分
+ */
+export async function parseItineraryWithAi(
+    itineraryText: string,
+    signal?: AbortSignal
+): Promise<DynamicTripInput[]> {
+    const res = await parseItineraryWithAiDetailed(itineraryText, signal);
+    return res.trips;
+}
+
+

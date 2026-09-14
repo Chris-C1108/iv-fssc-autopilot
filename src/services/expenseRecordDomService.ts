@@ -328,6 +328,26 @@ async function handleExportExpenseRecords(doc: Document, btn: HTMLButtonElement)
 export function scanAndEnhanceExpenseRecordDOM(doc: Document) {
     if (!doc || !doc.body) return;
 
+    // 0. 全局独立浮动快捷入口 (Fixed 于右下角，无依赖常驻，不带角标)
+    let floatingBtn = doc.getElementById('yn-floating-batch-edit-expenses') as HTMLButtonElement;
+    if (!floatingBtn) {
+        floatingBtn = doc.createElement('button');
+        floatingBtn.type = 'button';
+        floatingBtn.id = 'yn-floating-batch-edit-expenses';
+        floatingBtn.className = 'yn-floating-batch-edit-btn';
+        floatingBtn.title = '批量修改费用与生成报销单 (支持未报销与报销中数据)';
+        floatingBtn.innerHTML = '<span>✏️ 批量修改费用</span>';
+
+        floatingBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const sel = getExpenseSelectionInfo(doc);
+            openBatchEditExpenseModal(doc, sel.selectedIds.length > 0 && !sel.isSelectAll ? sel.selectedIds : undefined);
+        });
+
+        doc.body.appendChild(floatingBtn);
+    }
+
     // 寻找操作栏容器
     const container = doc.querySelector('.platform-expenseclaim-expenseRecord-index__operate_record_btn_container--3Yccrbqk') ||
         doc.querySelector('[class*="operate_record_btn_container"]') ||
@@ -433,6 +453,11 @@ export function scanAndEnhanceExpenseRecordDOM(doc: Document) {
         // 监听表头全选联动：当用户勾选全选时，若列表未展开完，自动流式加载所有剩余记录并全选
         doc.addEventListener('click', (e) => {
             const target = e.target as HTMLElement;
+            // 隔离批量修改弹窗内的交互，防止主界面监听器被高频触发布局抖动
+            if (target && target.closest && (target.closest('#yn-batch-edit-modal') || target.closest('#yn-batch-edit-mask'))) {
+                return;
+            }
+
             if (target && target.closest && (
                 target.closest('[id*="selectAll"]') ||
                 target.closest('[class*="lists_header"] .ant-checkbox-wrapper') ||
@@ -476,6 +501,10 @@ export function scanAndEnhanceExpenseRecordDOM(doc: Document) {
 
         doc.addEventListener('change', (e) => {
             const target = e.target as HTMLElement;
+            // 隔离批量修改弹窗内的输入与勾选变更
+            if (target && target.closest && (target.closest('#yn-batch-edit-modal') || target.closest('#yn-batch-edit-mask'))) {
+                return;
+            }
             if (target && target.matches && (target.matches('.ant-checkbox-input') || target.matches('input[type="checkbox"]'))) {
                 setTimeout(updateSelectionBtn, 50);
             }
@@ -501,7 +530,25 @@ function ensureDocObserver(doc: Document, onChange: () => void) {
     observedDocs.add(doc);
 
     try {
-        const obs = new MutationObserver(() => {
+        const obs = new MutationObserver((mutations) => {
+            // 现代化事件隔离：忽略所有发生在批量修改弹窗内部或悬浮岛内部的 DOM 变更
+            // 彻底杜绝弹窗内部的分组切换、折叠/展开、单元格输入触发后台页面的全量扫描与 React Fiber 遍历
+            const isBatchModalMutation = mutations.every(m => {
+                const target = m.target as HTMLElement;
+                if (!target) return false;
+                return Boolean(
+                    target.id === 'yn-batch-edit-modal' ||
+                    target.id === 'yn-batch-edit-mask' ||
+                    target.id === 'autopilot-floating-dock' ||
+                    (target.closest && (
+                        target.closest('#yn-batch-edit-modal') ||
+                        target.closest('#yn-batch-edit-mask') ||
+                        target.closest('#autopilot-floating-dock')
+                    ))
+                );
+            });
+            if (isBatchModalMutation) return;
+
             onChange();
         });
         obs.observe(doc.body, { childList: true, subtree: true });
@@ -545,3 +592,46 @@ export function initExpenseRecordDomService(state: GlobalState) {
 
     AutopilotLogger.info('✨ [ExpenseRecordDomService] 费用记录清单导出与开票行程核对服务已成功启动！');
 }
+
+/**
+ * 高亮宿主页面列表中的错误费用记录行 (增加红色警示边框与具体错误理由标记)
+ */
+export function markHostExpenseRecordsError(failedMap: Map<string, string>): void {
+    if (!failedMap || failedMap.size === 0) return;
+    try {
+        const docs = getExpenseRecordTargetDocs();
+        docs.forEach(doc => {
+            const rows = Array.from(doc.querySelectorAll<HTMLElement>('[class*="list_item"], tr, [class*="table_row"], [class*="record-item"]'));
+            rows.forEach(row => {
+                const rec = getExpenseRecordFromRow(row);
+                const id = rec?.expenseRecordId || rec?.id;
+                if (id && failedMap.has(id)) {
+                    row.classList.add('yn-host-expense-error-row');
+                    row.style.borderLeft = '4px solid #dc2626';
+                    row.style.backgroundColor = '#fff5f5';
+                    const errMsg = failedMap.get(id);
+                    let badge = row.querySelector<HTMLElement>('.yn-host-expense-error-badge');
+                    if (!badge) {
+                        badge = doc.createElement('span');
+                        badge.className = 'yn-host-expense-error-badge';
+                        badge.style.cssText = 'color:#dc2626; font-size:12px; font-weight:600; margin-left:8px; display:inline-flex; align-items:center; gap:2px;';
+                        row.appendChild(badge);
+                    }
+                    badge.innerText = `❌ 保存失败: ${errMsg}`;
+                    badge.title = errMsg || '';
+                }
+            });
+        });
+    } catch (e) {
+        AutopilotLogger.warn(`[markHostExpenseRecordsError] 标记宿主错误行失败: ${e}`);
+    }
+}
+
+if (typeof window !== 'undefined') {
+    window.addEventListener('yn_expense_records_save_error', (e: any) => {
+        if (e.detail?.failedMap) {
+            markHostExpenseRecordsError(e.detail.failedMap);
+        }
+    });
+}
+

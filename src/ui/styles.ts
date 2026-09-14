@@ -1,7 +1,9 @@
 import { BATCH_EDIT_EXPENSE_STYLES } from './batchEditExpenseStyles';
+import { getBillManagementStyles } from './billManagementStyles';
 
 export const MODAL_STYLES = `
     ${BATCH_EDIT_EXPENSE_STYLES}
+    ${getBillManagementStyles()}
 
     /* 主悬浮按钮 */
     #yn-batch-helper-btn {
@@ -722,12 +724,73 @@ export const MODAL_STYLES = `
         from { opacity: 0; transform: translateY(-3px); }
         to { opacity: 1; transform: translateY(0); }
     }
+
+    /* 全局浮动批量修改费用按钮 (Entry Node - Linear/Vercel Design) */
+    .yn-floating-batch-edit-btn {
+        position: fixed !important;
+        right: 24px !important;
+        bottom: 24px !important;
+        z-index: 99999 !important;
+        height: 40px !important;
+        padding: 0 16px !important;
+        background: #0f172a !important;
+        color: #ffffff !important;
+        border: 1px solid rgba(255, 255, 255, 0.15) !important;
+        border-radius: 20px !important;
+        font-size: 13px !important;
+        font-weight: 600 !important;
+        cursor: pointer !important;
+        box-shadow: 0 8px 24px -4px rgba(15, 23, 42, 0.4), 0 2px 6px -1px rgba(15, 23, 42, 0.2) !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        gap: 6px !important;
+        transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+        user-select: none !important;
+        backdrop-filter: blur(8px) !important;
+    }
+    .yn-floating-batch-edit-btn:hover {
+        transform: translateY(-2px) scale(1.02) !important;
+        background: #1e293b !important;
+        box-shadow: 0 12px 28px -4px rgba(15, 23, 42, 0.5), 0 4px 8px -1px rgba(15, 23, 42, 0.25) !important;
+    }
+    .yn-floating-batch-edit-btn:active {
+        transform: translateY(0) scale(0.98) !important;
+    }
+
+    /* 费用报销状态标签 (未报销 / 报销中 / 已报销) */
+    .yn-bem-status-tag {
+        display: inline-block;
+        font-size: 10px;
+        font-weight: 600;
+        padding: 1px 5px;
+        border-radius: 4px;
+        line-height: 14px;
+        margin-right: 4px;
+        white-space: nowrap;
+    }
+    .yn-bem-status-tag.is-reimbursing {
+        background: #eff6ff;
+        color: #2563eb;
+        border: 1px solid #bfdbfe;
+    }
+    .yn-bem-status-tag.is-no-reimburse {
+        background: #f0fdf4;
+        color: #16a34a;
+        border: 1px solid #bbf7d0;
+    }
+    .yn-bem-status-tag.is-reimbursed {
+        background: #f1f5f9;
+        color: #64748b;
+        border: 1px solid #cbd5e1;
+    }
 `;
 
 export function injectStyles() {
-    if (document.getElementById('yn-injected-styles')) return;
-    const styleEl = document.createElement('style');
-    styleEl.id = 'yn-injected-styles';
+    let styleEl = document.getElementById('yn-injected-styles') as HTMLStyleElement;
+    if (!styleEl) {
+        styleEl = document.createElement('style');
+        styleEl.id = 'yn-injected-styles';
+        document.head.appendChild(styleEl);
+    }
     styleEl.innerHTML = MODAL_STYLES;
-    document.head.appendChild(styleEl);
 }

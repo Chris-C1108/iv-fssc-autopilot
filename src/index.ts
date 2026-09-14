@@ -39,8 +39,6 @@ import {
 import { showToast } from './utils/toast';
 import { AutopilotLogger } from './utils/logger';
 import { startSessionKeepalive } from './services/sessionKeepaliveService';
-import { createApplicationLauncherBtn } from './ui/applicationModal';
-import { createWebMcpLauncherBtn } from './ui/webmcpModal';
 import { initWebMcpSystem } from './services/webmcpService';
 import { initInvoicePoolDomService } from './services/invoicePoolDomService';
 import { initExpenseRecordDomService } from './services/expenseRecordDomService';
@@ -1671,16 +1669,10 @@ function checkAndMount() {
         injectStyles();
         initWebMcpSystem(STATE);
 
-        // 挂载报销单 / 费用记录 / 发票夹模态框与按需呈现按钮 (进入 Dock)
+        // 挂载报销单预算批量修改 (Mode A, 仅在 #billWrite 呈现)
         createModalDOM(STATE);
         bindEvents();
         updateTokenStatus();
-
-        // 挂载出差申请驾驶舱快捷按钮 (进入 Dock)
-        createApplicationLauncherBtn(STATE);
-
-        // 挂载 WebMCP 智能副驾胶囊 (进入 Dock)
-        createWebMcpLauncherBtn(STATE);
 
         // 启动发票夹发票完整性校验与原生 DOM 高亮服务 (双向保障)
         initInvoicePoolDomService(STATE);
