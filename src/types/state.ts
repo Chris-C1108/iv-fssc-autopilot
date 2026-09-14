@@ -277,6 +277,7 @@ export interface TripApplicationConfig {
     status: '就绪' | '创建中' | '已生成草稿' | '失败';
     billCode?: string;
     billMainId?: string;
+    travelReport?: string;
     error?: string;
 }
 

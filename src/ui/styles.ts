@@ -1,7 +1,9 @@
 import { BATCH_EDIT_EXPENSE_STYLES } from './batchEditExpenseStyles';
+import { getBillManagementStyles } from './billManagementStyles';
 
 export const MODAL_STYLES = `
     ${BATCH_EDIT_EXPENSE_STYLES}
+    ${getBillManagementStyles()}
 
     /* 主悬浮按钮 */
     #yn-batch-helper-btn {

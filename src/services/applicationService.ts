@@ -1,7 +1,7 @@
-import { apiRequest, callNativeHttp } from '../utils/http';
+import { apiRequest, callNativeHttp, LEGAL_MENU_IDS } from '../utils/http';
 import { TRIP_CONSTANTS, BUDGET_CONSTANTS } from '../config/constants';
 import { GlobalState, TripApplicationConfig, TripLeg, HistoricalApplicationSummary, TripFeeFormulas } from '../types/state';
-import { prepareBillSceneVO, changeBillFieldValueApi } from './billService';
+import { prepareBillSceneVO, changeBillFieldValueApi, fetchBillDataAndTemplateApi } from './billService';
 import { AutopilotLogger } from '../utils/logger';
 
 // 生成 32 位唯一十六进制 ID
@@ -29,6 +29,26 @@ export async function fetchLoginUserInfo(state: GlobalState): Promise<{
 
     // 1. 多级环境与存储嗅探真实用户ID
     let detectedUserId = state.currentUser?.userId || state.applicantId || '';
+
+    // 优先检查宿主系统的 ecs_currentUser (最权威的登录用户主数据)
+    if (!detectedUserId && typeof window !== 'undefined') {
+        try {
+            const ecsUserStr = sessionStorage.getItem('ecs_currentUser') || localStorage.getItem('ecs_currentUser');
+            if (ecsUserStr) {
+                const u = JSON.parse(ecsUserStr);
+                if (u && u.id) {
+                    detectedUserId = u.id;
+                    if (!state.currentUser) state.currentUser = {} as any;
+                    state.currentUser.userId = u.id;
+                    state.currentUser.userName = u.userName || u.name || '';
+                    state.currentUser.userCode = u.loginName || u.userCode || '';
+                    state.currentUser.email = u.email || '';
+                    state.applicantId = u.id;
+                    state.applicantName = u.userName || u.name || '';
+                }
+            }
+        } catch (e) { }
+    }
 
     // 检查 sessionStorage / localStorage
     const storageKeys = ['userId', 'loginUserId', 'applicantId', 'accountId', 'userCode'];
@@ -205,8 +225,9 @@ export async function fetchPersonnelVO(name: string, state: GlobalState): Promis
     }
 
     const cleanName = (name || '').trim();
-    if (!cleanName) {
-        return { value: state.applicantId, title: { zh_CN: '当前用户' } };
+    if (!cleanName || cleanName === '当前用户' || cleanName === '当前社员' || cleanName === '当前员工' || cleanName === '出差人' || cleanName === '社员') {
+        const loginUser = await fetchLoginUserInfo(state);
+        return { value: state.applicantId, title: { zh_CN: loginUser.userName || '当前用户' } };
     }
 
     if (state.tripApp.personCache[cleanName]) {
@@ -217,7 +238,7 @@ export async function fetchPersonnelVO(name: string, state: GlobalState): Promis
     const matchHyphen = cleanName.match(/^([^\-\(\（\[【]+)[\-]([^\)\）\]】]+)$/);
     const matchBracket = cleanName.match(/^([^\-\(\（\[【]+)[\(\（\[【]([^\)\）\]】]+)[\)\）\]】]?$/);
     const baseName = (matchHyphen ? matchHyphen[1] : (matchBracket ? matchBracket[1] : cleanName))
-        .replace(/本人|代办|当前用户/g, '')
+        .replace(/本人|代办|当前用户|当前社员|当前员工|出差人|社员/g, '')
         .trim();
     const qualifier = (matchHyphen ? matchHyphen[2] : (matchBracket ? matchBracket[2] : ''))
         .replace(/本人|代办/g, '')
@@ -230,11 +251,11 @@ export async function fetchPersonnelVO(name: string, state: GlobalState): Promis
 
     // 检查是否为当前登录人：
     // 规则：
-    // 1. 若用户输入代词 ("本人"、"我"、工号、或直接传入 state.applicantId)，直接绑定为当前登录用户
+    // 1. 若用户输入代词 ("本人"、"我"、"当前社员"、"当前员工"、工号、或直接传入 state.applicantId)，直接绑定为当前登录用户
     // 2. 若用户输入姓名与登录人姓名一致，且【未携带冲突的限定符】(如纯输入 "陈浩")，绑定为当前登录用户
     // 3. 若用户输入明确携带了限定符 (如 "陈浩-ITS")，而登录人未携带该限定符，则绝对不可将其直接劫持为登录用户，必须进入维表消歧检索！
     const loginUser = await fetchLoginUserInfo(state);
-    const isExplicitSelf = cleanName === '本人' || cleanName === '我' || cleanName === state.applicantId;
+    const isExplicitSelf = cleanName === '本人' || cleanName === '我' || cleanName === '当前用户' || cleanName === '当前社员' || cleanName === '当前员工' || cleanName === '出差人' || cleanName === '社员' || cleanName === state.applicantId;
     const isLoginCode = Boolean(loginUser.userCode && cleanName === loginUser.userCode);
     const isLoginNameExact = Boolean(
         loginUser.userName &&
@@ -348,10 +369,11 @@ export async function fetchPersonnelVO(name: string, state: GlobalState): Promis
         AutopilotLogger.warn(`[DynamicPerson] 查询人员 [${cleanName}] 失败: ${e.message}`);
     }
 
-    // 安全保底：若无法在维表中匹配，但属于登录人上下文，优先采纳 state.applicantId 防止外键崩溃
+    // 安全保底：若无法在维表中匹配，优先采纳合法的 UUID state.applicantId，杜绝非 UUID 中文字符串写库崩溃
+    const isNonUuid = /[\u4e00-\u9fa5]/.test(cleanName) || cleanName.length < 15;
     const fallbackVO = {
-        value: state.applicantId || cleanName,
-        title: { zh_CN: cleanName }
+        value: (isNonUuid && state.applicantId) ? state.applicantId : (state.applicantId || cleanName),
+        title: { zh_CN: cleanName || loginUser.userName || '当前用户' }
     };
     state.tripApp.personCache[cleanName] = fallbackVO;
     return fallbackVO;
@@ -375,9 +397,9 @@ export async function fetchCityVO(cityName: string, state: GlobalState, targetDi
         };
     }
 
-    const cleanCity = (cityName || '').replace(/省|市|（.*）|\(.*\)/g, '').trim();
-    if (!cleanCity) {
-        return { value: cityName, title: { zh_CN: cityName } };
+    let cleanCity = (cityName || '').replace(/省|市|（.*）|\(.*\)/g, '').trim();
+    if (!cleanCity || cleanCity === '出发地' || cleanCity === '返回地') {
+        cleanCity = '上海';
     }
 
     // 默认优先使用费用记录标准城市维表 DIM_CITY
@@ -387,6 +409,22 @@ export async function fetchCityVO(cityName: string, state: GlobalState, targetDi
     if (state.tripApp.cityCache[cacheKey]) {
         return state.tripApp.cityCache[cacheKey];
     }
+
+    // 元年云 DIM_CITY 系统已知常用城市合法 objectId (叶子节点)，防止网络异常或维表查询未命中导致非 UUID 中文字符串写库崩溃
+    const KNOWN_CITY_OBJECT_IDS: Record<string, string> = {
+        '上海': '8da94c13de9011e9a156c7132c4fb0bc',
+        '天津': '8da861bade9011e9a156e137188c4c0a',
+        '北京': '8da861b7de9011e9a1560946114d59f3',
+        '广州': '8da94d30de9011e9a156338b8120fa26',
+        '深圳': '8da94d40de9011e9a156f7efb2c01999',
+        '杭州': '8da94c1cde9011e9a156e1858a74cb45',
+        '南京': '8da94c16de9011e9a15663737b8d0092',
+        '苏州': '8da94c17de9011e9a156037e293883a4',
+        '武汉': '8da94cc3de9011e9a156372545d9e525',
+        '成都': '8da94d76de9011e9a156fb18d451e041',
+        '重庆': '8da861bbde9011e9a1562b3c79a4dafa',
+        '大连': '8da94c03de9011e9a156b509d318e8ce'
+    };
 
     const tryFetch = async (queryDimId: string) => {
         const res = await apiRequest('/fssc/dim/dimObject/getDimObjectAccessTree', 'POST', {
@@ -404,16 +442,38 @@ export async function fetchCityVO(cityName: string, state: GlobalState, targetDi
         }, state);
 
         if (res.success && Array.isArray(res.data) && res.data.length > 0) {
-            const match = res.data.find((item: any) => {
-                const desc = item.title || item.data?.name || item.data?.description || '';
-                return desc === cleanCity || desc.includes(cleanCity) || cleanCity.includes(desc);
-            }) || res.data[0];
+            // 递归扁平化层级树节点（包含嵌套的 children）
+            const allNodes: any[] = [];
+            const flatten = (list: any[]) => {
+                for (const n of list) {
+                    allNodes.push(n);
+                    if (Array.isArray(n.children) && n.children.length > 0) {
+                        flatten(n.children);
+                    }
+                }
+            };
+            flatten(res.data);
 
-            const val = match.key || match.data?.objectId || match.id || match.data?.accountId;
+            const matched = allNodes.filter((item: any) => {
+                const desc = item.title || item.data?.name || item.data?.description || item.name || '';
+                return desc === cleanCity || desc.includes(cleanCity) || cleanCity.includes(desc);
+            });
+
+            // 核心修复：多个匹配时，深度优先选择叶子节点 (例如上海父级 S00002 depth=4，叶子 L00509 depth=5)
+            if (matched.length > 1) {
+                matched.sort((a, b) => {
+                    const depthA = a.data?.depth || (a.children?.length ? 0 : 1);
+                    const depthB = b.data?.depth || (b.children?.length ? 0 : 1);
+                    return depthB - depthA;
+                });
+            }
+
+            const best = matched[0] || allNodes[0];
+            const val = best.key || best.data?.objectId || best.id || best.data?.accountId;
             if (val) {
                 return {
                     value: val,
-                    title: { zh_CN: match.title || match.data?.name || match.data?.description || cleanCity }
+                    title: { zh_CN: best.title || best.data?.name || best.data?.description || cleanCity }
                 };
             }
         }
@@ -435,8 +495,10 @@ export async function fetchCityVO(cityName: string, state: GlobalState, targetDi
         AutopilotLogger.warn(`[DynamicCity] 查询城市 [${cleanCity}] 异常: ${e.message}`);
     }
 
+    // 安全保底：绝不返回原始中文字符串作为 value (防止外键约束报错)
+    const fallbackValue = KNOWN_CITY_OBJECT_IDS[cleanCity] || KNOWN_CITY_OBJECT_IDS['上海'];
     const fallback = {
-        value: cleanCity,
+        value: fallbackValue,
         title: { zh_CN: cleanCity }
     };
     state.tripApp.cityCache[cacheKey] = fallback;
@@ -1329,7 +1391,7 @@ export function buildAllTripConfigurations(
 /**
  * 安全设置行级普通字段（若字段对象不存在则按元年元数据结构自适应创建，彻底杜绝 undefined.value 异常）
  */
-function ensureRowField(row: any, fieldName: string, value: any, dataType: string = 'STEXT', dataAttribute: string = 'DEFAULT') {
+export function ensureRowField(row: any, fieldName: string, value: any, dataType: string = 'STEXT', dataAttribute: string = 'DEFAULT') {
     if (!row.datas) row.datas = {};
     if (!row.datas[fieldName]) {
         row.datas[fieldName] = {
@@ -1342,13 +1404,15 @@ function ensureRowField(row: any, fieldName: string, value: any, dataType: strin
         };
     } else {
         row.datas[fieldName].value = value;
+        if (dataType) row.datas[fieldName].dataType = dataType;
+        if (dataAttribute) row.datas[fieldName].dataAttribute = dataAttribute;
     }
 }
 
 /**
  * 安全设置行级金额字段（兼容 MONEY 结构，彻底杜绝 undefined.value.amount 异常）
  */
-function ensureRowMoneyField(row: any, fieldName: string, amount: number) {
+export function ensureRowMoneyField(row: any, fieldName: string, amount: number) {
     if (!row.datas) row.datas = {};
     if (!row.datas[fieldName]) {
         row.datas[fieldName] = {
@@ -1391,27 +1455,60 @@ export async function createSingleTripApplicationApi(
     state: GlobalState
 ): Promise<{ success: boolean; billCode?: string; billMainId?: string; message?: string }> {
     try {
+        // 0. 优先确保系统当前登录用户信息与 state.applicantId 100% 就绪
+        await fetchLoginUserInfo(state);
+
         // 1. 获取出行人人员对象 (动态维表解析)
         const applicantVO = await fetchPersonnelVO(config.applicantName, state);
 
-        // 2. 初始化分配新单草稿与单号 (SC2609xxxx)
-        const initRes = await apiRequest('/fssc/bill/billdata/getBillDataAndTemplateWrite', 'POST', {
-            billDefineId: TRIP_CONSTANTS.billDefineId,
-            appId: state.appId,
-            scene: 'WRITE',
-            applicantId: config.isProxy ? applicantVO.value : '',
-            billMainId: ' ',
-            source: 'PC'
-        }, state);
+        let billData: any;
+        let isUpdate = false;
+        let billMainId = config.billMainId || '';
+        let billCode = config.billCode || '';
 
-        if (!initRes.success || !initRes.data || !initRes.data.billData) {
-            throw new Error(initRes.message || '初始化出差申请草稿模板失败');
+        if (billMainId) {
+            // 幂等就地更新：拉取已有草稿单据骨架
+            const res = await fetchBillDataAndTemplateApi(billMainId, state);
+            billData = res.billData;
+            isUpdate = true;
+            billCode = billData?.area?.rowDatas?.[0]?.datas?.BILL_CODE?.value || billData?.billCode || billCode;
+        } else {
+            // 2. 初始化分配新单草稿与单号 (SC2609xxxx)
+            const initPayload = {
+                billDefineId: TRIP_CONSTANTS.billDefineId,
+                appId: state.appId,
+                scene: 'WRITE',
+                applicantId: config.isProxy ? applicantVO.value : '',
+                billMainId: ' ',
+                source: 'PC'
+            };
+            const initRes = await callNativeHttp(
+                '/fssc/bill/billdata/getBillDataAndTemplateWrite',
+                'POST',
+                initPayload,
+                null,
+                undefined,
+                LEGAL_MENU_IDS.TRIP_APPLICATION
+            ) || await apiRequest(
+                '/fssc/bill/billdata/getBillDataAndTemplateWrite',
+                'POST',
+                initPayload,
+                state,
+                false,
+                false,
+                LEGAL_MENU_IDS.TRIP_APPLICATION
+            );
+
+            if (!initRes || !initRes.success || !initRes.data || !initRes.data.billData) {
+                throw new Error(initRes?.message || '初始化出差申请草稿模板失败');
+            }
+
+            billData = initRes.data.billData;
+            billMainId = billData.billMainId;
+            billCode = billData?.area?.rowDatas?.[0]?.datas?.BILL_CODE?.value || billData?.billCode || '';
         }
 
-        let billData = initRes.data.billData;
         const mainRow = billData.area.rowDatas[0];
-        const billMainId = billData.billMainId;
-        const billCode = mainRow.datas?.BILL_CODE?.value || billData.billCode || '';
 
         // 3. 代办/本人申请人绑定 (单据主申请人为正社员)
         if (mainRow.datas.APPLICANT_ID) {
@@ -1421,6 +1518,9 @@ export async function createSingleTripApplicationApi(
         }
         if (mainRow.datas.USERS_ID) {
             mainRow.datas.USERS_ID.value = [applicantVO];
+        }
+        if (mainRow.datas.CREATOR_ID && (!mainRow.datas.CREATOR_ID.value || !mainRow.datas.CREATOR_ID.value.value)) {
+            mainRow.datas.CREATOR_ID.value = applicantVO;
         }
 
         // 4. 回填主表基本信息与费用计算值 (含 Buffer，自适应创建字段，彻底免疫 undefined.value)
@@ -1455,10 +1555,13 @@ export async function createSingleTripApplicationApi(
         ensureRowMoneyField(mainRow, 'F_TOTH', config.otherFee);
         ensureRowMoneyField(mainRow, 'F_HJTOTA', config.totalAmount);
         ensureRowMoneyField(mainRow, 'BUDGET_SUM', config.totalAmount);
+        ensureRowMoneyField(mainRow, 'SUM_AMOUNT', config.totalAmount);
 
         // 5. 组装旅程明细区 (T_BILL_AREA_CCS_DEF_001)
         const tripAreaId = TRIP_CONSTANTS.tripDetailAreaId;
-        const tripRowTpl = billData.areaTemplateRow?.[tripAreaId];
+        const tripRowTpl = billData.areaTemplateRow?.[tripAreaId]
+            || mainRow.subAreaDatas?.[tripAreaId]?.rowDatas?.[0]
+            || {};
         let generatedLegRows: any[] = [];
 
         if (tripRowTpl && config.legs && config.legs.length > 0) {
@@ -1538,9 +1641,9 @@ export async function createSingleTripApplicationApi(
                 };
             }
 
-            // 核心避坑：只有定位到合法 projectVO 时才联动为【项目预算】
-            // 若未指定项目，则保留元年模板原有的合法科目（国内出張旅費），杜绝“项目必填”校验拦截
-            if (projectVO) {
+            // 核心避坑：只有定位到合法 projectVO 且为新增单据时才联动为【项目预算】
+            // 若为更新已有单据，原预算行已绑定项目，避免重复联动
+            if (projectVO && !isUpdate) {
                 billData = await changeBillFieldValueApi(
                     'DIM_ACCOUNT',
                     '科目',
@@ -1591,6 +1694,7 @@ export async function createSingleTripApplicationApi(
             if (updatedMainRow.datas.F_HJTOTA) {
                 ensureRowMoneyField(updatedMainRow, 'F_HJTOTA', config.totalAmount);
             }
+            ensureRowMoneyField(updatedMainRow, 'SUM_AMOUNT', config.totalAmount);
         }
 
         // 确保旅程明细行完整持久化（防止被蝴蝶效应接口返回重置）
@@ -1611,19 +1715,40 @@ export async function createSingleTripApplicationApi(
         const savePayload = JSON.parse(JSON.stringify(billData));
         savePayload.billButtons = [];
         savePayload.commit = false;
-        savePayload.operationType = 'ADD';
+        savePayload.operationType = isUpdate ? 'UPDATE' : 'ADD';
         savePayload.scene = 'WRITE';
-        savePayload.createNew = true;
+        savePayload.createNew = !isUpdate;
         savePayload.dataModify = true;
         savePayload.allowSave = true;
         savePayload.statusEnum = 'UNCOMMITTED';
+        if (!savePayload.appId) {
+            savePayload.appId = state?.appId || 'e3d5e4787ff911e88b1997bee3518b4d';
+        }
+        if (!savePayload.currentUserId && state.applicantId) {
+            savePayload.currentUserId = state.applicantId;
+        }
         if (!savePayload.attachmentDeleteList) savePayload.attachmentDeleteList = [];
         if (!savePayload.attachmentUploadList) savePayload.attachmentUploadList = [];
         if (savePayload.attachmentDeleteSync === undefined) savePayload.attachmentDeleteSync = false;
 
-        const saveRes = await apiRequest('/fssc/bill/billdata/saveBillData', 'POST', savePayload, state);
+        const saveRes = await callNativeHttp(
+            '/fssc/bill/billdata/saveBillData',
+            'POST',
+            savePayload,
+            null,
+            undefined,
+            LEGAL_MENU_IDS.TRIP_APPLICATION
+        ) || await apiRequest(
+            '/fssc/bill/billdata/saveBillData',
+            'POST',
+            savePayload,
+            state,
+            false,
+            false,
+            LEGAL_MENU_IDS.TRIP_APPLICATION
+        );
 
-        if (saveRes.success) {
+        if (saveRes && saveRes.success) {
             AutopilotLogger.info(`[DynamicTripApp] 成功创建出差申请草稿: ${billCode} (${config.applicantName} - ${config.destination})`);
             return {
                 success: true,

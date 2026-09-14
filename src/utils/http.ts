@@ -146,11 +146,61 @@ export function getNativeHttp(win?: Window | null): any {
     return cachedNativeHttp;
 }
 
+export const LEGAL_MENU_IDS = {
+    TRIP_APPLICATION: '56dcfd90a5bf11e8a1a103bb1accbe1b', // 出差申请单 (CCSQ, 0355cf627fede1653e55bb00bc610001)
+    EXPENSE_RECORD: '56dd4bb8a5bf11e8a1a1d174f439477e',   // 费用记录 (expenseRecord, expenseClaim)
+    INVOICE_POOL: '11ec6dd3fd5cb161bff83bb033997150',     // 发票夹 (standbyInvoice, businessapplication)
+    REIMBURSEMENT_CLAIM: '11ece08b4737d4eda79a6b404608a354' // 员工报销单 (BC: 035a50ee..., BJ: 035cd1b4...)
+};
+
+/**
+ * 依据请求 URL、请求载荷及单据定义 ID 动态推断其法定 MenuId
+ */
+export function inferLegalMenuId(url?: string, data?: any, explicitMenuId?: string): string {
+    if (explicitMenuId) return explicitMenuId;
+
+    // 1. 检查载荷中的单据定义 ID / Code (精确识别出差申请单与报销单)
+    const bId = data?.billDefineId || data?.billDefineCode || data?.billSceneDataVO?.billDefineId || '';
+    if (bId === '0355cf627fede1653e55bb00bc610001' || bId === 'CCSQ' || (url && /CCSQ/i.test(url))) {
+        return LEGAL_MENU_IDS.TRIP_APPLICATION;
+    }
+    if (bId === '035a50ee6d3de1653e55bb00bc610001' || bId === '035cd1b4d46de1653e55bb00bc610000' || bId === 'BC' || bId === 'BJ') {
+        return LEGAL_MENU_IDS.REIMBURSEMENT_CLAIM;
+    }
+
+    // 2. 检查 URL 路径特征
+    if (url) {
+        if (/expenseClaim|expenseRecord/i.test(url)) {
+            return LEGAL_MENU_IDS.EXPENSE_RECORD;
+        }
+        if (/boQuery|standbyInvoice|businessapplication/i.test(url)) {
+            return LEGAL_MENU_IDS.INVOICE_POOL;
+        }
+    }
+
+    // 3. 检查当前页面宿主 URL
+    if (typeof window !== 'undefined') {
+        if (/11ec6dd3fd5cb161bff83bb033997150|businessapplication/i.test(window.location.href)) {
+            return LEGAL_MENU_IDS.INVOICE_POOL;
+        }
+    }
+
+    return '';
+}
+
 /**
  * 包装通过 YuanNian 宿主原生 HTTP / Axios 客户端发送请求 (自动具备 100% 鉴权与 eicds 动态防逆向加密签名)
  */
-export async function callNativeHttp(url: string, method: string = 'POST', data: any = null, win?: Window | null): Promise<any> {
+export async function callNativeHttp(
+    url: string,
+    method: string = 'POST',
+    data: any = null,
+    win?: Window | null,
+    customHeaders?: Record<string, string>,
+    targetMenuId?: string
+): Promise<any> {
     const isGet = method.toUpperCase() === 'GET';
+    const effectiveMenuId = targetMenuId || customHeaders?.['MenuId'] || customHeaders?.['menuid'] || inferLegalMenuId(url, data);
 
     // 1. 最高优先级：直接使用官方原生 Axios 实例 (支持 Promise、30s 充裕超时、100% 自动注入 eicds 签名)
     const nativeAxios = getNativeAxios(win);
@@ -162,14 +212,81 @@ export async function callNativeHttp(url: string, method: string = 'POST', data:
             }
         }
 
+        // 收集所有候选窗口，用于在请求生命周期内临时安全切换 ecs_MenuId 作用域，确保官方拦截器生成包含合法 MenuId 的 eicds 签名
+        const candidateWins = collectWindowCandidates(win);
+        const originalMenuIds = new Map<Storage, string | null>();
+
+        if (effectiveMenuId) {
+            for (const cw of candidateWins) {
+                try {
+                    const stor = cw.sessionStorage;
+                    if (stor) {
+                        originalMenuIds.set(stor, stor.getItem('ecs_MenuId'));
+                        stor.setItem('ecs_MenuId', effectiveMenuId);
+                    }
+                } catch (e) { }
+            }
+        }
+
         try {
+            const reqHeaders: Record<string, string> = { ...(customHeaders || {}) };
+            if (effectiveMenuId) {
+                reqHeaders['MenuId'] = effectiveMenuId;
+                reqHeaders['menuid'] = effectiveMenuId;
+            }
+
+            // 嗅探并注入 appId：原生拦截器不会注入 appId，它仅在宿主初始化时写入 defaults.headers.common
+            // 当 callNativeHttp 传入自定义 headers 时，部分 Axios 版本可能导致 common defaults 被忽略
+            // 因此必须显式确保 appId 始终存在于请求 Headers 中
+            if (!reqHeaders['appId'] && !reqHeaders['appid']) {
+                const APP_ID = 'e3d5e4787ff911e88b1997bee3518b4d';
+                // 优先从原生 Axios defaults 嗅探真实 appId
+                let sniffedAppId = '';
+                try {
+                    sniffedAppId = nativeAxios?.defaults?.headers?.common?.appId
+                        || nativeAxios?.defaults?.headers?.common?.appid
+                        || '';
+                } catch (e) { }
+                // 次级：从 sessionStorage 嗅探
+                if (!sniffedAppId) {
+                    for (const cw of candidateWins) {
+                        try {
+                            const val = cw.sessionStorage?.getItem('ecs_appId')
+                                || cw.sessionStorage?.getItem('appId');
+                            if (val && val.length > 10) { sniffedAppId = val; break; }
+                        } catch (e) { }
+                    }
+                }
+                reqHeaders['appId'] = sniffedAppId || APP_ID;
+                reqHeaders['appid'] = sniffedAppId || APP_ID;
+            }
+
+            // 嗅探并注入鉴权 Token (LoginToken / EcsToken / UserOrigin)
+            // 原生 Axios defaults 中通常包含这些 headers
+            if (!reqHeaders['LoginToken']) {
+                try {
+                    const lt = nativeAxios?.defaults?.headers?.common?.LoginToken || '';
+                    if (lt) reqHeaders['LoginToken'] = lt;
+                } catch (e) { }
+            }
+            if (!reqHeaders['EcsToken']) {
+                try {
+                    const et = nativeAxios?.defaults?.headers?.common?.EcsToken || '';
+                    if (et) reqHeaders['EcsToken'] = et;
+                } catch (e) { }
+            }
+            if (!reqHeaders['UserOrigin']) {
+                reqHeaders['UserOrigin'] = (typeof window !== 'undefined' ? window.location.origin : '') || 'https://ync37.yuanian.com';
+            }
+
             const resp = await nativeAxios.request({
                 url: fullUrl,
                 method: method.toUpperCase(),
                 data: isGet ? undefined : data,
                 params: isGet ? data : undefined,
                 timeout: 30000, // 放宽至 30 秒，彻底杜绝并发保存时的假死与早逝超时
-                ignoreLoading: true
+                ignoreLoading: true,
+                headers: reqHeaders
             });
             return resp.data;
         } catch (err: any) {
@@ -184,6 +301,19 @@ export async function callNativeHttp(url: string, method: string = 'POST', data:
                 return { success: false, message: '原生网络请求超时 (30s)，请稍后重试' };
             }
             return { success: false, message: err?.message || '原生网络请求异常' };
+        } finally {
+            // 【核心安全守卫】：请求结束无论成功失败，必须 100% 立即还原原始 ecs_MenuId
+            if (effectiveMenuId && originalMenuIds.size > 0) {
+                for (const [stor, origVal] of originalMenuIds.entries()) {
+                    try {
+                        if (origVal !== null) {
+                            stor.setItem('ecs_MenuId', origVal);
+                        } else {
+                            stor.removeItem('ecs_MenuId');
+                        }
+                    } catch (e) { }
+                }
+            }
         }
     }
 
@@ -335,19 +465,20 @@ export function extractLatestTokens(state: GlobalState): { loginToken: string; e
     return { loginToken: state.loginToken || bestLoginToken || '', ecsToken: state.ecsToken || bestEcsToken || '' };
 }
 
-export function getHeaders(state: GlobalState, isFormUrlEncoded = false, isMultipart = false, url?: string): Record<string, string> {
+export function getHeaders(
+    state: GlobalState,
+    isFormUrlEncoded = false,
+    isMultipart = false,
+    url?: string,
+    customMenuId?: string,
+    data?: any
+): Record<string, string> {
     const { loginToken, ecsToken } = extractLatestTokens(state);
     
-    // 动态精准识别菜单 ID：根据请求接口路径强优先匹配对应模块的 MenuId，杜绝跨模块 ACL 拒绝
-    let menuId = '';
-    if (url && (/expenseClaim|expenseRecord/i.test(url))) {
-        menuId = '56dd4bb8a5bf11e8a1a1d174f439477e';
-    } else if (url && (/boQuery|standbyInvoice|businessapplication/i.test(url))) {
-        menuId = '11ec6dd3fd5cb161bff83bb033997150';
-    } else if (typeof window !== 'undefined' && /11ec6dd3fd5cb161bff83bb033997150|businessapplication/i.test(window.location.href)) {
-        menuId = '11ec6dd3fd5cb161bff83bb033997150';
-    } else {
-        menuId = state.menuId || (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('ecs_MenuId') : '') || '56dd4bb8a5bf11e8a1a1d174f439477e';
+    // 动态精准识别菜单 ID：根据请求接口路径与单据数据强优先匹配对应模块的法定 MenuId，杜绝跨模块 ACL 拒绝
+    let menuId = customMenuId || inferLegalMenuId(url, data);
+    if (!menuId) {
+        menuId = state.menuId || (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('ecs_MenuId') : '') || LEGAL_MENU_IDS.EXPENSE_RECORD;
     }
 
     const headers: Record<string, string> = {
@@ -379,7 +510,8 @@ export async function apiRequest(
     data: any = null,
     state: GlobalState,
     isFormUrlEncoded = false,
-    isMultipart = false
+    isMultipart = false,
+    customMenuId?: string
 ): Promise<any> {
     extractLatestTokens(state);
 
@@ -404,8 +536,23 @@ export async function apiRequest(
         }
     }
 
+    const targetMenuId = customMenuId || inferLegalMenuId(url, data);
+
+    // 若宿主环境中提取到了官方原生客户端，优先通过 callNativeHttp 发起请求以获取原生 eicds 与鉴权保护
+    const nativeAxios = getNativeAxios();
+    if (nativeAxios && !isFormUrlEncoded && !isMultipart) {
+        try {
+            const nativeRes = await callNativeHttp(url, method, data, null, undefined, targetMenuId);
+            if (nativeRes && typeof nativeRes === 'object' && ('success' in nativeRes || 'data' in nativeRes)) {
+                return nativeRes;
+            }
+        } catch (e: any) {
+            AutopilotLogger.warn(`[apiRequest] 原生通道调用异常，自动回退到底层通道: ${e?.message}`);
+        }
+    }
+
     const fullUrl = url.startsWith('http') ? url : `${state.userOrigin || 'https://ync37.yuanian.com'}${url}`;
-    const headers = getHeaders(state, isFormUrlEncoded, isMultipart, url);
+    const headers = getHeaders(state, isFormUrlEncoded, isMultipart, url, targetMenuId, data);
 
     let bodyStr: any = undefined;
     if (data) {

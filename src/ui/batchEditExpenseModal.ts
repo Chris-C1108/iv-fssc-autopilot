@@ -2,6 +2,7 @@ import { GlobalState, TripApplicationConfig, TripLeg } from '../types/state';
 import { AutopilotLogger } from '../utils/logger';
 import { showToast } from '../utils/toast';
 import { Decimal } from '../utils/decimal';
+import { callNativeHttp } from '../utils/http';
 import {
     ExpenseRecordExportRow,
     fetchExpenseRecordsWithInvoiceDetails,
@@ -22,9 +23,12 @@ import {
     calculateDaysAndNights,
     computeMealAllowance,
     parseItineraryTable,
-    DynamicTripInput
+    DynamicTripInput,
+    ensureRowField,
+    ensureRowMoneyField,
+    generateUuid
 } from '../services/applicationService';
-import { createBillDataAndTemplateByExpenseIdListApi, saveBillDataApi } from '../services/billService';
+import { createBillDataAndTemplateByExpenseIdListApi, saveBillDataApi, fetchBillDataAndTemplateApi } from '../services/billService';
 import { TRIP_CONSTANTS, BUDGET_CONSTANTS } from '../config/constants';
 import { getInvoicePoolGlobalState } from '../services/invoicePoolDomService';
 
@@ -65,8 +69,15 @@ import {
     ChatAttachment,
     ThinkingData,
     ChatToolCall,
-    TripPlanConfirmationAction
+    TripPlanConfirmationAction,
+    TravelReportConfirmationAction
 } from './AssistantChatPanel';
+import { getBillManagementStyles } from './billManagementStyles';
+import { BillManagementDashboard } from './BillManagementDashboard';
+import { createInitialBillManagementState } from '../services/billPlanService';
+import { BillPlan } from '../types/billPlan';
+import { generateTravelReportWithAi, generateBatchTravelReportsWithAi } from '../services/travelReportService';
+import { callDirectLlmText } from '../services/llmService';
 
 declare const unsafeWindow: any;
 
@@ -301,6 +312,9 @@ export interface BatchEditExpenseModalState {
     filterMode: 'ALL' | 'WARN' | 'MISSING_REQUIRED' | 'OK' | 'SAVE_ERROR';
     saveErrors: Map<string, string>; // expenseRecordId -> 错误具体原因说明
 
+    // 页面一级标签与视图流转
+    activeTab: 'EXPENSES' | 'BILLS';
+
     // 分组展示与折叠
     groupingMode: GroupingMode;
     collapsedGroupKeys: Set<string>;
@@ -362,6 +376,7 @@ export interface BatchEditExpenseModalState {
 const initialSessions = loadChatSessionsFromStorage();
 
 let modalState: BatchEditExpenseModalState = {
+    activeTab: 'EXPENSES',
     groups: [],
     selectedRecordIds: new Set(),
     sortKey: 'earliestInvoiceDate',
@@ -1509,30 +1524,46 @@ export function clusterExpensesIntoTrips(
         // 构造行程区 Legs
         const legs: TripLeg[] = [];
         for (const item of cluster) {
+            const dyn = item.group.dynamicFields || {};
             for (const inv of item.group.invoices) {
-                if (inv.stationGetOn || inv.stationGetOff) {
-                    const isFlight = (inv.invoiceType || '').includes('飞机') || (inv.salesName || '').includes('航空');
+                const isFlight = (inv.invoiceType || '').includes('飞机') || (inv.salesName || '').includes('航空');
+                const isTrain = (inv.invoiceType || '').includes('火车') || (inv.salesName || '').includes('铁路') || Boolean(inv.trainNo);
+                const fromStation = inv.stationGetOn || dyn.flightFromCity || dyn.trainFromStation || dyn.dynFrom || '';
+                const toStation = inv.stationGetOff || dyn.flightToCity || dyn.trainToStation || dyn.dynTo || '';
+
+                if (fromStation || toStation || isFlight || isTrain) {
                     legs.push({
                         date: (inv.departureDate || item.minDate || sDate).split(' ')[0],
-                        fromCity: inv.stationGetOn || '出发地',
-                        toCity: inv.stationGetOff || destination,
+                        fromCity: fromStation || '上海',
+                        toCity: toStation || destination || '上海',
                         transport: isFlight ? '飞机' : '火车',
-                        flightOrTrain: inv.trainNo || item.group.dynamicFields?.dynTransitNo || ''
+                        flightOrTrain: inv.trainNo || dyn.dynTransitNo || dyn.flightNumber || ''
                     });
                 }
+            }
+            // 容灾：发票列表未带明细，但 dynamicFields 包含航段/车次信息
+            if (item.group.invoices.length === 0 && (dyn.flightFromCity || dyn.flightToCity || dyn.trainFromStation || dyn.trainToStation || dyn.dynFrom || dyn.dynTo)) {
+                const isFlight = Boolean(dyn.flightFromCity || dyn.flightToCity);
+                legs.push({
+                    date: (item.minDate || sDate).split(' ')[0],
+                    fromCity: dyn.flightFromCity || dyn.trainFromStation || dyn.dynFrom || '上海',
+                    toCity: dyn.flightToCity || dyn.trainToStation || dyn.dynTo || destination || '上海',
+                    transport: isFlight ? '飞机' : '火车',
+                    flightOrTrain: dyn.dynTransitNo || dyn.flightNumber || ''
+                });
             }
         }
         if (legs.length === 0) {
             legs.push({
                 date: sDate,
-                fromCity: '出发地',
-                toCity: destination,
+                fromCity: '上海',
+                toCity: destination || '上海',
                 transport: '火车/飞机'
             });
             legs.push({
                 date: eDate,
-                fromCity: destination,
-                toCity: '返回地',
+                fromCity: destination || '上海',
+                toCity: '上海',
                 transport: '火车/飞机'
             });
         }
@@ -2657,57 +2688,73 @@ function renderTopBarHtml(filteredGroups: ExpenseRecordGroup[]): string {
     const warnCount = modalState.groups.filter(g => g.hasWarn).length;
     const missingRequiredCount = modalState.groups.filter(g => isGroupMissingRequired(g)).length;
     const saveErrorCount = modalState.saveErrors ? modalState.saveErrors.size : 0;
+    const tripCount = modalState.tripPlans.length;
     const isAllCollapsed = modalState.collapsedGroupKeys.size > 0;
 
     return `
         <div class="yn-bem-top-bar" id="yn-bem-top-bar">
-            <!-- 左侧：标题 + 分组 + 展开/折叠单按钮 + 选区快速操作 + 状态过滤 -->
+            <!-- 左侧：Segmented Control 双视图导航 + 专属控制条 -->
             <div class="yn-bem-header-left">
-                <span class="yn-bem-brand">
-                    批量修改费用信息
-                </span>
-                ${warnCount > 0 ? `<span class="yn-bem-warn-indicator">⚠️ 检出 ${warnCount} 处差异</span>` : ''}
-
-                <div class="yn-bem-field-group" style="align-items:center; gap:4px; margin-left:4px;">
-                    <label style="font-size:11px; color:#525252; font-weight:600;">分组:</label>
-                    <select id="yn-bem-opt-grouping" class="yn-bem-select" style="font-size:11px; padding:2px 6px; font-weight:600; color:#171717;">
-                        <option value="TRIP" ${modalState.groupingMode === 'TRIP' ? 'selected' : ''}>按 Trip 轮次</option>
-                        <option value="TYPE" ${modalState.groupingMode === 'TYPE' ? 'selected' : ''}>按费用类型</option>
-                        <option value="TRIP_AND_TYPE" ${modalState.groupingMode === 'TRIP_AND_TYPE' ? 'selected' : ''}>Trip+类型两级</option>
-                        <option value="NONE" ${modalState.groupingMode === 'NONE' ? 'selected' : ''}>平铺 (不分组)</option>
-                    </select>
-                    <button type="button" class="yn-bem-btn-mini" id="yn-bem-btn-toggle-all-groups"
-                            title="点击展开或折叠所有分组" ${modalState.groupingMode === 'NONE' ? 'disabled style="opacity:0.4; cursor:not-allowed;"' : ''}>
-                        ${isAllCollapsed ? '展开' : '折叠'}
+                <!-- 平级双视图 Tab 切换 -->
+                <div class="yn-bem-nav-tabs" id="yn-bem-nav-tabs">
+                    <button type="button" class="yn-bem-tab-btn ${modalState.activeTab === 'EXPENSES' ? 'is-active' : ''}" data-nav-tab="EXPENSES">
+                        💳 费用信息明细 (${totalGroups})
+                    </button>
+                    <button type="button" class="yn-bem-tab-btn ${modalState.activeTab === 'BILLS' ? 'is-active' : ''}" data-nav-tab="BILLS">
+                        📋 报销单与申请单管理 ${tripCount > 0 ? `(${tripCount}轮出差+日常)` : ''}
                     </button>
                 </div>
 
-                <div class="yn-bem-quick-select-wrap" style="display:inline-flex; align-items:center; gap:6px; margin-left:6px; padding-left:8px; border-left:1px solid var(--coss-border);">
-                    <span class="yn-bem-quick-link" id="yn-bem-qa-select-all">全选</span>
-                    <span class="yn-bem-quick-link" id="yn-bem-qa-deselect">全不选</span>
-                    <span class="yn-bem-quick-link" id="yn-bem-qa-invert">反选</span>
-                    ${saveErrorCount > 0 ? `<span class="yn-bem-quick-link" id="yn-bem-qa-select-failed" style="color:#b91c1c; border-color:#fca5a5; background:#fef2f2; font-weight:700;">❌ 仅看失败 (${saveErrorCount})</span>` : ''}
-                    ${missingRequiredCount > 0 ? `<span class="yn-bem-quick-link" id="yn-bem-qa-select-missing" style="color:#dc2626; border-color:#fee2e2; background:#fef2f2;">仅选待补 (${missingRequiredCount})</span>` : ''}
-                    ${warnCount > 0 ? `<span class="yn-bem-quick-link" id="yn-bem-qa-select-warn" style="color:#b45309; border-color:#fef3c7; background:#fffbeb;">仅选预警 (${warnCount})</span>` : ''}
+                <!-- 费用视图专属控制条 (仅在 EXPENSES Tab 呈现) -->
+                <div id="yn-bem-tab-controls-expenses" style="display: ${modalState.activeTab === 'EXPENSES' ? 'inline-flex' : 'none'}; align-items:center; gap:6px;">
+                    ${warnCount > 0 ? `<span class="yn-bem-warn-indicator">⚠️ 检出 ${warnCount} 处差异</span>` : ''}
 
-                    <select id="yn-bem-filter-mode" class="yn-bem-select" style="font-size:11px; padding:2px 6px; margin-left:2px;">
-                        ${saveErrorCount > 0 ? `<option value="SAVE_ERROR" ${modalState.filterMode === 'SAVE_ERROR' ? 'selected' : ''}>❌ 保存失败 (${saveErrorCount})</option>` : ''}
-                        <option value="ALL" ${modalState.filterMode === 'ALL' ? 'selected' : ''}>全部 (${totalGroups})</option>
-                        <option value="MISSING_REQUIRED" ${modalState.filterMode === 'MISSING_REQUIRED' ? 'selected' : ''}>待补必填 (${missingRequiredCount})</option>
-                        <option value="WARN" ${modalState.filterMode === 'WARN' ? 'selected' : ''}>预警 (${warnCount})</option>
-                        <option value="OK" ${modalState.filterMode === 'OK' ? 'selected' : ''}>正常 (${totalGroups - warnCount - missingRequiredCount})</option>
-                    </select>
+                    <div class="yn-bem-field-group" style="align-items:center; gap:4px; margin-left:4px;">
+                        <label style="font-size:11px; color:#525252; font-weight:600;">分组:</label>
+                        <select id="yn-bem-opt-grouping" class="yn-bem-select" style="font-size:11px; padding:2px 6px; font-weight:600; color:#171717;">
+                            <option value="TRIP" ${modalState.groupingMode === 'TRIP' ? 'selected' : ''}>按 Trip 轮次</option>
+                            <option value="TYPE" ${modalState.groupingMode === 'TYPE' ? 'selected' : ''}>按费用类型</option>
+                            <option value="TRIP_AND_TYPE" ${modalState.groupingMode === 'TRIP_AND_TYPE' ? 'selected' : ''}>Trip+类型两级</option>
+                            <option value="NONE" ${modalState.groupingMode === 'NONE' ? 'selected' : ''}>平铺 (不分组)</option>
+                        </select>
+                        <button type="button" class="yn-bem-btn-mini" id="yn-bem-btn-toggle-all-groups"
+                                title="点击展开或折叠所有分组" ${modalState.groupingMode === 'NONE' ? 'disabled style="opacity:0.4; cursor:not-allowed;"' : ''}>
+                            ${isAllCollapsed ? '展开' : '折叠'}
+                        </button>
+                    </div>
+
+                    <div class="yn-bem-quick-select-wrap" style="display:inline-flex; align-items:center; gap:6px; margin-left:6px; padding-left:8px; border-left:1px solid var(--coss-border);">
+                        <span class="yn-bem-quick-link" id="yn-bem-qa-select-all">全选</span>
+                        <span class="yn-bem-quick-link" id="yn-bem-qa-deselect">全不选</span>
+                        <span class="yn-bem-quick-link" id="yn-bem-qa-invert">反选</span>
+                        ${saveErrorCount > 0 ? `<span class="yn-bem-quick-link" id="yn-bem-qa-select-failed" style="color:#b91c1c; border-color:#fca5a5; background:#fef2f2; font-weight:700;">❌ 仅看失败 (${saveErrorCount})</span>` : ''}
+                        ${missingRequiredCount > 0 ? `<span class="yn-bem-quick-link" id="yn-bem-qa-select-missing" style="color:#dc2626; border-color:#fee2e2; background:#fef2f2;">仅选待补 (${missingRequiredCount})</span>` : ''}
+                        ${warnCount > 0 ? `<span class="yn-bem-quick-link" id="yn-bem-qa-select-warn" style="color:#b45309; border-color:#fef3c7; background:#fffbeb;">仅选预警 (${warnCount})</span>` : ''}
+
+                        <select id="yn-bem-filter-mode" class="yn-bem-select" style="font-size:11px; padding:2px 6px; margin-left:2px;">
+                            ${saveErrorCount > 0 ? `<option value="SAVE_ERROR" ${modalState.filterMode === 'SAVE_ERROR' ? 'selected' : ''}>❌ 保存失败 (${saveErrorCount})</option>` : ''}
+                            <option value="ALL" ${modalState.filterMode === 'ALL' ? 'selected' : ''}>全部 (${totalGroups})</option>
+                            <option value="MISSING_REQUIRED" ${modalState.filterMode === 'MISSING_REQUIRED' ? 'selected' : ''}>待补必填 (${missingRequiredCount})</option>
+                            <option value="WARN" ${modalState.filterMode === 'WARN' ? 'selected' : ''}>预警 (${warnCount})</option>
+                            <option value="OK" ${modalState.filterMode === 'OK' ? 'selected' : ''}>正常 (${totalGroups - warnCount - missingRequiredCount})</option>
+                        </select>
+                    </div>
+
+                    <div id="yn-bem-active-filters-wrap" style="display:inline-flex; align-items:center; gap:4px; margin-left:4px;">
+                        ${renderActiveFilterTagsHtml()}
+                    </div>
                 </div>
 
-                <div id="yn-bem-active-filters-wrap" style="display:inline-flex; align-items:center; gap:4px; margin-left:4px;">
-                    ${renderActiveFilterTagsHtml()}
+                <!-- 报销单视图专属提示 (仅在 BILLS Tab 呈现) -->
+                <div id="yn-bem-tab-controls-bills" style="display: ${modalState.activeTab === 'BILLS' ? 'inline-flex' : 'none'}; align-items:center; gap:8px; margin-left:8px;">
+                    <span style="font-size:12px; color:#525252;">承接建单：以报销单 (BC/BJ) 为条目，平铺管理出差申请 (SC) 与工作报告</span>
                 </div>
             </div>
 
             <!-- 中间：顶部居中搜索框 -->
             <div class="yn-bem-header-center">
                 <input type="text" id="yn-bem-search" class="yn-bem-input yn-bem-search-center"
-                       placeholder="搜索开票日/发票号/销方/说明..." value="${escapeHtml(modalState.searchQuery)}" />
+                       placeholder="搜索单据/开票日/发票号/销方/说明..." value="${escapeHtml(modalState.searchQuery)}" />
             </div>
 
             <!-- 右侧：AI 助手切换 + 关闭 (全宽固定在顶栏最右侧) -->
@@ -2915,14 +2962,7 @@ function renderAssistantChat(container: HTMLElement) {
                 } else if (key === 'autopilot-plan') {
                     runAutopilotPlan(container);
                 } else if (key === 'dashboard') {
-                    if (modalState.tripPlans.length === 0) {
-                        clusterExpensesIntoTrips(
-                            modalState.groups,
-                            modalState.proxyPersonName || modalState.currentEmployeeName,
-                            modalState.projectName
-                        );
-                    }
-                    openAutopilotDecisionDashboard(container);
+                    switchMainTab(container, 'BILLS');
                 }
             },
             onApplyTripPlans: async (msgId: string, action: TripPlanConfirmationAction) => {
@@ -3001,6 +3041,60 @@ function renderAssistantChat(container: HTMLElement) {
                     saveChatSessionsToStorage(modalState.chatSessions);
                     renderAssistantChat(container);
                 }
+            },
+            onApplyTravelReports: async (msgId: string, action: TravelReportConfirmationAction) => {
+                if (!action || !action.reports || action.reports.length === 0) return;
+                action.applied = true;
+                action.appliedTime = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+
+                let backfilledCount = 0;
+                // 1. 同步更新 __YN_BILL_COPILOT__ 中的 billPlans
+                const copilot = (window as any).__YN_BILL_COPILOT__;
+                if (copilot?.getState) {
+                    const st = copilot.getState();
+                    const plans: BillPlan[] = st.plans || [];
+                    const updated = plans.map((p, idx) => {
+                        const rep = action.reports.find(r =>
+                            (r.tripIndex && r.tripIndex === (idx + 1)) ||
+                            (r.dest && p.destination && (r.dest.includes(p.destination) || p.destination.includes(r.dest))) ||
+                            (r.title && p.destination && r.title.includes(p.destination))
+                        );
+                        if (rep && rep.content) {
+                            backfilledCount++;
+                            return { ...p, travelReport: rep.content };
+                        }
+                        return p;
+                    });
+                    if (copilot.setPlans) {
+                        copilot.setPlans(updated);
+                    }
+                }
+
+                // 2. 同步更新 modalState.tripPlans (如果存在)
+                if (modalState.tripPlans && modalState.tripPlans.length > 0) {
+                    modalState.tripPlans.forEach((tp) => {
+                        const rep = action.reports.find(r =>
+                            (r.tripIndex && r.tripIndex === tp.tripNo) ||
+                            (r.dest && tp.destination && (r.dest.includes(tp.destination) || tp.destination.includes(r.dest))) ||
+                            (r.title && tp.destination && r.title.includes(tp.destination))
+                        );
+                        if (rep && rep.content) {
+                            tp.travelReport = rep.content;
+                        }
+                    });
+                    saveTripPlansToStorage(modalState.tripPlans);
+                }
+
+                // 3. 更新消息状态
+                const curSession = modalState.chatSessions.find(s => s.id === modalState.currentSessionId) || modalState.chatSessions[0];
+                const msg = curSession?.messages.find(m => m.id === msgId);
+                if (msg) {
+                    msg.confirmationAction = { ...action };
+                }
+
+                showToast('success', `🎉 已成功将 ${backfilledCount || action.reports.length} 份出差总结报告回填写入出差单！`);
+                saveChatSessionsToStorage(modalState.chatSessions);
+                renderAssistantChat(container);
             },
             selectedExpenseCount: selectedCount,
             selectedExpenseAmount: totalAmountDecimal.toNumber(),
@@ -3594,19 +3688,6 @@ function renderTableHtml(): string {
                                         <span class="yn-bem-group-title">${sec.title}</span>
                                         <span class="yn-bem-group-flow-tag yn-bem-tag-${sec.flow.toLowerCase()}">${sec.flowTag}</span>
                                         <span class="yn-bem-group-summary-badge">${sec.items.length} 笔费用 (${sec.totalInvoices} 张发票) · 小计 ¥${sec.totalAmount.toFixed(2)}</span>
-                                        ${sec.tripConfig ? `
-                                            <div style="margin-left:auto; display:flex; align-items:center; gap:6px;">
-                                                <button type="button" class="yn-bem-btn-trip-edit" data-trip-edit-id="${sec.tripConfig.id}" title="查看并修改本轮 Trip 行程、酒店、拜访客户据点及预算">
-                                                    ✏️ 编辑/打磨 Trip
-                                                </button>
-                                                <button type="button" class="yn-bem-btn-trip-edit" data-trip-report-id="${sec.tripConfig.id}" title="生成并复制本轮出差报告 (Markdown) 总结草稿">
-                                                    📄 出差报告草稿
-                                                </button>
-                                                <button type="button" class="yn-bem-btn-mini yn-bem-btn-trip-create-sc" data-trip-id="${sec.tripConfig.id}">
-                                                    ⚡ 生成该轮申请单 (SC)
-                                                </button>
-                                            </div>
-                                        ` : ''}
                                     </div>
                                 </td>
                             </tr>
@@ -3707,24 +3788,32 @@ function renderModalContent(container: HTMLElement, doc: Document) {
         <!-- 1. 顶部融合操作栏 (单行 46px 全宽置顶，左右端固定，搜索居中) -->
         ${renderTopBarHtml(filteredGroups)}
 
-        <!-- 2. 主工作区：明细表格 (100% 满宽，零布局偏移 CLS=0) -->
+        <!-- 2. 主工作区：平级双工作台 (100% 满宽，零布局偏移 CLS=0) -->
         <div class="yn-bem-modal-main-wrapper" id="yn-bem-modal-main-wrapper">
             <div class="yn-bem-main-layout" id="yn-bem-main-layout">
-                <div class="yn-bem-table-wrap" id="yn-bem-table-wrap">
-                    ${renderTableHtml()}
+                <!-- 视图 1：费用信息明细表格 -->
+                <div id="yn-bem-tab-view-expenses" style="display: ${modalState.activeTab === 'EXPENSES' ? 'flex' : 'none'}; flex-direction:column; width:100%; height:100%; overflow:hidden;">
+                    <div class="yn-bem-table-wrap" id="yn-bem-table-wrap">
+                        ${renderTableHtml()}
+                    </div>
+                    <div class="yn-bem-footer">
+                        <div class="yn-bem-footer-stats" id="yn-bem-footer-stats">
+                            ${renderFooterStatsHtml()}
+                        </div>
+                    </div>
                 </div>
-            </div>
 
-            <!-- 3. 底部极简状态指示条 (Clean Status Strip) -->
-            <div class="yn-bem-footer">
-                <div class="yn-bem-footer-stats" id="yn-bem-footer-stats">
-                    ${renderFooterStatsHtml()}
+                <!-- 视图 2：报销单与申请单管理全景平铺工作台 (React Root) -->
+                <div id="yn-bem-tab-view-bills" style="display: ${modalState.activeTab === 'BILLS' ? 'flex' : 'none'}; flex-direction:column; width:100%; height:100%; overflow:hidden;">
+                    <div id="yn-bem-bills-workspace-root" style="width:100%; height:100%;"></div>
                 </div>
             </div>
         </div>
 
-        <!-- 4. 底部悬浮操作岛 (Floating Action Island - 选中时弹性浮现) -->
-        ${renderFloatingIslandHtml()}
+        <!-- 4. 底部悬浮操作岛 (Floating Action Island - 仅在费用明细 Tab 且有选中时浮现) -->
+        <div id="yn-bem-floating-island-wrap" style="display: ${modalState.activeTab === 'EXPENSES' ? 'block' : 'none'};">
+            ${renderFloatingIslandHtml()}
+        </div>
 
         <!-- 5. 居中批量修改弹窗容器 (按需挂载) -->
         <div id="yn-bem-batch-dialog-wrap">
@@ -4130,15 +4219,50 @@ export function openAiAssistantWithSkill(container: HTMLElement, skillId: string
     renderAssistantChat(container);
 }
 
-/**
- * 全景报销决策复核与极速建单看板 (HITL)
- * 允许用户在单一看板中一览所有出差申请单 (SC)、出差报销单 (BC) 与日常经费报销单 (BJ) 的规划构成、
- * 预算展开及历史防重比对，确认无误后一键调用 API 管道极速持久化草稿入库 (commit: false)
- */
-export function openAutopilotDecisionDashboard(container: HTMLElement, focusTripId?: string) {
-    const existing = container.querySelector('#yn-bem-decision-dashboard-modal');
-    if (existing) existing.remove();
+let billDashboardRoot: Root | null = null;
 
+/**
+ * 切换顶层主工作台视图 (平级双视图：EXPENSES 费用明细 ⟷ BILLS 报销单与申请单管理)
+ */
+export function switchMainTab(container: HTMLElement, targetTab: 'EXPENSES' | 'BILLS') {
+    modalState.activeTab = targetTab;
+
+    // 1. 更新顶栏 Tab 切换按钮激活态
+    const tabBtns = container.querySelectorAll<HTMLButtonElement>('.yn-bem-tab-btn');
+    tabBtns.forEach(btn => {
+        if (btn.dataset.navTab === targetTab) {
+            btn.classList.add('is-active');
+        } else {
+            btn.classList.remove('is-active');
+        }
+    });
+
+    // 2. 控制专属控制栏的显隐
+    const expensesControls = container.querySelector<HTMLElement>('#yn-bem-tab-controls-expenses');
+    const billsControls = container.querySelector<HTMLElement>('#yn-bem-tab-controls-bills');
+    if (expensesControls) expensesControls.style.display = targetTab === 'EXPENSES' ? 'inline-flex' : 'none';
+    if (billsControls) billsControls.style.display = targetTab === 'BILLS' ? 'inline-flex' : 'none';
+
+    // 3. 控制主工作台视图容器切换
+    const viewExpenses = container.querySelector<HTMLElement>('#yn-bem-tab-view-expenses');
+    const viewBills = container.querySelector<HTMLElement>('#yn-bem-tab-view-bills');
+    if (viewExpenses) viewExpenses.style.display = targetTab === 'EXPENSES' ? 'flex' : 'none';
+    if (viewBills) viewBills.style.display = targetTab === 'BILLS' ? 'flex' : 'none';
+
+    // 4. 底部费用批量修改悬浮操作岛：仅在 EXPENSES Tab 呈现
+    const islandWrap = container.querySelector<HTMLElement>('#yn-bem-floating-island-wrap');
+    if (islandWrap) islandWrap.style.display = targetTab === 'EXPENSES' ? 'block' : 'none';
+
+    // 5. 若切入 BILLS Tab，挂载或刷新报销单工作台
+    if (targetTab === 'BILLS') {
+        renderBillManagementWorkspace(container);
+    }
+}
+
+/**
+ * 渲染/挂载报销单与申请单平铺全景大工作台 (React Root)
+ */
+export function renderBillManagementWorkspace(container: HTMLElement) {
     if (modalState.tripPlans.length === 0) {
         clusterExpensesIntoTrips(
             modalState.groups,
@@ -4147,363 +4271,428 @@ export function openAutopilotDecisionDashboard(container: HTMLElement, focusTrip
         );
     }
 
-    const tripPlans = modalState.tripPlans;
-    const groups = modalState.groups;
-    const globalState = getInvoicePoolGlobalState();
+    const targetDoc = container.ownerDocument || document;
 
-    const nonTripItems = groups.filter(g => !g.tripId || g.tripId === 'NON_TRIP');
-    const nonTripTotal = nonTripItems.reduce((acc, g) => acc + Number(g.expenseAmount || 0), 0);
-    const nonTripInvoices = nonTripItems.reduce((acc, g) => acc + g.invoices.length, 0);
-
-    const targetDoc = container.ownerDocument || (typeof window !== 'undefined' && window.top && window.top.document ? window.top.document : document);
-    if (!targetDoc.getElementById('yn-injected-styles')) {
+    // 动态注入样式系统
+    if (!targetDoc.getElementById('yn-bm-styles')) {
         const styleEl = targetDoc.createElement('style');
-        styleEl.id = 'yn-injected-styles';
-        styleEl.innerHTML = MODAL_STYLES;
+        styleEl.id = 'yn-bm-styles';
+        styleEl.innerHTML = getBillManagementStyles();
         (targetDoc.head || targetDoc.body).appendChild(styleEl);
     }
 
-    const overlay = targetDoc.createElement('div');
-    overlay.id = 'yn-bem-decision-dashboard-modal';
-    overlay.className = 'yn-bem-decision-modal-overlay';
+    const mountPoint = container.querySelector<HTMLElement>('#yn-bem-bills-workspace-root');
+    if (!mountPoint) return;
 
-    let tripsHtml = '';
-    if (tripPlans.length === 0) {
-        tripsHtml = `
-            <div style="padding:24px; text-align:center; color:#737373; background:#f8fafc; border:1px dashed #cbd5e1; border-radius:8px;">
-                未检测到差旅类费用（飞机票/火车票/住宿费/出差打车）。如全部为本地日常支出，请直接查看下方【日常经费报销 (BJ)】。
-            </div>
-        `;
-    } else {
-        tripsHtml = tripPlans.map(trip => {
-            const tripItems = groups.filter(g => g.tripId === trip.id);
-            const tripSum = tripItems.reduce((acc, g) => acc + Number(g.expenseAmount || 0), 0);
-            const isGenerated = Boolean(modalState.tripBillCodes[trip.id]);
-            const billCode = modalState.tripBillCodes[trip.id] || '';
-
-            return `
-                <div class="yn-bem-dashboard-card ${focusTripId === trip.id ? 'is-focused' : ''}">
-                    <div class="yn-bem-dashboard-card-header">
-                        <div class="yn-bem-dashboard-card-title">
-                            <span class="yn-bem-badge-trip">Trip ${trip.tripNo}</span>
-                            出差申请单 (SC) ➔ 出差费用报销单 (BC)
-                            <span class="yn-bem-tag-bc" style="margin-left:6px;">[差旅·BC]</span>
-                        </div>
-                        <div style="display:flex; align-items:center; gap:8px;">
-                            ${isGenerated
-                                ? `<span class="yn-bem-group-draft-badge">✅ 已生成草稿: ${billCode}</span>`
-                                : `<span style="font-size:12px; color:#f59e0b; font-weight:600;">⏳ 待创建草稿</span>`
-                            }
-                            <button type="button" class="yn-bem-btn-trip-edit" data-dashboard-edit-trip="${trip.id}" title="查看并修改本轮出差行程与申请单预算">
-                                ✏️ 打磨
-                            </button>
-                            <button type="button" class="yn-bem-btn-trip-edit" data-dashboard-report-trip="${trip.id}" title="复制本轮出差总结报告草稿">
-                                📄 报告
-                            </button>
-                        </div>
-                    </div>
-                    <div class="yn-bem-dashboard-grid">
-                        <div class="yn-bem-dashboard-field">
-                            <span class="label">出差区间:</span>
-                            <span class="val">${trip.startDate} ~ ${trip.endDate} (${trip.days}天${trip.nights}晚)</span>
-                        </div>
-                        <div class="yn-bem-dashboard-field">
-                            <span class="label">目的地城市:</span>
-                            <span class="val">${trip.destination || '未指定'}</span>
-                        </div>
-                        <div class="yn-bem-dashboard-field">
-                            <span class="label">出差人/申请人:</span>
-                            <span class="val">${trip.applicantName} ${trip.isProxy ? '(外驻代报)' : '(本人)'}</span>
-                        </div>
-                        <div class="yn-bem-dashboard-field">
-                            <span class="label">归属项目:</span>
-                            <span class="val" style="color:#0284c7; font-weight:600;">${trip.projectName || modalState.projectName || '未指定'}</span>
-                        </div>
-                        <div class="yn-bem-dashboard-field" style="grid-column: span 2;">
-                            <span class="label">出差事由:</span>
-                            <span class="val">${trip.purpose || '业务交流及现场技术支持'}</span>
-                        </div>
-                    </div>
-
-                    <div class="yn-bem-dashboard-budget-row">
-                        <div class="yn-bem-budget-item">
-                            <span class="b-label">交通费预算</span>
-                            <span class="b-val">¥${trip.trafficFee.toFixed(2)}</span>
-                        </div>
-                        <div class="yn-bem-budget-item">
-                            <span class="b-label">住宿费预算</span>
-                            <span class="b-val">¥${trip.hotelFee.toFixed(2)}</span>
-                        </div>
-                        <div class="yn-bem-budget-item">
-                            <span class="b-label">误餐补贴</span>
-                            <span class="b-val">¥${trip.mealFee.toFixed(2)}</span>
-                        </div>
-                        <div class="yn-bem-budget-item">
-                            <span class="b-label">市内交通Buffer</span>
-                            <span class="b-val">¥${trip.otherFee.toFixed(2)}</span>
-                        </div>
-                        <div class="yn-bem-budget-item">
-                            <span class="b-label">交通改签Buffer</span>
-                            <span class="b-val">¥${trip.trafficBuffer.toFixed(2)}</span>
-                        </div>
-                        <div class="yn-bem-budget-item is-total">
-                            <span class="b-label">申请总额 (SC)</span>
-                            <span class="b-val" style="color:#15803d; font-weight:700;">¥${trip.totalAmount.toFixed(2)}</span>
-                        </div>
-                    </div>
-
-                    <div style="margin-top:10px; font-size:12px; color:#525252; display:flex; justify-content:space-between; align-items:center; background:#f9fafb; padding:8px 12px; border-radius:6px;">
-                        <span>关联本轮实际发票报销: <strong>${tripItems.length}</strong> 笔费用，报销金额 <strong>¥${tripSum.toFixed(2)}</strong></span>
-                        <span style="color:#737373;">(申请单总额已自动包含充裕 Buffer，确保报销金额绝不超标)</span>
-                    </div>
-
-                    ${trip.matchedHistoryBill ? `
-                        <div style="margin-top:8px; padding:6px 10px; background:#fffbeb; border:1px solid #fef3c7; border-radius:4px; font-size:11px; color:#b45309;">
-                            ⚠️ 系统交叉对比命中历史相近出差申请单: <strong>${trip.matchedHistoryBill.billCode}</strong> (申报金额 ¥${trip.matchedHistoryBill.amount}，申请日 ${trip.matchedHistoryBill.billDate})
-                        </div>
-                    ` : ''}
-                </div>
-            `;
-        }).join('');
-    }
-
-    let nonTripHtml = '';
-    if (nonTripItems.length > 0) {
-        const isGenerated = Boolean(modalState.tripBillCodes['NON_TRIP']);
-        const billCode = modalState.tripBillCodes['NON_TRIP'] || '';
-        nonTripHtml = `
-            <div class="yn-bem-dashboard-card">
-                <div class="yn-bem-dashboard-card-header">
-                    <div class="yn-bem-dashboard-card-title">
-                        <span class="yn-bem-tag-bj" style="margin-right:6px;">[经费·BJ]</span>
-                        日常办公与市内交通经费报销单 (BJ)
-                    </div>
-                    <div>
-                        ${isGenerated
-                            ? `<span class="yn-bem-group-draft-badge">✅ 已生成草稿: ${billCode}</span>`
-                            : `<span style="font-size:12px; color:#f59e0b; font-weight:600;">⏳ 待创建草稿</span>`
-                        }
-                    </div>
-                </div>
-                <div class="yn-bem-dashboard-grid">
-                    <div class="yn-bem-dashboard-field">
-                        <span class="label">费用笔数:</span>
-                        <span class="val">${nonTripItems.length} 笔 (${nonTripInvoices} 张发票)</span>
-                    </div>
-                    <div class="yn-bem-dashboard-field">
-                        <span class="label">报销总额:</span>
-                        <span class="val" style="color:#15803d; font-weight:700;">¥${nonTripTotal.toFixed(2)}</span>
-                    </div>
-                    <div class="yn-bem-dashboard-field">
-                        <span class="label">主申请人:</span>
-                        <span class="val">${modalState.proxyPersonName || modalState.currentEmployeeName || '当前社员'}</span>
-                    </div>
-                    <div class="yn-bem-dashboard-field">
-                        <span class="label">归属项目:</span>
-                        <span class="val" style="color:#0284c7; font-weight:600;">${modalState.projectName || '未指定'}</span>
-                    </div>
-                    <div class="yn-bem-dashboard-field" style="grid-column: span 2;">
-                        <span class="label">包含类型:</span>
-                        <span class="val">${Array.from(new Set(nonTripItems.map(g => g.newExpenseTypeName || g.expenseTypeName))).join('、')}</span>
-                    </div>
-                </div>
-            </div>
-        `;
-    }
-
-    overlay.innerHTML = `
-        <div class="yn-bem-decision-modal">
-            <div class="yn-bem-decision-modal-header">
-                <div>
-                    <h2 class="title">🚀 全景报销决策复核与极速建单看板 (HITL)</h2>
-                    <p class="subtitle">人类在回路复核确认：核验出差申请单 (SC) 预算与各报销单 (BC/BJ) 分流。点击下方一键极速创建草稿入库（刚性锁定 commit: false 保存草稿，绝不提交审批）。</p>
-                </div>
-                <button type="button" class="yn-bem-decision-modal-close" id="yn-bem-btn-close-dashboard">✕</button>
-            </div>
-
-            <div class="yn-bem-decision-modal-body">
-                <div style="margin-bottom:16px;">
-                    <h3 style="font-size:14px; font-weight:700; color:#171717; margin-bottom:8px; display:flex; align-items:center; gap:6px;">
-                        <span>🛫 异地出差轮次与申请单 (SC / BC) 规划</span>
-                        <span style="font-size:12px; color:#737373; font-weight:normal;">(共 ${tripPlans.length} 轮出差)</span>
-                    </h3>
-                    ${tripsHtml}
-                </div>
-
-                ${nonTripItems.length > 0 ? `
-                    <div style="margin-bottom:16px;">
-                        <h3 style="font-size:14px; font-weight:700; color:#171717; margin-bottom:8px; display:flex; align-items:center; gap:6px;">
-                            <span>🏢 日常办公与市内经费 (BJ) 规划</span>
-                            <span style="font-size:12px; color:#737373; font-weight:normal;">(共 ${nonTripItems.length} 笔)</span>
-                        </h3>
-                        ${nonTripHtml}
-                    </div>
-                ` : ''}
-            </div>
-
-            <div class="yn-bem-decision-modal-footer">
-                <div class="yn-bem-dashboard-status" id="yn-bem-dashboard-status">
-                    就绪：请复核上述出差单与报销单方案，确认无误后点击右侧按钮极速入库。
-                </div>
-                <div style="display:flex; gap:10px; align-items:center;">
-                    <button type="button" class="yn-bem-btn yn-bem-btn-secondary" id="yn-bem-btn-cancel-dashboard">
-                        返回表格复核
-                    </button>
-                    <button type="button" class="yn-bem-btn yn-bem-btn-autopilot-execute" id="yn-bem-btn-execute-autopilot">
-                        ⚡ 一键极速创建草稿入库 (commit: false)
-                    </button>
-                </div>
-            </div>
-        </div>
-    `;
-
-    targetDoc.body.appendChild(overlay);
-
-    // Bind Close
-    const closeDashboard = () => overlay.remove();
-    overlay.querySelector('#yn-bem-btn-close-dashboard')?.addEventListener('click', closeDashboard);
-    overlay.querySelector('#yn-bem-btn-cancel-dashboard')?.addEventListener('click', closeDashboard);
-
-    // Bind Dashboard In-place Edit and Report Clicks
-    overlay.addEventListener('click', (e) => {
-        const target = e.target as HTMLElement;
-        const editBtn = target.closest<HTMLElement>('[data-dashboard-edit-trip]');
-        if (editBtn && editBtn.dataset.dashboardEditTrip) {
-            const tId = editBtn.dataset.dashboardEditTrip;
-            openEditTripModal(tId, container);
-            return;
-        }
-        const repBtn = target.closest<HTMLElement>('[data-dashboard-report-trip]');
-        if (repBtn && repBtn.dataset.dashboardReportTrip) {
-            const tId = repBtn.dataset.dashboardReportTrip;
-            const t = tripPlans.find(p => p.id === tId);
-            if (t) {
-                const items = groups.filter(g => g.tripId === t.id);
-                const md = generateTripReportMarkdown(t, items);
-                if (navigator.clipboard && navigator.clipboard.writeText) {
-                    navigator.clipboard.writeText(md).then(() => {
-                        showToast('success', `✨ 已复制 Trip ${t.tripNo} 出差报告草稿到剪贴板！`);
-                    }).catch(() => {
-                        copyFallback(md);
-                        showToast('success', `✨ 已复制 Trip ${t.tripNo} 出差报告草稿到剪贴板！`);
-                    });
-                } else {
-                    copyFallback(md);
-                    showToast('success', `✨ 已复制 Trip ${t.tripNo} 出差报告草稿到剪贴板！`);
-                }
-            }
-            return;
-        }
-    });
-
-    // Bind Execute Pipeline
-    const btnExec = overlay.querySelector<HTMLButtonElement>('#yn-bem-btn-execute-autopilot');
-    const statusDiv = overlay.querySelector<HTMLElement>('#yn-bem-dashboard-status');
-
-    btnExec?.addEventListener('click', async () => {
-        if (!confirm('确认按照复核看板中的规划，一键自动创建出差申请单 (SC) 与报销单 (BC/BJ) 草稿吗？\\n\\n【安全承诺】：所有单据均以草稿形式保存在系统（commit: false），绝不自动提交审批。')) {
-            return;
-        }
-
-        btnExec.disabled = true;
-        btnExec.innerText = '正在极速入库...';
-
+    // 清理已有挂载实例
+    if (billDashboardRoot) {
         try {
-            // Step 1: 如果表格中有修改的费用记录，先批量保存费用记录更新
-            const updates: ExpenseRecordUpdateItem[] = [];
-            for (const g of modalState.groups) {
-                const isDescChanged = g.newDescription !== undefined && g.newDescription !== g.description;
-                const isDateChanged = g.newBusinessDate !== undefined && g.newBusinessDate !== g.businessDate;
-                const isTypeChanged = Boolean(g.newExpenseTypeId && g.newExpenseTypeId !== g.expenseTypeId);
-                const hasDynChanged = Boolean(g.dynamicFields && Object.keys(g.dynamicFields).length > 0);
+            billDashboardRoot.unmount();
+        } catch (e) { }
+        billDashboardRoot = null;
+    }
 
-                if (isDescChanged || isDateChanged || isTypeChanged || hasDynChanged) {
-                    updates.push({
-                        expenseRecordId: g.expenseRecordId,
-                        targetExpenseTypeId: g.newExpenseTypeId || g.expenseTypeId,
-                        targetExpenseTypeName: g.newExpenseTypeName || g.expenseTypeName,
-                        newBusinessDate: g.newBusinessDate || g.businessDate,
-                        newDescription: g.newDescription !== undefined ? g.newDescription : g.description,
-                        dynamicFields: g.dynamicFields
-                    });
-                }
-            }
+    const initialState = createInitialBillManagementState(
+        modalState.groups,
+        modalState.tripPlans,
+        modalState.proxyPersonName || modalState.currentEmployeeName,
+        modalState.projectName
+    );
 
-            if (updates.length > 0) {
-                if (statusDiv) statusDiv.innerHTML = `<span class="spinner"></span> 正在保存 ${updates.length} 笔修改后的费用记录...`;
-                await batchUpdateExpenseRecordsApi(updates, globalState);
-            }
+    const root = createRoot(mountPoint);
+    billDashboardRoot = root;
 
-            const resultsSummary: string[] = [];
+    const handleSearchProject = async (query: string) => {
+        const globalState = getInvoicePoolGlobalState();
+        try {
+            const list = await searchProjectList(query, globalState, window);
+            return (list || []).map(p => ({
+                id: p.id,
+                name: p.name,
+                code: p.code
+            }));
+        } catch (e) {
+            return [];
+        }
+    };
 
-            // Step 2: 为每个 Trip 生成 SC 申请单草稿，随后生成 BC 出差报销单草稿
-            for (const trip of tripPlans) {
-                if (statusDiv) statusDiv.innerHTML = `<span class="spinner"></span> 正在生成 Trip ${trip.tripNo} 出差申请单 (SC)...`;
-                const scRes = await createSingleTripApplicationApi(trip, globalState);
-                if (scRes.success && scRes.billCode) {
-                    modalState.tripBillCodes[trip.id] = scRes.billCode;
-                    resultsSummary.push(`Trip ${trip.tripNo} 出差申请单: ${scRes.billCode}`);
-                } else {
-                    throw new Error(`创建 Trip ${trip.tripNo} 出差申请单失败: ${scRes.message || '未知异常'}`);
-                }
+    /**
+     * 动态提取行程全部出差人员及全员大交通往返行程 (零硬编码，严格遵循 Anti-Hardcoding 铁律)
+     */
+    const extractTripTravelersAndLegs = (
+        plan: BillPlan,
+        expenses: ExpenseRecordGroup[]
+    ): { allTravelers: string[]; companions: string; legs: TripLeg[] } => {
+        const rawApplicant = plan.applicantName || modalState.proxyPersonName || modalState.currentEmployeeName || '当前社员';
+        const mainApplicant = rawApplicant.replace(/（.*）|\(.*\)/g, '').trim();
+        const travelerSet = new Set<string>();
+        if (mainApplicant) {
+            travelerSet.add(mainApplicant);
+        }
 
-                // 收集该 Trip 下所有费用 ID
-                const tripExpenseIds = groups.filter(g => g.tripId === trip.id).map(g => g.expenseRecordId);
-                if (tripExpenseIds.length > 0) {
-                    if (statusDiv) statusDiv.innerHTML = `<span class="spinner"></span> 正在生成 Trip ${trip.tripNo} 出差费用报销单 (BC) 关联 ${tripExpenseIds.length} 笔费用...`;
-                    const bcRes = await createBillDataAndTemplateByExpenseIdListApi(
-                        BILL_DEFINE_IDS.TRIP_CLAIM_BC,
-                        tripExpenseIds,
-                        globalState
-                    );
-                    if (bcRes?.billData) {
-                        const savedBc = await saveBillDataApi(bcRes.billData, globalState);
-                        const bcCode = savedBc?.billCode || bcRes.billData.billCode || 'BC草稿';
-                        resultsSummary.push(`Trip ${trip.tripNo} 出差报销单: ${bcCode}`);
+        // 1. 从 travelReport 中动态提取出差人员名单 (如 "出差人员：陈浩、成勇、李建勇" 或 "调研人员为陈浩、成勇、李建勇")
+        if (plan.travelReport) {
+            const reportMatch = plan.travelReport.match(/(?:调研人员为|出差人员[：:]\s*|同行人员[：:]\s*|同行者[：:]\s*)([^\n。\r]+)/);
+            if (reportMatch && reportMatch[1]) {
+                const rawNames = reportMatch[1].split(/[、,，\s]+/);
+                for (const name of rawNames) {
+                    const clean = name.replace(/（.*）|\(.*\)/g, '').replace(/[*#-]/g, '').trim();
+                    if (clean && clean.length >= 2 && clean.length <= 10 && !['人员', '同行', '等', '至', '到'].includes(clean)) {
+                        travelerSet.add(clean);
                     }
                 }
             }
+        }
 
-            // Step 3: 为日常费用生成 BJ 经费报销单草稿
-            if (nonTripItems.length > 0) {
-                const bjExpenseIds = nonTripItems.map(g => g.expenseRecordId);
-                if (statusDiv) statusDiv.innerHTML = `<span class="spinner"></span> 正在生成日常经费报销单 (BJ) 关联 ${bjExpenseIds.length} 笔费用...`;
-                const bjRes = await createBillDataAndTemplateByExpenseIdListApi(
-                    BILL_DEFINE_IDS.GENERAL_CLAIM_BJ,
-                    bjExpenseIds,
-                    globalState
-                );
-                if (bjRes?.billData) {
-                    const savedBj = await saveBillDataApi(bjRes.billData, globalState);
-                    const bjCode = savedBj?.billCode || bjRes.billData.billCode || 'BJ草稿';
-                    modalState.tripBillCodes['NON_TRIP'] = bjCode;
-                    resultsSummary.push(`日常经费报销单: ${bjCode}`);
+        // 2. 从关联费用记录的备注中动态提取外驻出行人 ([外驻:姓名])
+        if (Array.isArray(expenses)) {
+            for (const exp of expenses) {
+                if (plan.expenseRecordIds.includes(exp.expenseRecordId)) {
+                    const textsToCheck = [
+                        exp.newDescription,
+                        exp.description,
+                        (exp as any).remarks,
+                        ...(exp.invoices || []).map((inv: any) => inv.remarks || inv.description || '')
+                    ].filter(Boolean) as string[];
+
+                    for (const text of textsToCheck) {
+                        const externalMatches = text.matchAll(/\[外驻[:：]([^\]]+)\]/g);
+                        for (const m of externalMatches) {
+                            const clean = (m[1] || '').replace(/（.*）|\(.*\)/g, '').trim();
+                            if (clean && clean.length >= 2 && clean.length <= 10) {
+                                travelerSet.add(clean);
+                            }
+                        }
+                    }
                 }
             }
-
-            if (statusDiv) {
-                statusDiv.innerHTML = `<span style="color:#15803d; font-weight:700;">🎉 全部单据草稿极速创建入库成功！(已保存为未提交草稿)</span>`;
-            }
-            btnExec.innerText = '✅ 入库成功';
-
-            showToast('success', `🎉 全流程草稿已全部生成入库！共生成 ${resultsSummary.length} 张单据。\n请在系统【我的申请】/【我的报销】中复核`, 8000);
-
-            refreshTableView(container);
-            setTimeout(() => {
-                closeDashboard();
-            }, 2500);
-
-        } catch (err: any) {
-            AutopilotLogger.error(`[Autopilot Pipeline] 入库异常: ${err.message}`);
-            if (statusDiv) {
-                statusDiv.innerHTML = `<span style="color:#dc2626; font-weight:700;">❌ 入库失败: ${err.message || '网络或接口异常'}</span>`;
-            }
-            btnExec.disabled = false;
-            btnExec.innerText = '重试极速建单';
-            showToast('error', `极速建单失败: ${err.message || '网络或接口异常'}`);
         }
-    });
+
+        const allTravelers = Array.from(travelerSet);
+        const companionsList = allTravelers.filter(t => t !== mainApplicant);
+        const companions = companionsList.join('、');
+
+        // 3. 构建包含所有人员的大交通行程 (ITINERARY legs)
+        const legs: TripLeg[] = [];
+        const destCity = plan.destination || '目的地';
+        const originCity = '上海';
+
+        // 若原有 scPlan.legs 中已有具体航班/车次信息，按人员归类
+        const existingLegs = plan.scPlan?.legs || [];
+        for (const t of allTravelers) {
+            const tLegs = existingLegs.filter(l => {
+                const legTraveler = (l.travelerName || '').replace(/（.*）|\(.*\)/g, '').trim();
+                return legTraveler === t || (!legTraveler && t === mainApplicant);
+            });
+
+            if (tLegs.length > 0) {
+                tLegs.forEach(l => {
+                    legs.push({
+                        date: l.date || plan.startDate,
+                        fromCity: (!l.fromCity || l.fromCity === '出发地') ? originCity : l.fromCity,
+                        toCity: (!l.toCity || l.toCity === '返回地') ? destCity : l.toCity,
+                        transport: l.transport || '飞机/高铁',
+                        flightOrTrain: l.flightOrTrain || l.transport || '飞机/高铁',
+                        travelerName: t
+                    });
+                });
+            } else {
+                // 为该人员自动补齐去程与返程对称大交通
+                legs.push({
+                    date: plan.startDate,
+                    fromCity: originCity,
+                    toCity: destCity,
+                    transport: '飞机/高铁',
+                    flightOrTrain: '飞机/高铁',
+                    travelerName: t
+                });
+                legs.push({
+                    date: plan.endDate,
+                    fromCity: destCity,
+                    toCity: originCity,
+                    transport: '飞机/高铁',
+                    flightOrTrain: '飞机/高铁',
+                    travelerName: t
+                });
+            }
+        }
+
+        // 按日期与出行人正序排序
+        legs.sort((a, b) => {
+            const timeDiff = new Date(a.date.replace(/-/g, '/')).getTime() - new Date(b.date.replace(/-/g, '/')).getTime();
+            if (timeDiff !== 0) return timeDiff;
+            return (a.travelerName || '').localeCompare(b.travelerName || '');
+        });
+
+        return { allTravelers, companions, legs };
+    };
+
+    const handleSaveDrafts = async (plans: BillPlan[]) => {
+        const globalState = getInvoicePoolGlobalState();
+        const resultsSummary: string[] = [];
+
+        // 预先查询当前用户未提交的出差申请单与报销单草稿，保障幂等就地更新 (Update in Place)
+        let existingScDrafts: Array<{ billMainId: string; billCode: string; billName?: string }> = [];
+        let existingBcDrafts: Array<{ billMainId: string; billCode: string }> = [];
+        try {
+            // 申请单列表 (V_MYAPPLICATION, sheetId: df023624bfba11ec99e696d1bc9d5c7e)
+            const scListRes = await callNativeHttp(
+                '/fssc/billViewConfig/getBillViewQueryDataList',
+                'POST',
+                {
+                    conditionMap: {},
+                    pageOrderParam: { pageNum: 1, pageSize: 50, enableCountLimit: true, countLimit: 1000, count: false },
+                    sheetId: 'df023624bfba11ec99e696d1bc9d5c7e',
+                    appId: globalState.appId || 'e3d5e4787ff911e88b1997bee3518b4d'
+                }
+            );
+            const scItems = scListRes?.data?.list || [];
+            existingScDrafts = scItems.filter((it: any) => {
+                const status = it.e2bf9fe2a4f211e88f5e9d87398070eb?.showValue || it.e2bf9fe2a4f211e88f5e9d87398070eb?.value;
+                return status === '未提交';
+            }).map((it: any) => ({
+                billMainId: it.BILL_MAIN_ID?.value || it.BILL_MAIN_ID,
+                billCode: it.e2bedc68a4f211e88f5e0154a3e7bffc?.value || it.e2bedc68a4f211e88f5e0154a3e7bffc,
+                billName: it.e2bedc66a4f211e88f5ef99ecdff44af?.showValue || it.e2bedc66a4f211e88f5ef99ecdff44af?.value
+            }));
+            existingScDrafts.sort((a, b) => (a.billCode || '').localeCompare(b.billCode || ''));
+
+            // 报销单列表 (V_MYREIMBURSEMENT, sheetId: 80b9cd76d02611ec99e696d1bc9d5c7e)
+            const bcListRes = await callNativeHttp(
+                '/fssc/billViewConfig/getBillViewQueryDataList',
+                'POST',
+                {
+                    conditionMap: {},
+                    pageOrderParam: { pageNum: 1, pageSize: 50, enableCountLimit: true, countLimit: 1000, count: false },
+                    sheetId: '80b9cd76d02611ec99e696d1bc9d5c7e',
+                    appId: globalState.appId || 'e3d5e4787ff911e88b1997bee3518b4d'
+                }
+            );
+            const bcItems = bcListRes?.data?.list || [];
+            existingBcDrafts = bcItems.filter((it: any) => {
+                const status = it.e2bf9fe2a4f211e88f5e9d87398070eb?.showValue || it.e2bf9fe2a4f211e88f5e9d87398070eb?.value;
+                return status === '未提交';
+            }).map((it: any) => {
+                const codeObj = Object.values(it).find((v: any) => typeof v === 'string' && (v.startsWith('BC') || v.startsWith('BJ'))) 
+                    || Object.values(it).find((v: any) => typeof v === 'object' && String((v as any)?.value).startsWith('BC'));
+                const billCode = typeof codeObj === 'object' ? (codeObj as any)?.value : codeObj;
+                return {
+                    billMainId: it.BILL_MAIN_ID?.value || it.BILL_MAIN_ID?.id || it.BILL_MAIN_ID,
+                    billCode: billCode || ''
+                };
+            });
+            existingBcDrafts.sort((a, b) => (a.billCode || '').localeCompare(b.billCode || ''));
+        } catch (e: any) {
+            AutopilotLogger.warn(`[DraftCheck] 查询已有草稿失败: ${e.message}`);
+        }
+
+        let bcDraftIdx = 0;
+        let scDraftIdx = 0;
+
+        for (let pIdx = 0; pIdx < plans.length; pIdx++) {
+            const plan = plans[pIdx];
+            if (plan.type === 'BC') {
+                const { allTravelers, companions, legs } = extractTripTravelersAndLegs(plan, modalState.groups);
+
+                // 1. 若包含 SC 申请单预算计划，先创建/更新出差申请单 (SC)
+                let scBillCode = plan.scPlan?.billCode || '';
+                let scBillMainId = plan.scPlan?.billMainId || '';
+
+                // 若内存无单号，尝试从已有未提交申请单草稿中按顺序对齐
+                if (!scBillMainId && scDraftIdx < existingScDrafts.length) {
+                    scBillMainId = existingScDrafts[scDraftIdx].billMainId;
+                    scBillCode = existingScDrafts[scDraftIdx].billCode;
+                    scDraftIdx++;
+                }
+
+                if (plan.scPlan) {
+                    const sc = plan.scPlan;
+                    const projId = sc.projectId || plan.projectId;
+                    const projName = sc.projectName || plan.projectName || modalState.projectName;
+                    const projectVO = projId ? { value: projId, title: { zh_CN: projName } } : undefined;
+                    const destCity = sc.destination || plan.destination || '出差目的地';
+
+                    const tripConfig: TripApplicationConfig = {
+                        id: plan.sourceTripId || plan.id,
+                        tripNo: pIdx + 1,
+                        applicantName: sc.applicantName || modalState.proxyPersonName || modalState.currentEmployeeName || '当前社员',
+                        isProxy: false,
+                        startDate: sc.startDate || plan.startDate,
+                        endDate: sc.endDate || plan.endDate,
+                        days: sc.days,
+                        nights: sc.nights,
+                        destination: destCity,
+                        purpose: sc.purpose || plan.purpose || `出差${destCity}业务交流及现场技术支持`,
+                        targetFactories: '',
+                        hotelName: '',
+                        trafficFee: sc.airfareBudget,
+                        hotelFee: sc.hotelBudget,
+                        mealFee: sc.mealAllowance,
+                        otherFee: sc.otherBudget,
+                        trafficBuffer: 0,
+                        totalAmount: sc.totalBudget,
+                        travelers: allTravelers, // BUG 3: 涵盖全部出差人员
+                        legs: legs,             // BUG 3: 涵盖全员大交通往返行程
+                        projectVO,
+                        projectName: projName,
+                        billMainId: scBillMainId || undefined,
+                        billCode: scBillCode || undefined,
+                        status: '就绪'
+                    };
+
+                    const scRes = await createSingleTripApplicationApi(tripConfig, globalState);
+                    if (scRes.success && scRes.billCode) {
+                        scBillCode = scRes.billCode;
+                        scBillMainId = scRes.billMainId || scBillMainId;
+                        if (plan.sourceTripId) {
+                            modalState.tripBillCodes[plan.sourceTripId] = scBillCode;
+                        }
+                        plan.scPlan.billCode = scBillCode;
+                        plan.scPlan.billMainId = scBillMainId;
+                        resultsSummary.push(`出差申请单: ${scBillCode}`);
+                    } else {
+                        throw new Error(`创建/更新出差申请单 (${plan.title}) 失败: ${scRes.message || '接口异常'}`);
+                    }
+                }
+
+                // 2. 创建或更新出差费用报销单 (BC)
+                if (plan.expenseRecordIds.length > 0) {
+                    let bcBillMainId = plan.billMainId || '';
+                    if (!bcBillMainId && bcDraftIdx < existingBcDrafts.length) {
+                        bcBillMainId = existingBcDrafts[bcDraftIdx].billMainId;
+                        bcDraftIdx++;
+                    }
+
+                    let bcBillData: any;
+                    if (bcBillMainId) {
+                        // 幂等就地更新已有报销单草稿
+                        const res = await fetchBillDataAndTemplateApi(bcBillMainId, globalState);
+                        bcBillData = res.billData;
+                        bcBillData.operationType = 'UPDATE';
+                    } else {
+                        // 从费用记录初始化新报销单草稿
+                        const bcRes = await createBillDataAndTemplateByExpenseIdListApi(
+                            BILL_DEFINE_IDS.TRIP_CLAIM_BC,
+                            plan.expenseRecordIds,
+                            globalState
+                        );
+                        if (!bcRes?.billData) {
+                            throw new Error(`初始化出差报销单模板失败: ${plan.title}`);
+                        }
+                        bcBillData = bcRes.billData;
+                        bcBillData.operationType = 'ADD';
+                    }
+
+                    if (!bcBillData.appId) bcBillData.appId = globalState?.appId || 'e3d5e4787ff911e88b1997bee3518b4d';
+
+                    // BUG 1 修复：回填主表区 (MAIN) 必填表头字段
+                    const mainRow = bcBillData.area.rowDatas[0];
+                    const sDate = plan.startDate.includes('T') ? plan.startDate : `${plan.startDate}T00:00`;
+                    const eDate = plan.endDate.includes('T') ? plan.endDate : `${plan.endDate}T00:00`;
+
+                    if (scBillCode) {
+                        ensureRowField(mainRow, 'F_CCSQD', {
+                            title: scBillCode,
+                            machineAccountId: scBillMainId,
+                            machineAccountDefineId: '3299661bb34111e8846f7b262b3e5000'
+                        }, 'MACHINE_ACCOUNT');
+                    }
+                    ensureRowField(mainRow, 'F_CCLX', { value: '03560c40cb4de1653e55bb00bc610000', title: { zh_CN: '境内出張' } }, 'RADIO');
+                    ensureRowField(mainRow, 'F_MDDCZX', plan.destination, 'STEXT');
+                    ensureRowField(mainRow, 'DESCRIPTION', plan.purpose || `出差${plan.destination}业务交流及现场技术支持`, 'MTEXT');
+                    ensureRowField(mainRow, 'START_TRIP_DATE', sDate, 'DATE');
+                    ensureRowField(mainRow, 'END_TRIP_DATE', eDate, 'DATE');
+
+                    // BUG 2 修复：回填出差报告子表区 (T_BILL_AREA_BGQ_DEF_001, 035af6b91fdde1653e55bb00bc610000)
+                    const bgqAreaId = '035af6b91fdde1653e55bb00bc610000';
+                    if (!mainRow.subAreaDatas) mainRow.subAreaDatas = {};
+                    let bgqArea = mainRow.subAreaDatas[bgqAreaId];
+                    if (!bgqArea || !bgqArea.rowDatas || bgqArea.rowDatas.length === 0) {
+                        const rowId = generateUuid();
+                        bgqArea = {
+                            boAreaCode: 'T_BILL_AREA_BGQ_DEF_001',
+                            boAreaId: bgqAreaId,
+                            rowDatas: [{
+                                rowId,
+                                parentId: bcBillData.billMainId,
+                                reserve: false,
+                                datas: {
+                                    ROW_NUM: { dataType: 'NUMBER', value: 1 },
+                                    BILL_PARENT_ID: { dataType: 'STEXT', value: bcBillData.billMainId },
+                                    BILL_MAIN_ID: { dataType: 'STEXT', value: bcBillData.billMainId },
+                                    BILL_ROW_ID: { dataType: 'STEXT', value: rowId },
+                                    BILL_DEFINE_ID: { dataType: 'STEXT', value: BILL_DEFINE_IDS.TRIP_CLAIM_BC },
+                                    VERSION: { dataType: 'NUMBER', value: 1 }
+                                }
+                            }]
+                        };
+                        mainRow.subAreaDatas[bgqAreaId] = bgqArea;
+                    }
+                    const bgqRow = bgqArea.rowDatas[0];
+                    const reportContent = plan.travelReport || `出差报告: 前往${plan.destination}开展技术支持与客户业务交流。`;
+                    const reportSubject = plan.purpose || `出差${plan.destination}业务交流及现场技术支持`;
+                    ensureRowField(bgqRow, 'ROW_NUM', 1, 'NUMBER');
+                    ensureRowField(bgqRow, 'F_QJFROM', sDate, 'DATE');
+                    ensureRowField(bgqRow, 'F_TOQJ', eDate, 'DATE');
+                    ensureRowField(bgqRow, 'F_CZX', plan.destination, 'STEXT');
+                    ensureRowField(bgqRow, 'F_YJ', reportSubject, 'STEXT');
+                    ensureRowField(bgqRow, 'F_BG', reportSubject, 'MTEXT');
+                    ensureRowField(bgqRow, 'F_BGNR', reportContent, 'MTEXT');
+
+                    // 保存草稿 (严格锁定 commit: false)
+                    const savedBc = await saveBillDataApi(bcBillData, globalState);
+                    const bcCode = savedBc?.billCode || bcBillData.billCode || 'BC草稿';
+                    plan.billCode = bcCode;
+                    plan.billMainId = savedBc?.billMainId || bcBillData.billMainId;
+                    resultsSummary.push(`出差费用报销单: ${bcCode}`);
+                }
+            } else if (plan.type === 'BJ') {
+                // 创建经费报销单 (BJ)
+                if (plan.expenseRecordIds.length > 0) {
+                    const bjRes = await createBillDataAndTemplateByExpenseIdListApi(
+                        BILL_DEFINE_IDS.GENERAL_CLAIM_BJ,
+                        plan.expenseRecordIds,
+                        globalState
+                    );
+                    if (!bjRes?.billData) {
+                        throw new Error(`初始化经费报销单模板失败: ${plan.title}`);
+                    }
+                    const savedBj = await saveBillDataApi(bjRes.billData, globalState);
+                    const bjCode = savedBj?.billCode || bjRes.billData.billCode || 'BJ草稿';
+                    plan.billCode = bjCode;
+                    plan.billMainId = savedBj?.billMainId || bjRes.billData.billMainId;
+                    resultsSummary.push(`经费报销单: ${bjCode}`);
+                }
+            }
+        }
+
+        showToast('success', `🎉 已成功生成/更新 ${resultsSummary.length} 张单据草稿！\n请在系统【我的申请】/【我的报销】中人工核对`, 6000);
+        refreshTableView(container);
+    };
+
+    root.render(
+        React.createElement(BillManagementDashboard, {
+            initialState,
+            onSaveDrafts: handleSaveDrafts,
+            onSearchProject: handleSearchProject,
+            rawGroups: modalState.groups,
+            defaultProjectName: modalState.projectName,
+            defaultApplicantName: modalState.proxyPersonName || modalState.currentEmployeeName,
+        })
+    );
 }
+
+/**
+ * 兼容旧入口：打开报销单管理（平级切换至 BILLS Tab）
+ */
+export function openBillManagementDashboard(container: HTMLElement) {
+    switchMainTab(container, 'BILLS');
+}
+
+/**
+ * 向后兼容别名：原全景报销决策复核与极速建单看板 (HITL) 统一重定向至全新的报销单管理看板
+ */
+export const openAutopilotDecisionDashboard = openBillManagementDashboard;
 
 /**
  * 从文本中智能抽取航班号 (支持往返双航班号如 CZ6534/CZ6523, MU5123/MU5124, CZ6534-CZ6523, CZ6534/6523, 以及单航班号 CZ6534)
@@ -5833,15 +6022,129 @@ async function handleAssistantSendMessage(
 
     // 2. 意图分流与助理回复
     const lowerText = text.toLowerCase();
-    const isInfer = modalState.activeSkillId === 'infer' || lowerText.includes('推断') || lowerText.includes('infer') || lowerText.includes('必填');
-    const isItin = modalState.activeSkillId === 'itinerary' || lowerText.includes('排期') || lowerText.includes('行程');
+    
+    // 意图 A: 出差报告撰写与总结
+    const isReportIntent = lowerText.includes('出差报告') || lowerText.includes('写报告') || lowerText.includes('撰写') || lowerText.includes('总结报告') || lowerText.includes('工作总结');
+
+    // 意图 B: 报销单与申请单管理工作台一键补全
+    const isBillAutoFill = !isReportIntent && (lowerText.includes('补全') || lowerText.includes('自动填') || lowerText.includes('报销单') || lowerText.includes('申请单') || lowerText.includes('漏填') || lowerText.includes('autofill'));
+
+    // 意图 C: 行程排期录入与切分 (必须排除报告诉求)
     const hasSchedule = text.length >= 20 && (text.includes('\n') || text.includes('\t') || text.includes('|') || /\d{4}[-/]\d{1,2}[-/]\d{1,2}/.test(text));
+    const isItin = !isReportIntent && (modalState.activeSkillId === 'itinerary' || lowerText.includes('排期') || (hasSchedule && !lowerText.includes('报告')));
+
+    // 意图 D: 发票专属必填字段智能推断
+    const isInfer = !isReportIntent && (modalState.activeSkillId === 'infer' || lowerText.includes('推断') || lowerText.includes('infer') || lowerText.includes('专属字段') || lowerText.includes('必填'));
 
     modalState.activeSkillId = null;
     modalState.isAssistantExecuting = true;
     renderAssistantChat(container);
 
-    if (isItin || hasSchedule) {
+    if (isReportIntent) {
+        const usingLlm = isLlmConfigured();
+        const startTime = Date.now();
+        const reportTool: ChatToolCall = {
+            id: 'tool_gen_report',
+            name: 'generateBatchTravelReportsWithAi',
+            title: '出差工作总结报告深度认知撰写',
+            icon: '📝',
+            status: 'running',
+            progress: usingLlm ? '正在通过大模型深度分析各行程调研过程与工作成果...' : '正在梳理各行程调研过程并整理报告...'
+        };
+        const assistMsg: ChatMessage = {
+            id: `msg_${Date.now()}_a`,
+            role: 'assistant',
+            text: '',
+            time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+            thinking: {
+                content: usingLlm
+                    ? '正在阅读您的出差行程过程记录，结合各据点调研、现场弱电/机房勘测、技术交流等细节，撰写专业出差总结报告...'
+                    : '正在梳理出差行程与调研据点，整理出差总结报告...',
+                status: 'thinking',
+                durationMs: 0,
+                isExpanded: true
+            },
+            toolCalls: [reportTool]
+        };
+        curSession.messages.push(assistMsg);
+        curSession.updatedAt = Date.now();
+        saveChatSessionsToStorage(modalState.chatSessions);
+        renderAssistantChat(container);
+
+        try {
+            const copilot = (window as any).__YN_BILL_COPILOT__;
+            const currentPlans: BillPlan[] = copilot?.getState?.()?.plans || [];
+            const result = await generateBatchTravelReportsWithAi(text, currentPlans);
+            const duration = Date.now() - startTime;
+
+            assistMsg.thinking = {
+                content: `出差报告撰写完成：共生成 ${result.reports.length} 份详尽的独立行程工作总结报告。`,
+                status: 'done',
+                durationMs: duration,
+                isExpanded: false
+            };
+
+            reportTool.status = 'done';
+            reportTool.progress = undefined;
+            reportTool.output = { count: result.reports.length, reports: result.reports.map(r => r.title) };
+
+            let fullText = `${result.summaryMarkdown}\n\n`;
+            result.reports.forEach((rep) => {
+                fullText += `---\n\n${rep.content}\n\n`;
+            });
+            assistMsg.text = fullText.trim();
+
+            if (result.reports.length > 0) {
+                assistMsg.confirmationAction = {
+                    type: 'APPLY_TRAVEL_REPORTS',
+                    reports: result.reports,
+                    applied: false
+                };
+            }
+
+            modalState.isAssistantExecuting = false;
+            curSession.updatedAt = Date.now();
+            saveChatSessionsToStorage(modalState.chatSessions);
+            renderAssistantChat(container);
+        } catch (err: any) {
+            if (assistMsg.thinking) {
+                assistMsg.thinking.status = 'done';
+                assistMsg.thinking.durationMs = Date.now() - startTime;
+            }
+            reportTool.status = 'error';
+            reportTool.output = err?.message || String(err);
+            assistMsg.text = `出差报告撰写异常: ${err?.message || '未知错误'}`;
+            modalState.isAssistantExecuting = false;
+            curSession.updatedAt = Date.now();
+            saveChatSessionsToStorage(modalState.chatSessions);
+            renderAssistantChat(container);
+        }
+    } else if (isBillAutoFill) {
+        if (modalState.activeTab !== 'BILLS') {
+            switchMainTab(container, 'BILLS');
+        }
+        setTimeout(() => {
+            if ((window as any).__YN_BILL_COPILOT__?.autoFillAll) {
+                (window as any).__YN_BILL_COPILOT__.autoFillAll();
+            } else {
+                window.dispatchEvent(new CustomEvent('YN_COPILOT_BILL_COMMAND', {
+                    detail: { action: 'AUTO_FILL' }
+                }));
+            }
+        }, 120);
+
+        const assistMsg: ChatMessage = {
+            id: `msg_${Date.now()}_a`,
+            role: 'assistant',
+            text: `✨ **已在【报销单管理】大表格中触发 AI 智能副驾一键补齐！**\n\n• **全链路推断**：根据发票证据链自动识别出差目的地城市、出行起止日期、往返程航段（航班/车次/城市）；\n• **合规预算计算**：按公司标准（一线城市 ¥800/晚、其他 ¥700/晚）生成充裕覆盖实际报销额的 4 项预算；\n• **项目维表对齐**：自动匹配预算归属项目；\n• **必填视觉反馈**：待补必填红框已消除，AI 补全字段带有紫蓝色微光标识。\n\n您可直接在左侧全景大表格中人工复核，确认无误后点击右下角【💾 批量持久化草稿入库】。`,
+            time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+        };
+        curSession.messages.push(assistMsg);
+        curSession.updatedAt = Date.now();
+        modalState.isAssistantExecuting = false;
+        saveChatSessionsToStorage(modalState.chatSessions);
+        renderAssistantChat(container);
+    } else if (isItin || hasSchedule) {
         const usingLlm = isLlmConfigured();
         const startTime = Date.now();
         const assistMsg: ChatMessage = {
@@ -5991,19 +6294,80 @@ async function handleAssistantSendMessage(
         renderAssistantChat(container);
         refreshTableView(container, 'STATS');
     } else {
-        const warnCount = modalState.groups.filter(g => g.hasWarn).length;
-        const missingCount = modalState.groups.filter(g => isGroupMissingRequired(g)).length;
-        const assistMsg: ChatMessage = {
-            id: `msg_${Date.now()}_a`,
-            role: 'assistant',
-            text: `已收到您的指令：\n\n**当前费控账目快照**：\n• 费用总笔数：**${modalState.groups.length}** 笔 (已选 **${selectedCount}** 笔，总额 ¥**${totalAmountDecimal.toFixed(2)}**)\n• 必填待补项目：**${missingCount}** 笔\n• 日期预警项目：**${warnCount}** 处\n\n您可以随时告诉我：\n1. *"智能推断必填项"* 或键入 \`/infer\` — 自动提取交通与住宿专属字段\n2. *"规划出差行程"* 或键入 \`/itinerary\` — 按排期自动切分聚类 Trip\n3. *"外驻社员名 项目号"* 或键入 \`/proxy\` — 批量规范化生成企业费控说明`,
-            time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-        };
-        curSession.messages.push(assistMsg);
-        curSession.updatedAt = Date.now();
-        modalState.isAssistantExecuting = false;
-        saveChatSessionsToStorage(modalState.chatSessions);
-        renderAssistantChat(container);
+        const canUseLlm = isLlmConfigured();
+        if (canUseLlm) {
+            const startTime = Date.now();
+            const assistMsg: ChatMessage = {
+                id: `msg_${Date.now()}_a`,
+                role: 'assistant',
+                text: '',
+                time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+                thinking: {
+                    content: '正在思考并结合当前费控账目上下文为您解答...',
+                    status: 'thinking',
+                    durationMs: 0,
+                    isExpanded: true
+                }
+            };
+            curSession.messages.push(assistMsg);
+            curSession.updatedAt = Date.now();
+            saveChatSessionsToStorage(modalState.chatSessions);
+            renderAssistantChat(container);
+
+            try {
+                const systemPrompt = `你是由 Google DeepMind 与 IVision 研发的元年云 FSSC 极速自动驾驶副驾。
+你不仅具备高超的费控自动化工具操作能力，还是一位友善、专业、精通企业差旅财务制度与 IT 业务的智能顾问。
+
+【当前系统上下文快照】：
+- 当前社员姓名：${modalState.currentEmployeeName || '当前社员'}
+- 当前外驻人员：${modalState.proxyPersonName || '无'}
+- 当前归属项目：${modalState.projectName || '未指定'}
+- 费用记录总数：${modalState.groups.length} 笔（已选 ${selectedCount} 笔，已选总额 ¥${totalAmountDecimal.toFixed(2)}）
+- 已切分出差轮次：${modalState.tripPlans.length} 轮
+- 财务政策标准：一线城市（北上广深）住宿限额 ¥800/晚，其他城市 ¥700/晚；误餐补助整天调研 ¥300/天，往返日半额 ¥150/天；市内交通预留 ¥100/天。
+
+请根据上述上下文，用专业、干练、亲切的中文回答用户的问题、提供咨询或根据用户的需求执行文字润色与建议。`;
+
+                const res = await callDirectLlmText(systemPrompt, text, undefined, 45000);
+                const duration = Date.now() - startTime;
+                if (assistMsg.thinking) {
+                    assistMsg.thinking.status = 'done';
+                    assistMsg.thinking.durationMs = duration;
+                    assistMsg.thinking.content = '已结合费控业务上下文完成解答。';
+                    assistMsg.thinking.isExpanded = false;
+                }
+                if (res.success && res.text) {
+                    assistMsg.text = res.text;
+                } else {
+                    assistMsg.text = `⚠️ 大模型回复异常：${res.error || '未能获取回复'}`;
+                }
+            } catch (err: any) {
+                if (assistMsg.thinking) {
+                    assistMsg.thinking.status = 'done';
+                    assistMsg.thinking.durationMs = Date.now() - startTime;
+                }
+                assistMsg.text = `⚠️ 问答处理异常: ${err?.message || err}`;
+            } finally {
+                modalState.isAssistantExecuting = false;
+                curSession.updatedAt = Date.now();
+                saveChatSessionsToStorage(modalState.chatSessions);
+                renderAssistantChat(container);
+            }
+        } else {
+            const warnCount = modalState.groups.filter(g => g.hasWarn).length;
+            const missingCount = modalState.groups.filter(g => isGroupMissingRequired(g)).length;
+            const assistMsg: ChatMessage = {
+                id: `msg_${Date.now()}_a`,
+                role: 'assistant',
+                text: `已收到您的指令：\n\n**当前费控账目快照**：\n• 费用总笔数：**${modalState.groups.length}** 笔 (已选 **${selectedCount}** 笔，总额 ¥**${totalAmountDecimal.toFixed(2)}**)\n• 必填待补项目：**${missingCount}** 笔\n• 日期预警项目：**${warnCount}** 处\n\n您可以随时告诉我：\n1. *"智能推断必填项"* 或键入 \`/infer\` — 自动提取交通与住宿专属字段\n2. *"规划出差行程"* 或键入 \`/itinerary\` — 按排期自动切分聚类 Trip\n3. *"撰写出差报告"* — 根据出差经历自动生成各行程总结报告\n4. *"一键补全报销单"* — 在大表格中自动回填所有单据要素\n\n> 💡 *提示：建议在右上角设置中配置大模型 API Key（支持 DeepSeek / OpenAI / Gemini 等），即可开启自由连续对话与智能问答！*`,
+                time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+            };
+            curSession.messages.push(assistMsg);
+            curSession.updatedAt = Date.now();
+            modalState.isAssistantExecuting = false;
+            saveChatSessionsToStorage(modalState.chatSessions);
+            renderAssistantChat(container);
+        }
     }
 }
 
@@ -6312,6 +6676,17 @@ function bindEvents(container: HTMLElement, doc: Document) {
         showToast('info', '已取消选择全部条目');
     });
 
+    // 2.5 顶栏平级视图切换：【💳 费用信息明细】⟷【📋 报销单与申请单管理】
+    const navTabBtns = container.querySelectorAll<HTMLButtonElement>('.yn-bem-tab-btn');
+    navTabBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            const targetTab = btn.dataset.navTab as 'EXPENSES' | 'BILLS';
+            if (targetTab && targetTab !== modalState.activeTab) {
+                switchMainTab(container, targetTab);
+            }
+        });
+    });
+
     // 3. 面板展开切换：【✨ AI 助手】(右侧悬浮抽屉面板，零布局抖动)
     bindAiPanelResizer(container);
 
@@ -6606,48 +6981,6 @@ function bindEvents(container: HTMLElement, doc: Document) {
                 modalState.selectedRecordIds.add(rid);
                 refreshTableView(container, 'ROWS');
             }
-            return;
-        }
-
-        // 组表头编辑/打磨 Trip 按钮
-        const editTripBtn = target.closest<HTMLElement>('[data-trip-edit-id]');
-        if (editTripBtn && editTripBtn.dataset.tripEditId) {
-            e.stopPropagation();
-            const tripId = editTripBtn.dataset.tripEditId;
-            openEditTripModal(tripId, container);
-            return;
-        }
-
-        // 组表头导出出差报告草稿按钮
-        const reportTripBtn = target.closest<HTMLElement>('[data-trip-report-id]');
-        if (reportTripBtn && reportTripBtn.dataset.tripReportId) {
-            e.stopPropagation();
-            const tripId = reportTripBtn.dataset.tripReportId;
-            const trip = modalState.tripPlans.find(t => t.id === tripId);
-            if (trip) {
-                const tripItems = modalState.groups.filter(g => g.tripId === trip.id);
-                const reportMd = generateTripReportMarkdown(trip, tripItems);
-                if (navigator.clipboard && navigator.clipboard.writeText) {
-                    navigator.clipboard.writeText(reportMd).then(() => {
-                        showToast('success', `✨ 已复制 Trip ${trip.tripNo} 的出差总结报告草稿到剪贴板！`);
-                    }).catch(() => {
-                        copyFallback(reportMd);
-                        showToast('success', `✨ 已复制 Trip ${trip.tripNo} 的出差总结报告草稿到剪贴板！`);
-                    });
-                } else {
-                    copyFallback(reportMd);
-                    showToast('success', `✨ 已复制 Trip ${trip.tripNo} 的出差总结报告草稿到剪贴板！`);
-                }
-            }
-            return;
-        }
-
-        // 组表头一键快捷生成出差申请单按钮
-        const createScBtn = target.closest<HTMLElement>('.yn-bem-btn-trip-create-sc');
-        if (createScBtn && createScBtn.dataset.tripId) {
-            e.stopPropagation();
-            const tripId = createScBtn.dataset.tripId;
-            openAutopilotDecisionDashboard(container, tripId);
             return;
         }
 

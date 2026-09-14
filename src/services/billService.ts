@@ -1,4 +1,4 @@
-import { apiRequest } from '../utils/http';
+import { apiRequest, callNativeHttp, inferLegalMenuId, LEGAL_MENU_IDS } from '../utils/http';
 import { BUDGET_CONSTANTS } from '../config/constants';
 import { GlobalState, BillRowItem } from '../types/state';
 
@@ -28,16 +28,32 @@ export async function changeBillFieldValueApi(
         validateInfoList: [],
         billSceneDataVO: billSceneDataVO
     };
-    const res = await apiRequest(
+    const targetMenuId = inferLegalMenuId(
+        '/fssc/expenseClaim/billChangeButterflyEffect/fieldValueChange',
+        payload
+    );
+
+    const res = await callNativeHttp(
         '/fssc/expenseClaim/billChangeButterflyEffect/fieldValueChange',
         'POST',
         payload,
-        state
+        null,
+        undefined,
+        targetMenuId
+    ) || await apiRequest(
+        '/fssc/expenseClaim/billChangeButterflyEffect/fieldValueChange',
+        'POST',
+        payload,
+        state,
+        false,
+        false,
+        targetMenuId
     );
-    if (res.success && res.data && res.data.billData) {
+
+    if (res && res.success && res.data && res.data.billData) {
         return res.data.billData;
     }
-    throw new Error(res.message || `修改字段 [${fieldName}] 失败`);
+    throw new Error(res?.message || `修改字段 [${fieldName}] 失败`);
 }
 
 export async function saveBillDataApi(
@@ -47,22 +63,36 @@ export async function saveBillDataApi(
     const payload = JSON.parse(JSON.stringify(billData));
     payload.billButtons = [];
     payload.commit = false;
-    payload.operationType = 'UPDATE';
+    payload.operationType = billData.operationType || 'UPDATE';
     payload.scene = 'WRITE';
+    if (!payload.appId) payload.appId = state?.appId || 'e3d5e4787ff911e88b1997bee3518b4d';
     if (!payload.attachmentDeleteList) payload.attachmentDeleteList = [];
     if (!payload.attachmentUploadList) payload.attachmentUploadList = [];
     if (payload.attachmentDeleteSync === undefined) payload.attachmentDeleteSync = false;
 
-    const res = await apiRequest(
+    const targetMenuId = inferLegalMenuId('/fssc/bill/billdata/saveBillData', payload);
+
+    const res = await callNativeHttp(
         '/fssc/bill/billdata/saveBillData',
         'POST',
         payload,
-        state
+        null,
+        undefined,
+        targetMenuId
+    ) || await apiRequest(
+        '/fssc/bill/billdata/saveBillData',
+        'POST',
+        payload,
+        state,
+        false,
+        false,
+        targetMenuId
     );
-    if (res.success && res.data) {
+
+    if (res && res.success && res.data) {
         return res.data;
     }
-    throw new Error(res.message || '保存报销单失败');
+    throw new Error(res?.message || '保存报销单失败');
 }
 
 export async function fetchBillDataAndTemplateApi(
@@ -71,21 +101,26 @@ export async function fetchBillDataAndTemplateApi(
 ): Promise<{ billData: any; billTemplate: any }> {
     const payload = {
         billMainId: billMainId,
-        scene: 'WRITE'
+        scene: 'WRITE',
+        appId: state?.appId || 'e3d5e4787ff911e88b1997bee3518b4d'
     };
-    const res = await apiRequest(
+    const res = await callNativeHttp(
+        '/fssc/bill/billdata/getBillDataAndTemplateByBillMainId',
+        'POST',
+        payload
+    ) || await apiRequest(
         '/fssc/bill/billdata/getBillDataAndTemplateByBillMainId',
         'POST',
         payload,
         state
     );
-    if (res.success && res.data) {
+    if (res && res.success && res.data) {
         return {
             billData: res.data.billData,
             billTemplate: res.data.billDefineTemplate
         };
     }
-    throw new Error(res.message || '获取报销单数据失败');
+    throw new Error(res?.message || '获取报销单数据失败');
 }
 
 export function parseBillDataStructure(billData: any): { billRows: BillRowItem[]; billTags: Map<string, number> } {
@@ -159,20 +194,28 @@ export function parseBillDataStructure(billData: any): { billRows: BillRowItem[]
  */
 export async function deleteBillByBillMainIdsApi(
     billMainIds: string[],
-    state: GlobalState
+    state: GlobalState,
+    billDeleteScene: 'BILL' | 'BILL_EXPENSERECORD' = 'BILL'
 ): Promise<any> {
     if (!billMainIds || billMainIds.length === 0) return { success: true };
-    const payload = { billMainIds };
-    const res = await apiRequest(
+    const payload = {
+        billMainIds,
+        billDeleteScene: billDeleteScene || 'BILL' // 刚性锁定：仅删除单据，费用退回至费用记录列表
+    };
+    const res = await callNativeHttp(
+        '/fssc/bill/billdata/deleteBillByBillMainIds',
+        'POST',
+        payload
+    ) || await apiRequest(
         '/fssc/bill/billdata/deleteBillByBillMainIds',
         'POST',
         payload,
         state
     );
-    if (res.success) {
+    if (res && (res.success || res.data === 'ok')) {
         return res;
     }
-    throw new Error(res.message || '删除单据草稿失败');
+    throw new Error(res?.message || '删除单据草稿失败');
 }
 
 /**
@@ -183,22 +226,37 @@ export async function createBillDataAndTemplateByExpenseIdListApi(
     expenseRecordIds: string[],
     state: GlobalState
 ): Promise<any> {
-    if (!expenseRecordIds || expenseRecordIds.length === 0) {
-        throw new Error('未选择任何待报销费用记录');
-    }
+    const appId = state?.appId || 'e3d5e4787ff911e88b1997bee3518b4d';
     const payload = {
         billDefineId,
+        appId,
+        scene: 'WRITE',
+        applicantId: state?.applicantId || '',
+        userDefinedData: {
+            expenseRecordIds,
+            operationType: 'ADD'
+        },
         expenseRecordIds
     };
-    const res = await apiRequest(
+    const res = await callNativeHttp(
         '/fssc/expenseClaim/billData/createBillDataAndTemplateByExpenseIdList',
         'POST',
         payload,
-        state
+        null,
+        undefined,
+        LEGAL_MENU_IDS.EXPENSE_RECORD
+    ) || await apiRequest(
+        '/fssc/expenseClaim/billData/createBillDataAndTemplateByExpenseIdList',
+        'POST',
+        payload,
+        state,
+        false,
+        false,
+        LEGAL_MENU_IDS.EXPENSE_RECORD
     );
-    if (res.success && res.data) {
+    if (res && res.success && res.data) {
         return res.data;
     }
-    throw new Error(res.message || '生成报销单草稿失败');
+    throw new Error(res?.message || '生成报销单草稿失败');
 }
 

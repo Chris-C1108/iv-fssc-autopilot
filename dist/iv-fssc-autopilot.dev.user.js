@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVision FSSC Autopilot (元年云费控极速自动驾驶副驾)
 // @namespace    https://github.com/Chris-C1108/iv-fssc-autopilot
-// @version      4.52.3
+// @version      4.59.0
 // @description  元年云报销全流程超级副驾：①【发票夹 & 费用记录】全量OCR数据穿透补全(乘车时间/里程100%恢复)、自动识别通信费、自由切换分类、早晚行程智能推断、拖拽多附件；②【经费报销单页】丰富多维菜单Item(科目/项目/成本中心/向客户请款)、自动聚合备注TAG(如X2605-001)、智能检索匹配项目、蝴蝶效应引擎链式联动、一键自动持久化保存(saveBillData)并自动刷新单据视图；③【极速模式】首行蝴蝶+内存克隆+单次入库(30倍提速)。
 // @author       Chris-C1108
 // @match        https://ync37.yuanian.com/*
@@ -520,11 +520,47 @@
         }
         return cachedNativeHttp$1;
     }
+    const LEGAL_MENU_IDS = {
+        TRIP_APPLICATION: '56dcfd90a5bf11e8a1a103bb1accbe1b', // 出差申请单 (CCSQ, 0355cf627fede1653e55bb00bc610001)
+        EXPENSE_RECORD: '56dd4bb8a5bf11e8a1a1d174f439477e', // 费用记录 (expenseRecord, expenseClaim)
+        INVOICE_POOL: '11ec6dd3fd5cb161bff83bb033997150', // 发票夹 (standbyInvoice, businessapplication)
+        REIMBURSEMENT_CLAIM: '11ece08b4737d4eda79a6b404608a354' // 员工报销单 (BC: 035a50ee..., BJ: 035cd1b4...)
+    };
+    /**
+     * 依据请求 URL、请求载荷及单据定义 ID 动态推断其法定 MenuId
+     */
+    function inferLegalMenuId(url, data, explicitMenuId) {
+        // 1. 检查载荷中的单据定义 ID / Code (精确识别出差申请单与报销单)
+        const bId = data?.billDefineId || data?.billDefineCode || data?.billSceneDataVO?.billDefineId || '';
+        if (bId === '0355cf627fede1653e55bb00bc610001' || bId === 'CCSQ' || (url && /CCSQ/i.test(url))) {
+            return LEGAL_MENU_IDS.TRIP_APPLICATION;
+        }
+        if (bId === '035a50ee6d3de1653e55bb00bc610001' || bId === '035cd1b4d46de1653e55bb00bc610000' || bId === 'BC' || bId === 'BJ') {
+            return LEGAL_MENU_IDS.REIMBURSEMENT_CLAIM;
+        }
+        // 2. 检查 URL 路径特征
+        if (url) {
+            if (/expenseClaim|expenseRecord/i.test(url)) {
+                return LEGAL_MENU_IDS.EXPENSE_RECORD;
+            }
+            if (/boQuery|standbyInvoice|businessapplication/i.test(url)) {
+                return LEGAL_MENU_IDS.INVOICE_POOL;
+            }
+        }
+        // 3. 检查当前页面宿主 URL
+        if (typeof window !== 'undefined') {
+            if (/11ec6dd3fd5cb161bff83bb033997150|businessapplication/i.test(window.location.href)) {
+                return LEGAL_MENU_IDS.INVOICE_POOL;
+            }
+        }
+        return '';
+    }
     /**
      * 包装通过 YuanNian 宿主原生 HTTP / Axios 客户端发送请求 (自动具备 100% 鉴权与 eicds 动态防逆向加密签名)
      */
-    async function callNativeHttp(url, method = 'POST', data = null, win) {
+    async function callNativeHttp(url, method = 'POST', data = null, win, customHeaders, targetMenuId) {
         const isGet = method.toUpperCase() === 'GET';
+        const effectiveMenuId = targetMenuId || customHeaders?.['MenuId'] || customHeaders?.['menuid'] || inferLegalMenuId(url, data);
         // 1. 最高优先级：直接使用官方原生 Axios 实例 (支持 Promise、30s 充裕超时、100% 自动注入 eicds 签名)
         const nativeAxios = getNativeAxios(win);
         if (nativeAxios) {
@@ -534,14 +570,86 @@
                     fullUrl = '/fssc' + (fullUrl.startsWith('/') ? fullUrl : '/' + fullUrl);
                 }
             }
+            // 收集所有候选窗口，用于在请求生命周期内临时安全切换 ecs_MenuId 作用域，确保官方拦截器生成包含合法 MenuId 的 eicds 签名
+            const candidateWins = collectWindowCandidates(win);
+            const originalMenuIds = new Map();
+            if (effectiveMenuId) {
+                for (const cw of candidateWins) {
+                    try {
+                        const stor = cw.sessionStorage;
+                        if (stor) {
+                            originalMenuIds.set(stor, stor.getItem('ecs_MenuId'));
+                            stor.setItem('ecs_MenuId', effectiveMenuId);
+                        }
+                    }
+                    catch (e) { }
+                }
+            }
             try {
+                const reqHeaders = { ...(customHeaders || {}) };
+                if (effectiveMenuId) {
+                    reqHeaders['MenuId'] = effectiveMenuId;
+                    reqHeaders['menuid'] = effectiveMenuId;
+                }
+                // 嗅探并注入 appId：原生拦截器不会注入 appId，它仅在宿主初始化时写入 defaults.headers.common
+                // 当 callNativeHttp 传入自定义 headers 时，部分 Axios 版本可能导致 common defaults 被忽略
+                // 因此必须显式确保 appId 始终存在于请求 Headers 中
+                if (!reqHeaders['appId'] && !reqHeaders['appid']) {
+                    const APP_ID = 'e3d5e4787ff911e88b1997bee3518b4d';
+                    // 优先从原生 Axios defaults 嗅探真实 appId
+                    let sniffedAppId = '';
+                    try {
+                        sniffedAppId = nativeAxios?.defaults?.headers?.common?.appId
+                            || nativeAxios?.defaults?.headers?.common?.appid
+                            || '';
+                    }
+                    catch (e) { }
+                    // 次级：从 sessionStorage 嗅探
+                    if (!sniffedAppId) {
+                        for (const cw of candidateWins) {
+                            try {
+                                const val = cw.sessionStorage?.getItem('ecs_appId')
+                                    || cw.sessionStorage?.getItem('appId');
+                                if (val && val.length > 10) {
+                                    sniffedAppId = val;
+                                    break;
+                                }
+                            }
+                            catch (e) { }
+                        }
+                    }
+                    reqHeaders['appId'] = sniffedAppId || APP_ID;
+                    reqHeaders['appid'] = sniffedAppId || APP_ID;
+                }
+                // 嗅探并注入鉴权 Token (LoginToken / EcsToken / UserOrigin)
+                // 原生 Axios defaults 中通常包含这些 headers
+                if (!reqHeaders['LoginToken']) {
+                    try {
+                        const lt = nativeAxios?.defaults?.headers?.common?.LoginToken || '';
+                        if (lt)
+                            reqHeaders['LoginToken'] = lt;
+                    }
+                    catch (e) { }
+                }
+                if (!reqHeaders['EcsToken']) {
+                    try {
+                        const et = nativeAxios?.defaults?.headers?.common?.EcsToken || '';
+                        if (et)
+                            reqHeaders['EcsToken'] = et;
+                    }
+                    catch (e) { }
+                }
+                if (!reqHeaders['UserOrigin']) {
+                    reqHeaders['UserOrigin'] = (typeof window !== 'undefined' ? window.location.origin : '') || 'https://ync37.yuanian.com';
+                }
                 const resp = await nativeAxios.request({
                     url: fullUrl,
                     method: method.toUpperCase(),
                     data: isGet ? undefined : data,
                     params: isGet ? data : undefined,
                     timeout: 30000, // 放宽至 30 秒，彻底杜绝并发保存时的假死与早逝超时
-                    ignoreLoading: true
+                    ignoreLoading: true,
+                    headers: reqHeaders
                 });
                 return resp.data;
             }
@@ -557,6 +665,22 @@
                     return { success: false, message: '原生网络请求超时 (30s)，请稍后重试' };
                 }
                 return { success: false, message: err?.message || '原生网络请求异常' };
+            }
+            finally {
+                // 【核心安全守卫】：请求结束无论成功失败，必须 100% 立即还原原始 ecs_MenuId
+                if (effectiveMenuId && originalMenuIds.size > 0) {
+                    for (const [stor, origVal] of originalMenuIds.entries()) {
+                        try {
+                            if (origVal !== null) {
+                                stor.setItem('ecs_MenuId', origVal);
+                            }
+                            else {
+                                stor.removeItem('ecs_MenuId');
+                            }
+                        }
+                        catch (e) { }
+                    }
+                }
             }
         }
         // 2. 次级优先级：宿主封装客户端 nativeHttp
@@ -705,21 +829,12 @@
             state.ecsToken = bestEcsToken;
         return { loginToken: state.loginToken || bestLoginToken || '', ecsToken: state.ecsToken || bestEcsToken || '' };
     }
-    function getHeaders(state, isFormUrlEncoded = false, isMultipart = false, url) {
+    function getHeaders(state, isFormUrlEncoded = false, isMultipart = false, url, customMenuId, data) {
         const { loginToken, ecsToken } = extractLatestTokens(state);
-        // 动态精准识别菜单 ID：根据请求接口路径强优先匹配对应模块的 MenuId，杜绝跨模块 ACL 拒绝
-        let menuId = '';
-        if (url && (/expenseClaim|expenseRecord/i.test(url))) {
-            menuId = '56dd4bb8a5bf11e8a1a1d174f439477e';
-        }
-        else if (url && (/boQuery|standbyInvoice|businessapplication/i.test(url))) {
-            menuId = '11ec6dd3fd5cb161bff83bb033997150';
-        }
-        else if (typeof window !== 'undefined' && /11ec6dd3fd5cb161bff83bb033997150|businessapplication/i.test(window.location.href)) {
-            menuId = '11ec6dd3fd5cb161bff83bb033997150';
-        }
-        else {
-            menuId = state.menuId || (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('ecs_MenuId') : '') || '56dd4bb8a5bf11e8a1a1d174f439477e';
+        // 动态精准识别菜单 ID：根据请求接口路径与单据数据强优先匹配对应模块的法定 MenuId，杜绝跨模块 ACL 拒绝
+        let menuId = customMenuId || inferLegalMenuId(url, data);
+        if (!menuId) {
+            menuId = state.menuId || (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('ecs_MenuId') : '') || LEGAL_MENU_IDS.EXPENSE_RECORD;
         }
         const headers = {
             'LoginToken': loginToken,
@@ -745,7 +860,7 @@
         }
         return headers;
     }
-    async function apiRequest(url, method = 'POST', data = null, state, isFormUrlEncoded = false, isMultipart = false) {
+    async function apiRequest(url, method = 'POST', data = null, state, isFormUrlEncoded = false, isMultipart = false, customMenuId) {
         extractLatestTokens(state);
         if (!state.loginToken && !state.ecsToken) {
             throw new Error('未检测到登录 Token，请先在页面上刷新或操作以捕获 Token');
@@ -765,8 +880,22 @@
                 data.commit = false;
             }
         }
+        const targetMenuId = customMenuId || inferLegalMenuId(url, data);
+        // 若宿主环境中提取到了官方原生客户端，优先通过 callNativeHttp 发起请求以获取原生 eicds 与鉴权保护
+        const nativeAxios = getNativeAxios();
+        if (nativeAxios && !isFormUrlEncoded && !isMultipart) {
+            try {
+                const nativeRes = await callNativeHttp(url, method, data, null, undefined, targetMenuId);
+                if (nativeRes && typeof nativeRes === 'object' && ('success' in nativeRes || 'data' in nativeRes)) {
+                    return nativeRes;
+                }
+            }
+            catch (e) {
+                AutopilotLogger.warn(`[apiRequest] 原生通道调用异常，自动回退到底层通道: ${e?.message}`);
+            }
+        }
         const fullUrl = url.startsWith('http') ? url : `${state.userOrigin || 'https://ync37.yuanian.com'}${url}`;
-        const headers = getHeaders(state, isFormUrlEncoded, isMultipart, url);
+        const headers = getHeaders(state, isFormUrlEncoded, isMultipart, url, targetMenuId, data);
         let bodyStr = undefined;
         if (data) {
             if (isFormUrlEncoded || isMultipart) {
@@ -868,43 +997,48 @@
             validateInfoList: [],
             billSceneDataVO: billSceneDataVO
         };
-        const res = await apiRequest('/fssc/expenseClaim/billChangeButterflyEffect/fieldValueChange', 'POST', payload, state);
-        if (res.success && res.data && res.data.billData) {
+        const targetMenuId = inferLegalMenuId('/fssc/expenseClaim/billChangeButterflyEffect/fieldValueChange', payload);
+        const res = await callNativeHttp('/fssc/expenseClaim/billChangeButterflyEffect/fieldValueChange', 'POST', payload, null, undefined, targetMenuId) || await apiRequest('/fssc/expenseClaim/billChangeButterflyEffect/fieldValueChange', 'POST', payload, state, false, false, targetMenuId);
+        if (res && res.success && res.data && res.data.billData) {
             return res.data.billData;
         }
-        throw new Error(res.message || `修改字段 [${fieldName}] 失败`);
+        throw new Error(res?.message || `修改字段 [${fieldName}] 失败`);
     }
     async function saveBillDataApi(billData, state) {
         const payload = JSON.parse(JSON.stringify(billData));
         payload.billButtons = [];
         payload.commit = false;
-        payload.operationType = 'UPDATE';
+        payload.operationType = billData.operationType || 'UPDATE';
         payload.scene = 'WRITE';
+        if (!payload.appId)
+            payload.appId = state?.appId || 'e3d5e4787ff911e88b1997bee3518b4d';
         if (!payload.attachmentDeleteList)
             payload.attachmentDeleteList = [];
         if (!payload.attachmentUploadList)
             payload.attachmentUploadList = [];
         if (payload.attachmentDeleteSync === undefined)
             payload.attachmentDeleteSync = false;
-        const res = await apiRequest('/fssc/bill/billdata/saveBillData', 'POST', payload, state);
-        if (res.success && res.data) {
+        const targetMenuId = inferLegalMenuId('/fssc/bill/billdata/saveBillData', payload);
+        const res = await callNativeHttp('/fssc/bill/billdata/saveBillData', 'POST', payload, null, undefined, targetMenuId) || await apiRequest('/fssc/bill/billdata/saveBillData', 'POST', payload, state, false, false, targetMenuId);
+        if (res && res.success && res.data) {
             return res.data;
         }
-        throw new Error(res.message || '保存报销单失败');
+        throw new Error(res?.message || '保存报销单失败');
     }
     async function fetchBillDataAndTemplateApi(billMainId, state) {
         const payload = {
             billMainId: billMainId,
-            scene: 'WRITE'
+            scene: 'WRITE',
+            appId: state?.appId || 'e3d5e4787ff911e88b1997bee3518b4d'
         };
-        const res = await apiRequest('/fssc/bill/billdata/getBillDataAndTemplateByBillMainId', 'POST', payload, state);
-        if (res.success && res.data) {
+        const res = await callNativeHttp('/fssc/bill/billdata/getBillDataAndTemplateByBillMainId', 'POST', payload) || await apiRequest('/fssc/bill/billdata/getBillDataAndTemplateByBillMainId', 'POST', payload, state);
+        if (res && res.success && res.data) {
             return {
                 billData: res.data.billData,
                 billTemplate: res.data.billDefineTemplate
             };
         }
-        throw new Error(res.message || '获取报销单数据失败');
+        throw new Error(res?.message || '获取报销单数据失败');
     }
     function parseBillDataStructure(billData) {
         if (!billData || !billData.area || !billData.area.rowDatas)
@@ -967,32 +1101,40 @@
     /**
      * 批量删除出差申请单或报销单草稿 (仅限未提交状态)
      */
-    async function deleteBillByBillMainIdsApi(billMainIds, state) {
+    async function deleteBillByBillMainIdsApi(billMainIds, state, billDeleteScene = 'BILL') {
         if (!billMainIds || billMainIds.length === 0)
             return { success: true };
-        const payload = { billMainIds };
-        const res = await apiRequest('/fssc/bill/billdata/deleteBillByBillMainIds', 'POST', payload, state);
-        if (res.success) {
+        const payload = {
+            billMainIds,
+            billDeleteScene: billDeleteScene || 'BILL' // 刚性锁定：仅删除单据，费用退回至费用记录列表
+        };
+        const res = await callNativeHttp('/fssc/bill/billdata/deleteBillByBillMainIds', 'POST', payload) || await apiRequest('/fssc/bill/billdata/deleteBillByBillMainIds', 'POST', payload, state);
+        if (res && (res.success || res.data === 'ok')) {
             return res;
         }
-        throw new Error(res.message || '删除单据草稿失败');
+        throw new Error(res?.message || '删除单据草稿失败');
     }
     /**
      * 从未报销费用记录批量生成报销单草稿（commit: false，仅保存草稿入库，绝不提交审批）
      */
     async function createBillDataAndTemplateByExpenseIdListApi(billDefineId, expenseRecordIds, state) {
-        if (!expenseRecordIds || expenseRecordIds.length === 0) {
-            throw new Error('未选择任何待报销费用记录');
-        }
+        const appId = state?.appId || 'e3d5e4787ff911e88b1997bee3518b4d';
         const payload = {
             billDefineId,
+            appId,
+            scene: 'WRITE',
+            applicantId: state?.applicantId || '',
+            userDefinedData: {
+                expenseRecordIds,
+                operationType: 'ADD'
+            },
             expenseRecordIds
         };
-        const res = await apiRequest('/fssc/expenseClaim/billData/createBillDataAndTemplateByExpenseIdList', 'POST', payload, state);
-        if (res.success && res.data) {
+        const res = await callNativeHttp('/fssc/expenseClaim/billData/createBillDataAndTemplateByExpenseIdList', 'POST', payload, null, undefined, LEGAL_MENU_IDS.EXPENSE_RECORD) || await apiRequest('/fssc/expenseClaim/billData/createBillDataAndTemplateByExpenseIdList', 'POST', payload, state, false, false, LEGAL_MENU_IDS.EXPENSE_RECORD);
+        if (res && res.success && res.data) {
             return res.data;
         }
-        throw new Error(res.message || '生成报销单草稿失败');
+        throw new Error(res?.message || '生成报销单草稿失败');
     }
 
     // 生成 32 位唯一十六进制 ID
@@ -1013,6 +1155,27 @@
         }
         // 1. 多级环境与存储嗅探真实用户ID
         let detectedUserId = state.currentUser?.userId || state.applicantId || '';
+        // 优先检查宿主系统的 ecs_currentUser (最权威的登录用户主数据)
+        if (!detectedUserId && typeof window !== 'undefined') {
+            try {
+                const ecsUserStr = sessionStorage.getItem('ecs_currentUser') || localStorage.getItem('ecs_currentUser');
+                if (ecsUserStr) {
+                    const u = JSON.parse(ecsUserStr);
+                    if (u && u.id) {
+                        detectedUserId = u.id;
+                        if (!state.currentUser)
+                            state.currentUser = {};
+                        state.currentUser.userId = u.id;
+                        state.currentUser.userName = u.userName || u.name || '';
+                        state.currentUser.userCode = u.loginName || u.userCode || '';
+                        state.currentUser.email = u.email || '';
+                        state.applicantId = u.id;
+                        state.applicantName = u.userName || u.name || '';
+                    }
+                }
+            }
+            catch (e) { }
+        }
         // 检查 sessionStorage / localStorage
         const storageKeys = ['userId', 'loginUserId', 'applicantId', 'accountId', 'userCode'];
         for (const key of storageKeys) {
@@ -1178,8 +1341,9 @@
             };
         }
         const cleanName = (name || '').trim();
-        if (!cleanName) {
-            return { value: state.applicantId, title: { zh_CN: '当前用户' } };
+        if (!cleanName || cleanName === '当前用户' || cleanName === '当前社员' || cleanName === '当前员工' || cleanName === '出差人' || cleanName === '社员') {
+            const loginUser = await fetchLoginUserInfo(state);
+            return { value: state.applicantId, title: { zh_CN: loginUser.userName || '当前用户' } };
         }
         if (state.tripApp.personCache[cleanName]) {
             return state.tripApp.personCache[cleanName];
@@ -1188,7 +1352,7 @@
         const matchHyphen = cleanName.match(/^([^\-\(\（\[【]+)[\-]([^\)\）\]】]+)$/);
         const matchBracket = cleanName.match(/^([^\-\(\（\[【]+)[\(\（\[【]([^\)\）\]】]+)[\)\）\]】]?$/);
         const baseName = (matchHyphen ? matchHyphen[1] : (matchBracket ? matchBracket[1] : cleanName))
-            .replace(/本人|代办|当前用户/g, '')
+            .replace(/本人|代办|当前用户|当前社员|当前员工|出差人|社员/g, '')
             .trim();
         const qualifier = (matchHyphen ? matchHyphen[2] : (matchBracket ? matchBracket[2] : ''))
             .replace(/本人|代办/g, '')
@@ -1199,11 +1363,11 @@
         }
         // 检查是否为当前登录人：
         // 规则：
-        // 1. 若用户输入代词 ("本人"、"我"、工号、或直接传入 state.applicantId)，直接绑定为当前登录用户
+        // 1. 若用户输入代词 ("本人"、"我"、"当前社员"、"当前员工"、工号、或直接传入 state.applicantId)，直接绑定为当前登录用户
         // 2. 若用户输入姓名与登录人姓名一致，且【未携带冲突的限定符】(如纯输入 "陈浩")，绑定为当前登录用户
         // 3. 若用户输入明确携带了限定符 (如 "陈浩-ITS")，而登录人未携带该限定符，则绝对不可将其直接劫持为登录用户，必须进入维表消歧检索！
         const loginUser = await fetchLoginUserInfo(state);
-        const isExplicitSelf = cleanName === '本人' || cleanName === '我' || cleanName === state.applicantId;
+        const isExplicitSelf = cleanName === '本人' || cleanName === '我' || cleanName === '当前用户' || cleanName === '当前社员' || cleanName === '当前员工' || cleanName === '出差人' || cleanName === '社员' || cleanName === state.applicantId;
         const isLoginCode = Boolean(loginUser.userCode && cleanName === loginUser.userCode);
         const isLoginNameExact = Boolean(loginUser.userName &&
             (cleanName === loginUser.userName || baseName === loginUser.userName) &&
@@ -1306,10 +1470,11 @@
         catch (e) {
             AutopilotLogger.warn(`[DynamicPerson] 查询人员 [${cleanName}] 失败: ${e.message}`);
         }
-        // 安全保底：若无法在维表中匹配，但属于登录人上下文，优先采纳 state.applicantId 防止外键崩溃
+        // 安全保底：若无法在维表中匹配，优先采纳合法的 UUID state.applicantId，杜绝非 UUID 中文字符串写库崩溃
+        const isNonUuid = /[\u4e00-\u9fa5]/.test(cleanName) || cleanName.length < 15;
         const fallbackVO = {
-            value: state.applicantId || cleanName,
-            title: { zh_CN: cleanName }
+            value: (isNonUuid && state.applicantId) ? state.applicantId : (state.applicantId || cleanName),
+            title: { zh_CN: cleanName || loginUser.userName || '当前用户' }
         };
         state.tripApp.personCache[cleanName] = fallbackVO;
         return fallbackVO;
@@ -1331,9 +1496,9 @@
                 projectCache: {}
             };
         }
-        const cleanCity = (cityName || '').replace(/省|市|（.*）|\(.*\)/g, '').trim();
-        if (!cleanCity) {
-            return { value: cityName, title: { zh_CN: cityName } };
+        let cleanCity = (cityName || '').replace(/省|市|（.*）|\(.*\)/g, '').trim();
+        if (!cleanCity || cleanCity === '出发地' || cleanCity === '返回地') {
+            cleanCity = '上海';
         }
         // 默认优先使用费用记录标准城市维表 DIM_CITY
         const dimId = targetDimObjectId || '6b8ff0649ebe11e88b72df10cd5db793';
@@ -1341,6 +1506,21 @@
         if (state.tripApp.cityCache[cacheKey]) {
             return state.tripApp.cityCache[cacheKey];
         }
+        // 元年云 DIM_CITY 系统已知常用城市合法 objectId (叶子节点)，防止网络异常或维表查询未命中导致非 UUID 中文字符串写库崩溃
+        const KNOWN_CITY_OBJECT_IDS = {
+            '上海': '8da94c13de9011e9a156c7132c4fb0bc',
+            '天津': '8da861bade9011e9a156e137188c4c0a',
+            '北京': '8da861b7de9011e9a1560946114d59f3',
+            '广州': '8da94d30de9011e9a156338b8120fa26',
+            '深圳': '8da94d40de9011e9a156f7efb2c01999',
+            '杭州': '8da94c1cde9011e9a156e1858a74cb45',
+            '南京': '8da94c16de9011e9a15663737b8d0092',
+            '苏州': '8da94c17de9011e9a156037e293883a4',
+            '武汉': '8da94cc3de9011e9a156372545d9e525',
+            '成都': '8da94d76de9011e9a156fb18d451e041',
+            '重庆': '8da861bbde9011e9a1562b3c79a4dafa',
+            '大连': '8da94c03de9011e9a156b509d318e8ce'
+        };
         const tryFetch = async (queryDimId) => {
             const res = await apiRequest('/fssc/dim/dimObject/getDimObjectAccessTree', 'POST', {
                 dimObjectId: queryDimId,
@@ -1356,15 +1536,35 @@
                 isUseSecurityFormal: false
             }, state);
             if (res.success && Array.isArray(res.data) && res.data.length > 0) {
-                const match = res.data.find((item) => {
-                    const desc = item.title || item.data?.name || item.data?.description || '';
+                // 递归扁平化层级树节点（包含嵌套的 children）
+                const allNodes = [];
+                const flatten = (list) => {
+                    for (const n of list) {
+                        allNodes.push(n);
+                        if (Array.isArray(n.children) && n.children.length > 0) {
+                            flatten(n.children);
+                        }
+                    }
+                };
+                flatten(res.data);
+                const matched = allNodes.filter((item) => {
+                    const desc = item.title || item.data?.name || item.data?.description || item.name || '';
                     return desc === cleanCity || desc.includes(cleanCity) || cleanCity.includes(desc);
-                }) || res.data[0];
-                const val = match.key || match.data?.objectId || match.id || match.data?.accountId;
+                });
+                // 核心修复：多个匹配时，深度优先选择叶子节点 (例如上海父级 S00002 depth=4，叶子 L00509 depth=5)
+                if (matched.length > 1) {
+                    matched.sort((a, b) => {
+                        const depthA = a.data?.depth || (a.children?.length ? 0 : 1);
+                        const depthB = b.data?.depth || (b.children?.length ? 0 : 1);
+                        return depthB - depthA;
+                    });
+                }
+                const best = matched[0] || allNodes[0];
+                const val = best.key || best.data?.objectId || best.id || best.data?.accountId;
                 if (val) {
                     return {
                         value: val,
-                        title: { zh_CN: match.title || match.data?.name || match.data?.description || cleanCity }
+                        title: { zh_CN: best.title || best.data?.name || best.data?.description || cleanCity }
                     };
                 }
             }
@@ -1384,8 +1584,10 @@
         catch (e) {
             AutopilotLogger.warn(`[DynamicCity] 查询城市 [${cleanCity}] 异常: ${e.message}`);
         }
+        // 安全保底：绝不返回原始中文字符串作为 value (防止外键约束报错)
+        const fallbackValue = KNOWN_CITY_OBJECT_IDS[cleanCity] || KNOWN_CITY_OBJECT_IDS['上海'];
         const fallback = {
-            value: cleanCity,
+            value: fallbackValue,
             title: { zh_CN: cleanCity }
         };
         state.tripApp.cityCache[cacheKey] = fallback;
@@ -2147,6 +2349,10 @@
         }
         else {
             row.datas[fieldName].value = value;
+            if (dataType)
+                row.datas[fieldName].dataType = dataType;
+            if (dataAttribute)
+                row.datas[fieldName].dataAttribute = dataAttribute;
         }
     }
     /**
@@ -2194,24 +2400,40 @@
      */
     async function createSingleTripApplicationApi(config, state) {
         try {
+            // 0. 优先确保系统当前登录用户信息与 state.applicantId 100% 就绪
+            await fetchLoginUserInfo(state);
             // 1. 获取出行人人员对象 (动态维表解析)
             const applicantVO = await fetchPersonnelVO(config.applicantName, state);
-            // 2. 初始化分配新单草稿与单号 (SC2609xxxx)
-            const initRes = await apiRequest('/fssc/bill/billdata/getBillDataAndTemplateWrite', 'POST', {
-                billDefineId: TRIP_CONSTANTS.billDefineId,
-                appId: state.appId,
-                scene: 'WRITE',
-                applicantId: config.isProxy ? applicantVO.value : '',
-                billMainId: ' ',
-                source: 'PC'
-            }, state);
-            if (!initRes.success || !initRes.data || !initRes.data.billData) {
-                throw new Error(initRes.message || '初始化出差申请草稿模板失败');
+            let billData;
+            let isUpdate = false;
+            let billMainId = config.billMainId || '';
+            let billCode = config.billCode || '';
+            if (billMainId) {
+                // 幂等就地更新：拉取已有草稿单据骨架
+                const res = await fetchBillDataAndTemplateApi(billMainId, state);
+                billData = res.billData;
+                isUpdate = true;
+                billCode = billData?.area?.rowDatas?.[0]?.datas?.BILL_CODE?.value || billData?.billCode || billCode;
             }
-            let billData = initRes.data.billData;
+            else {
+                // 2. 初始化分配新单草稿与单号 (SC2609xxxx)
+                const initPayload = {
+                    billDefineId: TRIP_CONSTANTS.billDefineId,
+                    appId: state.appId,
+                    scene: 'WRITE',
+                    applicantId: config.isProxy ? applicantVO.value : '',
+                    billMainId: ' ',
+                    source: 'PC'
+                };
+                const initRes = await callNativeHttp('/fssc/bill/billdata/getBillDataAndTemplateWrite', 'POST', initPayload, null, undefined, LEGAL_MENU_IDS.TRIP_APPLICATION) || await apiRequest('/fssc/bill/billdata/getBillDataAndTemplateWrite', 'POST', initPayload, state, false, false, LEGAL_MENU_IDS.TRIP_APPLICATION);
+                if (!initRes || !initRes.success || !initRes.data || !initRes.data.billData) {
+                    throw new Error(initRes?.message || '初始化出差申请草稿模板失败');
+                }
+                billData = initRes.data.billData;
+                billMainId = billData.billMainId;
+                billCode = billData?.area?.rowDatas?.[0]?.datas?.BILL_CODE?.value || billData?.billCode || '';
+            }
             const mainRow = billData.area.rowDatas[0];
-            const billMainId = billData.billMainId;
-            const billCode = mainRow.datas?.BILL_CODE?.value || billData.billCode || '';
             // 3. 代办/本人申请人绑定 (单据主申请人为正社员)
             if (mainRow.datas.APPLICANT_ID) {
                 mainRow.datas.APPLICANT_ID.value = applicantVO;
@@ -2221,6 +2443,9 @@
             }
             if (mainRow.datas.USERS_ID) {
                 mainRow.datas.USERS_ID.value = [applicantVO];
+            }
+            if (mainRow.datas.CREATOR_ID && (!mainRow.datas.CREATOR_ID.value || !mainRow.datas.CREATOR_ID.value.value)) {
+                mainRow.datas.CREATOR_ID.value = applicantVO;
             }
             // 4. 回填主表基本信息与费用计算值 (含 Buffer，自适应创建字段，彻底免疫 undefined.value)
             const sDate = config.startDate.includes('T') ? config.startDate : `${config.startDate}T00:00`;
@@ -2251,9 +2476,12 @@
             ensureRowMoneyField(mainRow, 'F_TOTH', config.otherFee);
             ensureRowMoneyField(mainRow, 'F_HJTOTA', config.totalAmount);
             ensureRowMoneyField(mainRow, 'BUDGET_SUM', config.totalAmount);
+            ensureRowMoneyField(mainRow, 'SUM_AMOUNT', config.totalAmount);
             // 5. 组装旅程明细区 (T_BILL_AREA_CCS_DEF_001)
             const tripAreaId = TRIP_CONSTANTS.tripDetailAreaId;
-            const tripRowTpl = billData.areaTemplateRow?.[tripAreaId];
+            const tripRowTpl = billData.areaTemplateRow?.[tripAreaId]
+                || mainRow.subAreaDatas?.[tripAreaId]?.rowDatas?.[0]
+                || {};
             let generatedLegRows = [];
             if (tripRowTpl && config.legs && config.legs.length > 0) {
                 const cleanMain = (config.applicantName || '').replace(/（.*）|\(.*\)/g, '').trim();
@@ -2322,9 +2550,9 @@
                         title: { zh_CN: state.selectedProject.title }
                     };
                 }
-                // 核心避坑：只有定位到合法 projectVO 时才联动为【项目预算】
-                // 若未指定项目，则保留元年模板原有的合法科目（国内出張旅費），杜绝“项目必填”校验拦截
-                if (projectVO) {
+                // 核心避坑：只有定位到合法 projectVO 且为新增单据时才联动为【项目预算】
+                // 若为更新已有单据，原预算行已绑定项目，避免重复联动
+                if (projectVO && !isUpdate) {
                     billData = await changeBillFieldValueApi('DIM_ACCOUNT', '科目', BUDGET_CONSTANTS.fields.account.fieldId, TRIP_CONSTANTS.account, budgetRowId, prepareBillSceneVO(billData), state);
                     billData = await changeBillFieldValueApi('DIM_PROJECT', '项目', BUDGET_CONSTANTS.fields.project.fieldId, projectVO, budgetRowId, prepareBillSceneVO(billData), state);
                 }
@@ -2360,6 +2588,7 @@
                 if (updatedMainRow.datas.F_HJTOTA) {
                     ensureRowMoneyField(updatedMainRow, 'F_HJTOTA', config.totalAmount);
                 }
+                ensureRowMoneyField(updatedMainRow, 'SUM_AMOUNT', config.totalAmount);
             }
             // 确保旅程明细行完整持久化（防止被蝴蝶效应接口返回重置）
             if (generatedLegRows.length > 0) {
@@ -2379,20 +2608,26 @@
             const savePayload = JSON.parse(JSON.stringify(billData));
             savePayload.billButtons = [];
             savePayload.commit = false;
-            savePayload.operationType = 'ADD';
+            savePayload.operationType = isUpdate ? 'UPDATE' : 'ADD';
             savePayload.scene = 'WRITE';
-            savePayload.createNew = true;
+            savePayload.createNew = !isUpdate;
             savePayload.dataModify = true;
             savePayload.allowSave = true;
             savePayload.statusEnum = 'UNCOMMITTED';
+            if (!savePayload.appId) {
+                savePayload.appId = state?.appId || 'e3d5e4787ff911e88b1997bee3518b4d';
+            }
+            if (!savePayload.currentUserId && state.applicantId) {
+                savePayload.currentUserId = state.applicantId;
+            }
             if (!savePayload.attachmentDeleteList)
                 savePayload.attachmentDeleteList = [];
             if (!savePayload.attachmentUploadList)
                 savePayload.attachmentUploadList = [];
             if (savePayload.attachmentDeleteSync === undefined)
                 savePayload.attachmentDeleteSync = false;
-            const saveRes = await apiRequest('/fssc/bill/billdata/saveBillData', 'POST', savePayload, state);
-            if (saveRes.success) {
+            const saveRes = await callNativeHttp('/fssc/bill/billdata/saveBillData', 'POST', savePayload, null, undefined, LEGAL_MENU_IDS.TRIP_APPLICATION) || await apiRequest('/fssc/bill/billdata/saveBillData', 'POST', savePayload, state, false, false, LEGAL_MENU_IDS.TRIP_APPLICATION);
+            if (saveRes && saveRes.success) {
                 AutopilotLogger.info(`[DynamicTripApp] 成功创建出差申请草稿: ${billCode} (${config.applicantName} - ${config.destination})`);
                 return {
                     success: true,
@@ -53184,6 +53419,40 @@ td.yn-bem-cell-interactive {
     box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
 }
 
+.yn-bem-btn-bill-management {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    height: 28px;
+    border-radius: var(--coss-radius-sm);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    box-sizing: border-box;
+    outline: none;
+    border: 1px solid #3b82f6;
+    background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+    color: #1d4ed8;
+    box-shadow: var(--coss-shadow-xs);
+    transition: transform 100ms var(--coss-ease),
+                background-color 120ms var(--coss-ease),
+                border-color 120ms var(--coss-ease),
+                box-shadow 120ms var(--coss-ease);
+}
+.yn-bem-btn-bill-management:hover {
+    background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
+    border-color: #2563eb;
+    color: #1e40af;
+    box-shadow: var(--coss-shadow-sm);
+}
+.yn-bem-btn-bill-management:active:not(:disabled) {
+    transform: scale(0.98);
+}
+.yn-bem-btn-bill-management:focus-visible {
+    box-shadow: 0 0 0 2px var(--coss-bg-base), 0 0 0 4px var(--coss-ring);
+}
+
 /* ==========================================================================
    现代底部悬浮操作岛 (Floating Action Island - Linear/Stripe Grade)
    ========================================================================== */
@@ -54096,8 +54365,871 @@ td.has-save-error {
 }
 `;
 
+    function getBillManagementStyles() {
+        return `
+/* ==========================================================================
+   Bill Management Pure Table Grid Mode (High-Density Spreadsheet Layout)
+   ========================================================================== */
+
+.yn-bm-fullscreen-workspace {
+  --bm-bg: #ffffff;
+  --bm-bg-sub: #f8fafc;
+  --bm-text: #0f172a;
+  --bm-text-sec: #475569;
+  --bm-text-muted: #94a3b8;
+  --bm-border: #e2e8f0;
+  --bm-border-hover: #cbd5e1;
+  --bm-primary: #2563eb;
+  --bm-primary-hover: #1d4ed8;
+  --bm-success: #16a34a;
+  --bm-warning: #d97706;
+  --bm-error: #dc2626;
+  --bm-selected: #eff6ff;
+  --bm-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --bm-mono: ui-monospace, 'SF Mono', 'Cascadia Code', monospace;
+
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bm-bg);
+  color: var(--bm-text);
+  font-family: var(--bm-font);
+  font-size: 12px;
+  overflow: hidden;
+  position: relative;
+}
+
+/* 顶部操作条 */
+.yn-bm-workspace-topbar {
+  height: 40px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--bm-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  background: #f8fafc;
+}
+
+.yn-bm-topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.yn-bm-workspace-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+  letter-spacing: -0.2px;
+}
+.yn-bm-top-stat {
+  font-size: 11px;
+  color: var(--bm-text-sec);
+}
+.yn-bm-tag {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.yn-bm-tag--bc {
+  background: #eff6ff;
+  color: #2563eb;
+  border: 1px solid #bfdbfe;
+}
+.yn-bm-tag--bj {
+  background: #f0fdf4;
+  color: #16a34a;
+  border: 1px solid #bbf7d0;
+}
+
+/* 必填项健康度状态指示徽章 */
+.yn-bm-health-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  height: 24px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: default;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+.yn-bm-health-badge.is-warning {
+  background: #fef2f2;
+  color: #dc2626;
+  border: 1px solid #fca5a5;
+  cursor: pointer;
+}
+.yn-bm-health-badge.is-warning:hover {
+  background: #fee2e2;
+  box-shadow: 0 1px 4px rgba(220, 38, 38, 0.18);
+  transform: translateY(-0.5px);
+}
+.yn-bm-health-badge.is-ok {
+  background: #f0fdf4;
+  color: #15803d;
+  border: 1px solid #bbf7d0;
+}
+
+.yn-bm-topbar-center {
+  flex: 1;
+  max-width: 320px;
+  margin: 0 16px;
+}
+.yn-bm-search-input {
+  width: 100%;
+  height: 26px;
+  background: #ffffff;
+  border: 1px solid var(--bm-border);
+  border-radius: 4px;
+  padding: 0 8px;
+  font-size: 11px;
+  outline: none;
+}
+.yn-bm-search-input:focus {
+  border-color: var(--bm-primary);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+}
+
+.yn-bm-topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 滚动容器 */
+.yn-bm-table-scroll-wrap {
+  flex: 1;
+  overflow: auto;
+  background: #ffffff;
+}
+
+/* 主二维网格大表格 (适配 1920*1080 纯表格全景) */
+.yn-bm-spread-table {
+  width: 100%;
+  min-width: 1720px;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.yn-bm-spread-table th {
+  position: sticky;
+  top: 0;
+  background: #f1f5f9;
+  padding: 6px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #475569;
+  border-bottom: 1px solid #cbd5e1;
+  border-right: 1px solid #e2e8f0;
+  z-index: 10;
+  white-space: nowrap;
+}
+
+/* 必填星号标 */
+.yn-bm-req-star {
+  color: #ef4444;
+  font-weight: 700;
+  margin-left: 2px;
+  font-size: 12px;
+  display: inline-block;
+}
+
+.yn-bm-spread-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--bm-border);
+  border-right: 1px solid #f1f5f9;
+  vertical-align: middle;
+  font-size: 12px;
+}
+
+/* 主表行 */
+.yn-bm-master-row {
+  background: #ffffff;
+  transition: background 0.1s ease;
+}
+.yn-bm-master-row:hover {
+  background: #f8fafc;
+}
+.yn-bm-master-row.is-selected {
+  background: #eff6ff;
+}
+
+/* 展开小按钮 */
+.yn-bm-expand-btn {
+  border: none;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+  font-size: 10px;
+  padding: 2px 4px;
+  border-radius: 3px;
+  transition: transform 0.15s, color 0.15s;
+}
+.yn-bm-expand-btn:hover {
+  color: #0f172a;
+  background: #e2e8f0;
+}
+.yn-bm-expand-btn.is-open {
+  transform: rotate(90deg);
+  color: var(--bm-primary);
+}
+
+/* 单元格紧凑输入框 */
+.yn-bm-cell-input {
+  width: 100%;
+  height: 24px;
+  padding: 1px 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 3px;
+  font-family: var(--bm-font);
+  font-size: 11px;
+  color: var(--bm-text);
+  background: #ffffff;
+  box-sizing: border-box;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.yn-bm-cell-input:hover {
+  border-color: #94a3b8;
+}
+.yn-bm-cell-input:focus {
+  border-color: var(--bm-primary);
+  box-shadow: 0 0 0 1.5px rgba(37, 99, 235, 0.2);
+}
+
+/* 必填项漏填/未填高亮样式 (醒目红框与淡红底) */
+.yn-bm-cell-input.is-missing {
+  border: 1.5px solid #ef4444 !important;
+  background-color: #fef2f2 !important;
+  color: #991b1b !important;
+  box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.25) !important;
+}
+.yn-bm-cell-input.is-missing::placeholder {
+  color: #f87171 !important;
+  font-weight: 500;
+}
+.yn-bm-cell-input.is-missing:focus {
+  border-color: #dc2626 !important;
+  box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.3) !important;
+}
+
+/* AI 智能副驾已填充字段优雅微光指示 */
+.yn-bm-cell-input.is-ai-filled {
+  border-color: #818cf8 !important;
+  background-color: #f5f3ff !important;
+  box-shadow: 0 0 0 1px rgba(129, 140, 248, 0.25) !important;
+}
+.yn-bm-ai-sparkle-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 10px;
+  color: #6366f1;
+  font-weight: 700;
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  padding: 0 4px;
+  border-radius: 3px;
+  line-height: 14px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+.yn-bm-number-input {
+  font-family: var(--bm-mono);
+  font-weight: 600;
+  text-align: right;
+}
+
+/* 维表联想推荐组件 */
+.yn-bm-project-search-wrap {
+  position: relative;
+  width: 100%;
+}
+.yn-bm-project-input {
+  font-family: var(--bm-mono);
+  font-weight: 500;
+  color: #1d4ed8;
+}
+.yn-bm-project-dropdown {
+  position: absolute;
+  top: 28px;
+  left: 0;
+  width: 320px;
+  max-height: 220px;
+  overflow-y: auto;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  z-index: 100;
+  padding: 4px;
+}
+.yn-bm-dropdown-item {
+  padding: 5px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.yn-bm-dropdown-item:hover {
+  background: #eff6ff;
+}
+.yn-bm-project-code {
+  font-family: var(--bm-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: #1d4ed8;
+}
+.yn-bm-project-name {
+  font-size: 11px;
+  color: #475569;
+}
+.yn-bm-dropdown-loading,
+.yn-bm-dropdown-empty {
+  padding: 10px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--bm-text-muted);
+}
+
+/* Toggle Switch (微动效) */
+.yn-bm-toggle-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+}
+.yn-bm-toggle-input {
+  display: none;
+}
+.yn-bm-toggle-track {
+  width: 28px;
+  height: 16px;
+  background: #cbd5e1;
+  border-radius: 8px;
+  position: relative;
+  transition: background 0.15s ease;
+}
+.yn-bm-toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  background: #ffffff;
+  border-radius: 50%;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+  transition: transform 0.15s ease;
+}
+.yn-bm-toggle-input:checked + .yn-bm-toggle-track {
+  background: var(--bm-primary);
+}
+.yn-bm-toggle-input:checked + .yn-bm-toggle-track .yn-bm-toggle-thumb {
+  transform: translateX(12px);
+}
+.yn-bm-toggle-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #64748b;
+}
+.yn-bm-toggle-label.is-active {
+  color: var(--bm-primary);
+}
+
+/* 单元格特殊样式 */
+.yn-bm-budget-total-col {
+  font-family: var(--bm-mono);
+  font-size: 12px;
+  font-weight: 700;
+  color: #2563eb;
+}
+.yn-bm-budget-total-col.is-budget-insufficient {
+  color: #dc2626 !important;
+  background: #fef2f2 !important;
+  border: 1px dashed #f87171 !important;
+  padding: 2px 5px !important;
+  border-radius: 3px;
+  display: inline-block;
+}
+.yn-bm-currency-val {
+  font-family: var(--bm-mono);
+  font-size: 12px;
+  font-weight: 700;
+  color: #0f172a;
+}
+.yn-bm-report-pill {
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #475569;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.yn-bm-report-pill:hover {
+  background: #eff6ff;
+  border-color: #93c5fd;
+  color: #1d4ed8;
+}
+.yn-bm-report-pill.has-content {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+  color: #15803d;
+}
+.yn-bm-muted {
+  color: var(--bm-text-muted);
+  font-size: 11px;
+}
+
+/* 状态徽章 */
+.yn-bm-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+}
+.yn-bm-badge--draft { background: #f1f5f9; color: #475569; border: 1px solid #e2e8f0; }
+.yn-bm-badge--saving { background: #eff6ff; color: #2563eb; border: 1px solid #bfdbfe; }
+.yn-bm-badge--saved { background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; }
+.yn-bm-badge--error { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
+.yn-bm-badge-pulse {
+  width: 5px; height: 5px; background: #2563eb; border-radius: 50%;
+  animation: ynBmPulse 1s infinite;
+}
+@keyframes ynBmPulse {
+  0% { transform: scale(0.8); opacity: 0.5; }
+  50% { transform: scale(1.2); opacity: 1; }
+  100% { transform: scale(0.8); opacity: 0.5; }
+}
+
+/* ==========================================================================
+   展开区：3 张纯二维数据子表格 (Pure Table Sub-Grids)
+   ========================================================================== */
+
+.yn-bm-subtables-row {
+  background: #f8fafc;
+}
+.yn-bm-subtables-cell {
+  padding: 8px 14px 14px 28px !important;
+  border-bottom: 2px solid #cbd5e1 !important;
+}
+.yn-bm-subtables-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.yn-bm-subgrid-box {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.yn-bm-subgrid-header {
+  height: 30px;
+  padding: 0 10px;
+  background: #f1f5f9;
+  border-bottom: 1px solid #cbd5e1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.yn-bm-subgrid-header .title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #1e293b;
+}
+.yn-bm-subgrid-header .hint {
+  font-size: 10px;
+  color: #64748b;
+  margin-left: 8px;
+  flex: 1;
+}
+
+.yn-bm-btn-table-action {
+  border: none;
+  background: #2563eb;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.yn-bm-btn-table-action:hover {
+  background: #1d4ed8;
+}
+
+.yn-bm-detail-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.yn-bm-detail-table th {
+  background: #f8fafc;
+  padding: 5px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #475569;
+  border-bottom: 1px solid #cbd5e1;
+  border-right: 1px solid #e2e8f0;
+}
+.yn-bm-detail-table td {
+  padding: 4px 8px;
+  border-bottom: 1px solid #e2e8f0;
+  border-right: 1px solid #f1f5f9;
+  font-size: 11px;
+  vertical-align: middle;
+}
+
+.yn-bm-exp-type-badge {
+  display: inline-block;
+  padding: 2px 6px;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 3px;
+  font-weight: 600;
+  color: #334155;
+}
+
+.yn-bm-currency-cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.yn-bm-currency-cell .prefix {
+  font-family: var(--bm-mono);
+  color: #94a3b8;
+  font-weight: 600;
+}
+.yn-bm-budget-total-val {
+  font-family: var(--bm-mono);
+  font-size: 14px;
+  font-weight: 800;
+  color: #2563eb;
+}
+
+.diff-pill {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+.diff-ok {
+  background: #f0fdf4;
+  color: #15803d;
+  border: 1px solid #bbf7d0;
+}
+.diff-warn {
+  background: #fef2f2;
+  color: #dc2626;
+  border: 1px solid #fecaca;
+}
+
+.yn-bm-btn-split-row {
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #2563eb;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.yn-bm-btn-split-row:hover {
+  background: #eff6ff;
+  border-color: #93c5fd;
+}
+.yn-bm-btn-delete-row {
+  border: none;
+  background: transparent;
+  color: #ef4444;
+  font-size: 11px;
+  padding: 2px 5px;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.yn-bm-btn-delete-row:hover {
+  background: #fee2e2;
+}
+
+/* ==========================================================================
+   出差总结报告抽屉 (Markdown)
+   ========================================================================== */
+
+.yn-bm-drawer-mask {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(4px);
+  z-index: 1000000;
+  display: flex;
+  justify-content: flex-end;
+}
+.yn-bm-drawer-content {
+  width: 580px;
+  max-width: 90vw;
+  height: 100vh;
+  background: #ffffff;
+  display: flex;
+  flex-direction: column;
+  box-shadow: -8px 0 32px rgba(0, 0, 0, 0.15);
+}
+.yn-bm-drawer-header {
+  height: 52px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--bm-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.yn-bm-drawer-header .title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+}
+.yn-bm-drawer-header .subtitle {
+  font-size: 11px;
+  color: #64748b;
+  display: block;
+}
+.yn-bm-btn--ai {
+  background: #0f172a;
+  color: #ffffff;
+  border: none;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.yn-bm-btn--ai .sparkle {
+  color: #60a5fa;
+}
+.yn-bm-drawer-body {
+  flex: 1;
+  padding: 14px 16px;
+  overflow: hidden;
+  display: flex;
+}
+.yn-bm-report-textarea {
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--bm-border);
+  border-radius: 4px;
+  padding: 12px;
+  font-family: var(--bm-font);
+  font-size: 12px;
+  line-height: 1.6;
+  outline: none;
+  resize: none;
+}
+.yn-bm-report-textarea:focus {
+  border-color: var(--bm-primary);
+}
+.yn-bm-drawer-footer {
+  height: 48px;
+  padding: 0 16px;
+  border-top: 1px solid var(--bm-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #f8fafc;
+}
+.yn-bm-drawer-footer .count {
+  font-size: 11px;
+  color: #64748b;
+}
+
+/* ==========================================================================
+   底部常驻操作岛
+   ========================================================================== */
+
+.yn-bm-workspace-footer {
+  height: 46px;
+  padding: 0 14px;
+  border-top: 1px solid var(--bm-border);
+  background: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.03);
+  z-index: 20;
+}
+.yn-bm-footer-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.yn-bm-footer-summary .pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  color: #475569;
+}
+.yn-bm-footer-summary .pill strong {
+  font-family: var(--bm-mono);
+  color: #0f172a;
+  margin: 0 2px;
+}
+.yn-bm-footer-summary .pill-primary {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1d4ed8;
+}
+.yn-bm-footer-summary .pill-primary strong { color: #1e40af; }
+.yn-bm-footer-summary .pill-sc {
+  background: #fefce8;
+  border-color: #fef08a;
+  color: #a16207;
+}
+.yn-bm-footer-summary .pill-sc strong { color: #854d0e; }
+
+.yn-bm-footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.yn-bm-progress-msg {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--bm-primary);
+}
+.yn-bm-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  outline: none;
+  font-family: var(--bm-font);
+  border: 1px solid transparent;
+}
+.yn-bm-btn--primary {
+  background: var(--bm-primary);
+  color: #ffffff;
+}
+.yn-bm-btn--primary:hover:not(:disabled) {
+  background: var(--bm-primary-hover);
+}
+.yn-bm-btn--primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.yn-bm-btn--secondary {
+  background: #ffffff;
+  color: #334155;
+  border-color: #cbd5e1;
+}
+.yn-bm-btn--secondary:hover {
+  background: #f1f5f9;
+}
+.yn-bm-btn--sm {
+  height: 24px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+.yn-bm-btn--lg {
+  height: 30px;
+  padding: 0 14px;
+  font-size: 12px;
+}
+.yn-bm-btn--ai-hero {
+  background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%) !important;
+  color: #ffffff !important;
+  border: none !important;
+  box-shadow: 0 2px 6px rgba(79, 70, 229, 0.28);
+  transition: all 0.15s ease;
+  font-weight: 700;
+}
+.yn-bm-btn--ai-hero:hover {
+  background: linear-gradient(135deg, #4338ca 0%, #6d28d9 100%) !important;
+  box-shadow: 0 4px 12px rgba(79, 70, 229, 0.4);
+  transform: translateY(-1px);
+}
+.yn-bm-btn--ai-hero:active {
+  transform: translateY(0);
+}
+
+/* 空状态 */
+.yn-bm-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 80px 20px;
+}
+.yn-bm-empty .icon {
+  font-size: 32px;
+  margin-bottom: 8px;
+}
+.yn-bm-empty .text {
+  font-size: 13px;
+  font-weight: 700;
+  color: #334155;
+}
+.yn-bm-empty .sub {
+  font-size: 11px;
+  color: #94a3b8;
+  margin-top: 4px;
+}
+
+/* 顶栏 Tab 按钮 */
+.yn-bem-nav-tabs {
+  display: inline-flex;
+  align-items: center;
+  background: #e2e8f0;
+  padding: 2px;
+  border-radius: 4px;
+  gap: 2px;
+}
+.yn-bem-tab-btn {
+  border: none;
+  background: transparent;
+  padding: 3px 10px;
+  height: 26px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #475569;
+  cursor: pointer;
+}
+.yn-bem-tab-btn:hover {
+  color: #0f172a;
+}
+.yn-bem-tab-btn.is-active {
+  background: #ffffff;
+  color: #0f172a;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.08);
+}
+  `;
+    }
+
     const MODAL_STYLES = `
     ${BATCH_EDIT_EXPENSE_STYLES}
+    ${getBillManagementStyles()}
 
     /* 主悬浮按钮 */
     #yn-batch-helper-btn {
@@ -60760,6 +61892,25 @@ td.has-save-error {
             if (capturedAuthHeaders['v'])
                 st.v = capturedAuthHeaders['v'];
         }
+        if (!st.applicantId && typeof window !== 'undefined') {
+            try {
+                const uStr = window.sessionStorage?.getItem('ecs_currentUser') || window.localStorage?.getItem('ecs_currentUser');
+                if (uStr) {
+                    const u = JSON.parse(uStr);
+                    if (u && u.id) {
+                        st.applicantId = u.id;
+                        if (!st.currentUser)
+                            st.currentUser = {};
+                        st.currentUser.userId = u.id;
+                        st.currentUser.userName = u.userName || u.name || '';
+                        st.currentUser.userCode = u.loginName || u.userCode || '';
+                        st.currentUser.email = u.email || '';
+                        st.applicantName = u.userName || u.name || '';
+                    }
+                }
+            }
+            catch (e) { }
+        }
         return st;
     }
     // 全局发票底层 OCR 详情缓存 (通过 invoiceDataId / invoiceNo 索引)
@@ -62706,6 +63857,59 @@ td.has-save-error {
             };
         }
     }
+    /**
+     * 直接调用大模型获取自然语言 / Markdown 文本响应 (用于报告撰写、对话问答等)
+     */
+    async function callDirectLlmText(systemPrompt, userPrompt, signal, timeoutMs = 180000) {
+        const config = getLlmConfig();
+        if (!config.apiKey || !config.endpoint) {
+            return { success: false, error: '未配置大模型 API Key 或端点' };
+        }
+        const url = normalizeEndpoint(config.endpoint);
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        const activeSignal = controller.signal;
+        try {
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${config.apiKey.trim()}`
+                },
+                body: JSON.stringify({
+                    model: config.model.trim(),
+                    messages: [
+                        { role: 'system', content: systemPrompt },
+                        { role: 'user', content: userPrompt }
+                    ],
+                    temperature: 0.3
+                }),
+                signal: activeSignal
+            });
+            clearTimeout(timeoutId);
+            if (!res.ok) {
+                const errText = await res.text();
+                return {
+                    success: false,
+                    error: extractCleanErrorMessage(errText, res.status)
+                };
+            }
+            const data = await res.json();
+            const content = data.choices?.[0]?.message?.content?.trim() || '';
+            // 过滤思维链标签 (如 <think>...</think> 或 <thought>...</thought>)
+            const cleanContent = content.replace(/<(?:think|thought)>[\s\S]*?<\/(?:think|thought)>/gi, '').trim();
+            return { success: true, text: cleanContent };
+        }
+        catch (err) {
+            clearTimeout(timeoutId);
+            AutopilotLogger.warn(`[DirectLLMText] 调用大模型失败: ${err?.message || err}`);
+            const timeoutSec = Math.round(timeoutMs / 1000);
+            return {
+                success: false,
+                error: err.name === 'AbortError' ? `大模型请求超时 (超过 ${timeoutSec} 秒未响应)` : (err.message || '大模型请求异常')
+            };
+        }
+    }
 
     /**
      * inferenceService.ts — 推断流水线服务
@@ -63953,7 +65157,7 @@ JSON 输出格式：
     /**
      * 4. AssistantThread: 对话流与空白欢迎态组件
      */
-    const AssistantThread = ({ messages, employeeName, onSuggestionClick, onImagePreview, onApplyTripPlans, isExecuting }) => {
+    const AssistantThread = ({ messages, employeeName, onSuggestionClick, onImagePreview, onApplyTripPlans, onApplyTravelReports, isExecuting }) => {
         const viewportRef = reactExports.useRef(null);
         reactExports.useEffect(() => {
             if (viewportRef.current) {
@@ -63962,7 +65166,7 @@ JSON 输出格式：
         }, [messages]);
         const shortName = employeeName ? employeeName.slice(0, 2) : '社员';
         if (messages.length === 0) {
-            return (jsxRuntimeExports.jsx("div", { className: "aui-thread-viewport", ref: viewportRef, children: jsxRuntimeExports.jsxs("div", { className: "aui-empty-state", children: [jsxRuntimeExports.jsx("div", { className: "aui-sparkle-logo", children: jsxRuntimeExports.jsx("span", { className: "sparkle-char", children: "\u2726" }) }), jsxRuntimeExports.jsxs("div", { className: "aui-empty-title", children: ["Ask away, ", shortName, "!"] }), jsxRuntimeExports.jsx("div", { className: "aui-empty-subtitle", children: "\u5143\u5E74\u4E91\u8D39\u63A7\u6781\u901F\u81EA\u52A8\u9A7E\u9A76\u526F\u9A7E\u5DF2\u5C31\u7EEA\u3002\u652F\u6301\u7C98\u8D34\u6392\u671F\u3001\u667A\u80FD\u5BF9\u8D26\u3001\u63D0\u53D6\u53D1\u7968\u4E13\u5C5E\u5FC5\u586B\u9879\u4E0E\u4E00\u952E\u6781\u901F\u5EFA\u5355\u3002" }), jsxRuntimeExports.jsxs("div", { className: "aui-suggestions-grid", children: [jsxRuntimeExports.jsxs("div", { className: "aui-suggestion-card", onClick: () => onSuggestionClick?.('infer'), children: [jsxRuntimeExports.jsx("span", { className: "aui-suggestion-icon", children: "\uD83D\uDD2E" }), jsxRuntimeExports.jsxs("div", { className: "aui-suggestion-text", children: [jsxRuntimeExports.jsx("span", { className: "title", children: "\u667A\u80FD\u63A8\u65AD\u5DF2\u9009\u8D39\u7528\u5FC5\u586B\u9879" }), jsxRuntimeExports.jsx("span", { className: "desc", children: "\u57FA\u4E8E\u53D1\u7968 OCR \u4E0E\u7968\u636E\u94FE\u81EA\u52A8\u63A8\u5BFC\u4EA4\u901A\u4E0E\u4F4F\u5BBF\u5B57\u6BB5" })] })] }), jsxRuntimeExports.jsxs("div", { className: "aui-suggestion-card", onClick: () => onSuggestionClick?.('itinerary'), children: [jsxRuntimeExports.jsx("span", { className: "aui-suggestion-icon", children: "\uD83D\uDCCB" }), jsxRuntimeExports.jsxs("div", { className: "aui-suggestion-text", children: [jsxRuntimeExports.jsx("span", { className: "title", children: "\u7C98\u8D34\u6392\u671F\u89C4\u5212 Trip \u884C\u7A0B" }), jsxRuntimeExports.jsx("span", { className: "desc", children: "\u7C98\u8D34\u65E5\u7A0B\u8868\u683C\u6216\u5907\u5FD8\uFF0C\u7531\u5927\u6A21\u578B\u6DF1\u5EA6\u63A8\u7406\u89C4\u5212 Trip \u533A\u95F4" })] })] }), jsxRuntimeExports.jsxs("div", { className: "aui-suggestion-card", onClick: () => onSuggestionClick?.('autopilot-plan'), children: [jsxRuntimeExports.jsx("span", { className: "aui-suggestion-icon", children: "\u2728" }), jsxRuntimeExports.jsxs("div", { className: "aui-suggestion-text", children: [jsxRuntimeExports.jsx("span", { className: "title", children: "\u5168\u6D41\u7A0B\u667A\u80FD\u89C4\u5212 (\u884C\u7A0B\u4E0E\u65E5\u5E38)" }), jsxRuntimeExports.jsx("span", { className: "desc", children: "\u4E00\u952E\u805A\u7C7B\u51FA\u5DEE\u5F80\u8FD4 Trip \u4E0E\u65E5\u5E38\u529E\u516C\u8D39\u7528" })] })] }), jsxRuntimeExports.jsxs("div", { className: "aui-suggestion-card", onClick: () => onSuggestionClick?.('dashboard'), children: [jsxRuntimeExports.jsx("span", { className: "aui-suggestion-icon", children: "\uD83D\uDE80" }), jsxRuntimeExports.jsxs("div", { className: "aui-suggestion-text", children: [jsxRuntimeExports.jsx("span", { className: "title", children: "\u51B3\u7B56\u590D\u6838\u4E0E\u6781\u901F\u5EFA\u5355 (HITL)" }), jsxRuntimeExports.jsx("span", { className: "desc", children: "\u5168\u666F\u51B3\u7B56\u770B\u677F\uFF0C\u590D\u6838\u7533\u8BF7\u5355 (SC) \u4E0E\u62A5\u9500\u5355 (BC/BJ)" })] })] })] })] }) }));
+            return (jsxRuntimeExports.jsx("div", { className: "aui-thread-viewport", ref: viewportRef, children: jsxRuntimeExports.jsxs("div", { className: "aui-empty-state", children: [jsxRuntimeExports.jsx("div", { className: "aui-sparkle-logo", children: jsxRuntimeExports.jsx("span", { className: "sparkle-char", children: "\u2726" }) }), jsxRuntimeExports.jsxs("div", { className: "aui-empty-title", children: ["Ask away, ", shortName, "!"] }), jsxRuntimeExports.jsx("div", { className: "aui-empty-subtitle", children: "\u5143\u5E74\u4E91\u8D39\u63A7\u6781\u901F\u81EA\u52A8\u9A7E\u9A76\u526F\u9A7E\u5DF2\u5C31\u7EEA\u3002\u652F\u6301\u7C98\u8D34\u6392\u671F\u3001\u667A\u80FD\u5BF9\u8D26\u3001\u63D0\u53D6\u53D1\u7968\u4E13\u5C5E\u5FC5\u586B\u9879\u4E0E\u4E00\u952E\u6781\u901F\u5EFA\u5355\u3002" }), jsxRuntimeExports.jsxs("div", { className: "aui-suggestions-grid", children: [jsxRuntimeExports.jsxs("div", { className: "aui-suggestion-card", onClick: () => onSuggestionClick?.('infer'), children: [jsxRuntimeExports.jsx("span", { className: "aui-suggestion-icon", children: "\uD83D\uDD2E" }), jsxRuntimeExports.jsxs("div", { className: "aui-suggestion-text", children: [jsxRuntimeExports.jsx("span", { className: "title", children: "\u667A\u80FD\u63A8\u65AD\u5DF2\u9009\u8D39\u7528\u5FC5\u586B\u9879" }), jsxRuntimeExports.jsx("span", { className: "desc", children: "\u57FA\u4E8E\u53D1\u7968 OCR \u4E0E\u7968\u636E\u94FE\u81EA\u52A8\u63A8\u5BFC\u4EA4\u901A\u4E0E\u4F4F\u5BBF\u5B57\u6BB5" })] })] }), jsxRuntimeExports.jsxs("div", { className: "aui-suggestion-card", onClick: () => onSuggestionClick?.('itinerary'), children: [jsxRuntimeExports.jsx("span", { className: "aui-suggestion-icon", children: "\uD83D\uDCCB" }), jsxRuntimeExports.jsxs("div", { className: "aui-suggestion-text", children: [jsxRuntimeExports.jsx("span", { className: "title", children: "\u7C98\u8D34\u6392\u671F\u89C4\u5212 Trip \u884C\u7A0B" }), jsxRuntimeExports.jsx("span", { className: "desc", children: "\u7C98\u8D34\u65E5\u7A0B\u8868\u683C\u6216\u5907\u5FD8\uFF0C\u7531\u5927\u6A21\u578B\u6DF1\u5EA6\u63A8\u7406\u89C4\u5212 Trip \u533A\u95F4" })] })] }), jsxRuntimeExports.jsxs("div", { className: "aui-suggestion-card", onClick: () => onSuggestionClick?.('autopilot-plan'), children: [jsxRuntimeExports.jsx("span", { className: "aui-suggestion-icon", children: "\u2728" }), jsxRuntimeExports.jsxs("div", { className: "aui-suggestion-text", children: [jsxRuntimeExports.jsx("span", { className: "title", children: "\u5168\u6D41\u7A0B\u667A\u80FD\u89C4\u5212 (\u884C\u7A0B\u4E0E\u65E5\u5E38)" }), jsxRuntimeExports.jsx("span", { className: "desc", children: "\u4E00\u952E\u805A\u7C7B\u51FA\u5DEE\u5F80\u8FD4 Trip \u4E0E\u65E5\u5E38\u529E\u516C\u8D39\u7528" })] })] }), jsxRuntimeExports.jsxs("div", { className: "aui-suggestion-card", onClick: () => onSuggestionClick?.('dashboard'), children: [jsxRuntimeExports.jsx("span", { className: "aui-suggestion-icon", children: "\uD83D\uDE80" }), jsxRuntimeExports.jsxs("div", { className: "aui-suggestion-text", children: [jsxRuntimeExports.jsx("span", { className: "title", children: "\u62A5\u9500\u5355\u7BA1\u7406\u770B\u677F" }), jsxRuntimeExports.jsx("span", { className: "desc", children: "\u4EE5\u62A5\u9500\u5355\u4E3A\u6761\u76EE\uFF0C\u7EDF\u4E00\u7BA1\u7406\u7533\u8BF7\u5355 (SC) \u4E0E\u62A5\u9500\u5355 (BC/BJ)" })] })] })] })] }) }));
         }
         return (jsxRuntimeExports.jsx("div", { className: "aui-thread-viewport", ref: viewportRef, children: messages.map((msg) => {
                 const isUser = msg.role === 'user';
@@ -63971,7 +65175,7 @@ JSON 输出格式：
                                     if (att.type === 'image' && att.dataUrl && onImagePreview) {
                                         onImagePreview(att.dataUrl);
                                     }
-                                }, title: att.name, children: [jsxRuntimeExports.jsx("span", { children: att.type === 'image' ? '🖼️' : '📄' }), jsxRuntimeExports.jsx("span", { style: { maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: att.name })] }, att.id))) })), isUser ? (jsxRuntimeExports.jsx("div", { className: "aui-bubble-user", children: msg.text })) : (jsxRuntimeExports.jsxs("div", { className: "aui-bubble-assistant", children: [msg.thinking && (jsxRuntimeExports.jsx(ThinkingAccordion, { thinking: msg.thinking })), msg.toolCalls && msg.toolCalls.length > 0 && (jsxRuntimeExports.jsx("div", { style: { display: 'flex', flexDirection: 'column', gap: '6px' }, children: msg.toolCalls.map((tool) => (jsxRuntimeExports.jsx(ToolCallCard, { toolCall: tool }, tool.id))) })), msg.text && (jsxRuntimeExports.jsx(MarkdownContent, { content: msg.text, isStreaming: msg.isStreaming })), msg.confirmationAction && msg.confirmationAction.type === 'APPLY_TRIP_PLANS' && (jsxRuntimeExports.jsxs("div", { className: `aui-confirmation-card ${msg.confirmationAction.applied ? 'is-applied' : ''}`, children: [jsxRuntimeExports.jsxs("div", { className: "aui-confirmation-header", children: [jsxRuntimeExports.jsxs("div", { className: "aui-confirmation-title", children: [jsxRuntimeExports.jsx("span", { className: "aui-confirmation-icon", children: msg.confirmationAction.applied ? '✅' : '📋' }), jsxRuntimeExports.jsx("span", { className: "aui-confirmation-title-text", children: msg.confirmationAction.applied ? '出差排期规划已生效' : '待确认：应用出差排期至表格 (HITL)' })] }), jsxRuntimeExports.jsxs("span", { className: "aui-confirmation-badge", children: [msg.confirmationAction.trips.length, " \u8F6E Trip"] })] }), jsxRuntimeExports.jsx("div", { className: "aui-confirmation-desc", children: msg.confirmationAction.applied ? (jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: ["\u5DF2\u5C06 AI \u89C4\u5212\u7684 ", jsxRuntimeExports.jsx("strong", { children: msg.confirmationAction.trips.length }), " \u8F6E\u51FA\u5DEE\u5F80\u8FD4 Trip \u5E94\u7528\u81F3\u8D39\u7528\u660E\u7EC6\u8868\u3002", msg.confirmationAction.appliedTime ? `(确认时间: ${msg.confirmationAction.appliedTime})` : ''] })) : (jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: ["AI \u5DF2\u5B8C\u6210\u6392\u671F\u6DF1\u5EA6\u8BA4\u77E5\u89E3\u6790\u5E76\u8BC6\u522B ", jsxRuntimeExports.jsx("strong", { children: msg.confirmationAction.trips.length }), " \u8F6E\u5F80\u8FD4\u95ED\u73AF\u3002\u8BF7\u590D\u6838\u4E0A\u65B9\u6392\u671F\u63A8\u65AD\u8868\u683C\uFF0C\u786E\u8BA4\u65E0\u8BEF\u540E\u70B9\u51FB\u4E0B\u65B9\u6309\u94AE\u5E94\u7528\u5230\u5F53\u524D\u8868\u683C\u5E76\u81EA\u52A8\u5BF9\u9F50\u53D1\u7968\u5FC5\u586B\u9879\u3002"] })) }), !msg.confirmationAction.applied ? (jsxRuntimeExports.jsx("div", { className: "aui-confirmation-actions", children: jsxRuntimeExports.jsxs("button", { type: "button", className: "aui-confirmation-btn-primary", disabled: isExecuting, onClick: () => onApplyTripPlans?.(msg.id, msg.confirmationAction), children: ["\u2713 \u786E\u8BA4\u5E94\u7528\u5230\u8868\u683C\u5E76\u5BF9\u9F50\u5B57\u6BB5 (", msg.confirmationAction.trips.length, " \u8F6E Trip)"] }) })) : (jsxRuntimeExports.jsx("div", { className: "aui-confirmation-applied-note", children: jsxRuntimeExports.jsx("span", { children: "\u2713 \u8868\u683C\u5DF2\u6309\u6B64\u6392\u671F\u5B8C\u6210\u65F6\u7A7A\u5206\u7EC4" }) }))] }))] }))] }, msg.id));
+                                }, title: att.name, children: [jsxRuntimeExports.jsx("span", { children: att.type === 'image' ? '🖼️' : '📄' }), jsxRuntimeExports.jsx("span", { style: { maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: att.name })] }, att.id))) })), isUser ? (jsxRuntimeExports.jsx("div", { className: "aui-bubble-user", children: msg.text })) : (jsxRuntimeExports.jsxs("div", { className: "aui-bubble-assistant", children: [msg.thinking && (jsxRuntimeExports.jsx(ThinkingAccordion, { thinking: msg.thinking })), msg.toolCalls && msg.toolCalls.length > 0 && (jsxRuntimeExports.jsx("div", { style: { display: 'flex', flexDirection: 'column', gap: '6px' }, children: msg.toolCalls.map((tool) => (jsxRuntimeExports.jsx(ToolCallCard, { toolCall: tool }, tool.id))) })), msg.text && (jsxRuntimeExports.jsx(MarkdownContent, { content: msg.text, isStreaming: msg.isStreaming })), msg.confirmationAction && msg.confirmationAction.type === 'APPLY_TRIP_PLANS' && (jsxRuntimeExports.jsxs("div", { className: `aui-confirmation-card ${msg.confirmationAction.applied ? 'is-applied' : ''}`, children: [jsxRuntimeExports.jsxs("div", { className: "aui-confirmation-header", children: [jsxRuntimeExports.jsxs("div", { className: "aui-confirmation-title", children: [jsxRuntimeExports.jsx("span", { className: "aui-confirmation-icon", children: msg.confirmationAction.applied ? '✅' : '📋' }), jsxRuntimeExports.jsx("span", { className: "aui-confirmation-title-text", children: msg.confirmationAction.applied ? '出差排期规划已生效' : '待确认：应用出差排期至表格 (HITL)' })] }), jsxRuntimeExports.jsxs("span", { className: "aui-confirmation-badge", children: [msg.confirmationAction.trips.length, " \u8F6E Trip"] })] }), jsxRuntimeExports.jsx("div", { className: "aui-confirmation-desc", children: msg.confirmationAction.applied ? (jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: ["\u5DF2\u5C06 AI \u89C4\u5212\u7684 ", jsxRuntimeExports.jsx("strong", { children: msg.confirmationAction.trips.length }), " \u8F6E\u51FA\u5DEE\u5F80\u8FD4 Trip \u5E94\u7528\u81F3\u8D39\u7528\u660E\u7EC6\u8868\u3002", msg.confirmationAction.appliedTime ? `(确认时间: ${msg.confirmationAction.appliedTime})` : ''] })) : (jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: ["AI \u5DF2\u5B8C\u6210\u6392\u671F\u6DF1\u5EA6\u8BA4\u77E5\u89E3\u6790\u5E76\u8BC6\u522B ", jsxRuntimeExports.jsx("strong", { children: msg.confirmationAction.trips.length }), " \u8F6E\u5F80\u8FD4\u95ED\u73AF\u3002\u8BF7\u590D\u6838\u4E0A\u65B9\u6392\u671F\u63A8\u65AD\u8868\u683C\uFF0C\u786E\u8BA4\u65E0\u8BEF\u540E\u70B9\u51FB\u4E0B\u65B9\u6309\u94AE\u5E94\u7528\u5230\u5F53\u524D\u8868\u683C\u5E76\u81EA\u52A8\u5BF9\u9F50\u53D1\u7968\u5FC5\u586B\u9879\u3002"] })) }), !msg.confirmationAction.applied ? (jsxRuntimeExports.jsx("div", { className: "aui-confirmation-actions", children: jsxRuntimeExports.jsxs("button", { type: "button", className: "aui-confirmation-btn-primary", disabled: isExecuting, onClick: () => onApplyTripPlans?.(msg.id, msg.confirmationAction), children: ["\u2713 \u786E\u8BA4\u5E94\u7528\u5230\u8868\u683C\u5E76\u5BF9\u9F50\u5B57\u6BB5 (", msg.confirmationAction.trips.length, " \u8F6E Trip)"] }) })) : (jsxRuntimeExports.jsx("div", { className: "aui-confirmation-applied-note", children: jsxRuntimeExports.jsx("span", { children: "\u2713 \u8868\u683C\u5DF2\u6309\u6B64\u6392\u671F\u5B8C\u6210\u65F6\u7A7A\u5206\u7EC4" }) }))] })), msg.confirmationAction && msg.confirmationAction.type === 'APPLY_TRAVEL_REPORTS' && (jsxRuntimeExports.jsxs("div", { className: `aui-confirmation-card ${msg.confirmationAction.applied ? 'is-applied' : ''}`, children: [jsxRuntimeExports.jsxs("div", { className: "aui-confirmation-header", children: [jsxRuntimeExports.jsxs("div", { className: "aui-confirmation-title", children: [jsxRuntimeExports.jsx("span", { className: "aui-confirmation-icon", children: msg.confirmationAction.applied ? '✅' : '📝' }), jsxRuntimeExports.jsx("span", { className: "aui-confirmation-title-text", children: msg.confirmationAction.applied ? '出差总结报告已回填至报销单' : '待确认：一键回填出差报告至报销单 (HITL)' })] }), jsxRuntimeExports.jsxs("span", { className: "aui-confirmation-badge", children: [msg.confirmationAction.reports.length, " \u4EFD\u51FA\u5DEE\u62A5\u544A"] })] }), jsxRuntimeExports.jsx("div", { className: "aui-confirmation-desc", children: msg.confirmationAction.applied ? (jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: ["\u5DF2\u5C06 AI \u64B0\u5199\u7684 ", jsxRuntimeExports.jsx("strong", { children: msg.confirmationAction.reports.length }), " \u4EFD\u51FA\u5DEE\u5DE5\u4F5C\u603B\u7ED3\u62A5\u544A\u6210\u529F\u56DE\u586B\u81F3\u5BF9\u5E94\u51FA\u5DEE\u5355\u7684\u3010\u51FA\u5DEE\u62A5\u544A\u3011\u5B57\u6BB5\u4E2D\u3002", msg.confirmationAction.appliedTime ? `(回填时间: ${msg.confirmationAction.appliedTime})` : ''] })) : (jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: ["AI \u5DF2\u4E3A\u60A8\u6DF1\u5EA6\u64B0\u5199 ", jsxRuntimeExports.jsx("strong", { children: msg.confirmationAction.reports.length }), " \u4EFD\u4E13\u4E1A\u51FA\u5DEE\u62A5\u544A\u3002\u8BF7\u590D\u6838\u4E0A\u65B9\u62A5\u544A\u6B63\u6587\uFF0C\u786E\u8BA4\u65E0\u8BEF\u540E\u70B9\u51FB\u4E0B\u65B9\u6309\u94AE\uFF0C\u4E00\u952E\u540C\u6B65\u56DE\u586B\u5199\u5165\u5BF9\u5E94\u51FA\u5DEE\u8D39\u7528\u62A5\u9500\u5355 (BC) \u7684\u62A5\u544A\u5B57\u6BB5\u4E2D\u3002"] })) }), !msg.confirmationAction.applied ? (jsxRuntimeExports.jsx("div", { className: "aui-confirmation-actions", children: jsxRuntimeExports.jsxs("button", { type: "button", className: "aui-confirmation-btn-primary", disabled: isExecuting, onClick: () => onApplyTravelReports?.(msg.id, msg.confirmationAction), children: ["\u2713 \u786E\u8BA4\u5C06\u62A5\u544A\u4E00\u952E\u56DE\u586B\u81F3\u5BF9\u5E94\u62A5\u9500\u5355 (", msg.confirmationAction.reports.length, " \u4EFD)"] }) })) : (jsxRuntimeExports.jsx("div", { className: "aui-confirmation-applied-note", children: jsxRuntimeExports.jsx("span", { children: "\u2713 \u62A5\u9500\u5355\u7BA1\u7406\u770B\u677F\u4E2D\u5BF9\u5E94\u51FA\u5DEE\u62A5\u544A\u5DF2\u66F4\u65B0\u5C31\u7EEA" }) }))] }))] }))] }, msg.id));
             }) }));
     };
     /**
@@ -64114,7 +65318,7 @@ JSON 输出格式：
     /**
      * 6. AssistantChatPanel: 主交互顶层组件，包含会话切换 Header、Thread 视口与 Composer
      */
-    const AssistantChatPanel = ({ sessions, currentSessionId, onSelectSession, onNewSession, onDeleteSession, onSendMessage, onApplySkill, onSuggestionClick, onApplyTripPlans, selectedExpenseCount, selectedExpenseAmount, attachedExpenseContextEnabled, onToggleExpenseContext, employeeName, isExecuting = false, onClose, skills, activeSkillId, onDismissSkill, onCopyPromptTemplate, selectedModel, onSelectModel }) => {
+    const AssistantChatPanel = ({ sessions, currentSessionId, onSelectSession, onNewSession, onDeleteSession, onSendMessage, onApplySkill, onSuggestionClick, onApplyTripPlans, onApplyTravelReports, selectedExpenseCount, selectedExpenseAmount, attachedExpenseContextEnabled, onToggleExpenseContext, employeeName, isExecuting = false, onClose, skills, activeSkillId, onDismissSkill, onCopyPromptTemplate, selectedModel, onSelectModel }) => {
         const [historyMenuOpen, setHistoryMenuOpen] = reactExports.useState(false);
         const [previewImageUrl, setPreviewImageUrl] = reactExports.useState(null);
         const currentSession = reactExports.useMemo(() => {
@@ -64141,7 +65345,7 @@ JSON 输出格式：
                                                 }, children: [jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: '6px', overflow: 'hidden' }, children: [jsxRuntimeExports.jsx("span", { children: "\uD83D\uDCAC" }), jsxRuntimeExports.jsx("span", { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: s.title || '未命名会话' })] }), sessions.length > 1 && (jsxRuntimeExports.jsx("span", { className: "yn-gemini-session-del", onClick: (e) => {
                                                             e.stopPropagation();
                                                             onDeleteSession(s.id);
-                                                        }, title: "\u5220\u9664\u4F1A\u8BDD", children: "\u2715" }))] }, s.id))) })] })), onClose && (jsxRuntimeExports.jsx("button", { type: "button", className: "yn-bem-close-x", onClick: onClose, title: "\u6536\u8D77 AI \u52A9\u624B", children: "\u2715" }))] })] }), jsxRuntimeExports.jsx(AssistantThread, { messages: currentSession.messages, employeeName: employeeName, onSuggestionClick: onSuggestionClick, onImagePreview: (url) => setPreviewImageUrl(url), onApplyTripPlans: onApplyTripPlans, isExecuting: isExecuting }), jsxRuntimeExports.jsx(AssistantComposer, { onSendMessage: onSendMessage, selectedCount: selectedExpenseCount, selectedAmount: selectedExpenseAmount, contextEnabled: attachedExpenseContextEnabled, onToggleContext: onToggleExpenseContext, activeSkill: activeSkill, onDismissSkill: onDismissSkill, onCopyPromptTemplate: onCopyPromptTemplate, skills: skills, onApplySkill: (sid) => onApplySkill?.(sid), isExecuting: isExecuting, selectedModel: selectedModel, onSelectModel: onSelectModel }), previewImageUrl && (jsxRuntimeExports.jsxs("div", { style: {
+                                                        }, title: "\u5220\u9664\u4F1A\u8BDD", children: "\u2715" }))] }, s.id))) })] })), onClose && (jsxRuntimeExports.jsx("button", { type: "button", className: "yn-bem-close-x", onClick: onClose, title: "\u6536\u8D77 AI \u52A9\u624B", children: "\u2715" }))] })] }), jsxRuntimeExports.jsx(AssistantThread, { messages: currentSession.messages, employeeName: employeeName, onSuggestionClick: onSuggestionClick, onImagePreview: (url) => setPreviewImageUrl(url), onApplyTripPlans: onApplyTripPlans, onApplyTravelReports: onApplyTravelReports, isExecuting: isExecuting }), jsxRuntimeExports.jsx(AssistantComposer, { onSendMessage: onSendMessage, selectedCount: selectedExpenseCount, selectedAmount: selectedExpenseAmount, contextEnabled: attachedExpenseContextEnabled, onToggleContext: onToggleExpenseContext, activeSkill: activeSkill, onDismissSkill: onDismissSkill, onCopyPromptTemplate: onCopyPromptTemplate, skills: skills, onApplySkill: (sid) => onApplySkill?.(sid), isExecuting: isExecuting, selectedModel: selectedModel, onSelectModel: onSelectModel }), previewImageUrl && (jsxRuntimeExports.jsxs("div", { style: {
                         position: 'fixed',
                         top: 0,
                         left: 0,
@@ -64157,8 +65361,1255 @@ JSON 输出格式：
                     }, onClick: () => setPreviewImageUrl(null), children: [jsxRuntimeExports.jsx("img", { src: previewImageUrl, alt: "Preview", style: { maxWidth: '90%', maxHeight: '90%', borderRadius: '12px', boxShadow: '0 8px 32px rgba(0,0,0,0.5)' } }), jsxRuntimeExports.jsx("button", { type: "button", style: { position: 'absolute', top: '20px', right: '20px', background: 'rgba(255,255,255,0.2)', color: '#fff', border: 'none', borderRadius: '50%', width: '36px', height: '36px', fontSize: '18px', cursor: 'pointer' }, onClick: () => setPreviewImageUrl(null), children: "\u2715" })] }))] }));
     };
 
+    const BILL_TYPE_LABELS = {
+        BC: '出差费用报销单',
+        BJ: '经费报销单'
+    };
+    // ─── 工具函数 ────────────────────────────────────────────────
+    function computeSCTotal(sc) {
+        const air = Number(sc.airfareBudget) || 0;
+        const hotel = Number(sc.hotelBudget) || 0;
+        const meal = Number(sc.mealAllowance) || 0;
+        const other = Number(sc.otherBudget) || 0;
+        return Math.round((air + hotel + meal + other) * 100) / 100;
+    }
+    function formatCurrency(amount) {
+        return '¥' + (amount || 0).toLocaleString('zh-CN', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+        });
+    }
+
+    /**
+     * 报销单管理纯表格模式 (Grid Mode) — 数据聚合与业务服务
+     *
+     * 核心逻辑：
+     * 1. 严格对齐真实单据原生字段，移除一切多余非原生输入框；
+     * 2. 从费用记录中按费用类型提取并初始化预算归属分摊表 (BudgetAllocationItem)；
+     * 3. 提供预算归属拆分功能 (例如某笔费用 50% 请款，50% 自负)；
+     * 4. 4 项原生预算联动重算合计 (TOTAL)，确保预算总额覆盖实报金额。
+     */
+    let billIdCounter = 0;
+    function nextBillId(type) {
+        billIdCounter += 1;
+        return `bill_${type.toLowerCase()}_${billIdCounter}`;
+    }
+    function formatDateShort(dateStr) {
+        if (!dateStr)
+            return '';
+        const parts = dateStr.split('-');
+        if (parts.length >= 3) {
+            return `${parts[1]}-${parts[2]}`;
+        }
+        return dateStr;
+    }
+    /**
+     * 提取一组费用记录按费用类型分组的预算归属行
+     */
+    function buildInitialBudgetAllocations(expenses, projectId, projectName) {
+        const typeMap = new Map();
+        for (const g of expenses) {
+            const tName = g.expenseTypeName || '日常报销费用';
+            const amt = Number(g.expenseAmount || 0);
+            typeMap.set(tName, (typeMap.get(tName) || 0) + amt);
+        }
+        const allocations = [];
+        let idx = 1;
+        typeMap.forEach((amt, tName) => {
+            allocations.push({
+                id: `alloc_${idx++}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                expenseTypeName: tName,
+                expenseAmount: Math.round(amt * 100) / 100,
+                projectId: projectId || '',
+                projectName: projectName || '',
+                allocatedAmount: Math.round(amt * 100) / 100,
+                ratioPercent: 100,
+                customerCharge: false,
+            });
+        });
+        return allocations;
+    }
+    /**
+     * 从费用记录分组和 Trip 规划中聚合生成报销单计划行
+     */
+    function aggregateExpensesIntoBillPlans(groups, tripPlans, applicantName = '', projectName = '') {
+        billIdCounter = 0;
+        const plans = [];
+        // ── 1. 为每个 Trip 生成 BC 报销单行 ──
+        if (tripPlans.length > 0) {
+            for (const trip of tripPlans) {
+                const tripExpenses = groups.filter(g => g.tripId === trip.id);
+                const expenseRecordIds = tripExpenses.map(g => g.expenseRecordId);
+                const invoiceCount = tripExpenses.reduce((sum, g) => sum + (g.invoiceCount || 0), 0);
+                const totalAmount = tripExpenses.reduce((sum, g) => sum + Number(g.expenseAmount || 0), 0);
+                const projId = trip.projectVO?.value || '';
+                const projName = trip.projectName || projectName;
+                // 原生 4 项预算估算
+                const airfare = Math.round(trip.trafficFee * 100) / 100;
+                const hotel = Math.round(trip.hotelFee * 100) / 100;
+                const meal = Math.round(trip.mealFee * 100) / 100;
+                const other = Math.round(trip.otherFee * 100) / 100;
+                const totalBudget = Math.round((airfare + hotel + meal + other) * 100) / 100;
+                const scPlan = {
+                    applicantName: trip.applicantName || applicantName,
+                    tripType: '境内出張',
+                    destination: trip.destination,
+                    purpose: trip.purpose || `出差${trip.destination}技术支持与业务交流`,
+                    startDate: trip.startDate,
+                    endDate: trip.endDate,
+                    days: trip.days,
+                    nights: trip.nights,
+                    legs: trip.legs || [],
+                    airfareBudget: airfare,
+                    hotelBudget: hotel,
+                    mealAllowance: meal,
+                    otherBudget: other,
+                    totalBudget: totalBudget,
+                    projectId: projId,
+                    projectName: projName,
+                    customerCharge: false,
+                    billCode: trip.billCode,
+                    billMainId: trip.billMainId,
+                };
+                const budgetAllocations = buildInitialBudgetAllocations(tripExpenses, projId, projName);
+                plans.push({
+                    id: nextBillId('BC'),
+                    type: 'BC',
+                    title: `Trip ${trip.tripNo}: ${trip.destination}出差 (${formatDateShort(trip.startDate)} ~ ${formatDateShort(trip.endDate)})`,
+                    tripType: '境内出張',
+                    destination: trip.destination,
+                    purpose: trip.purpose || `出差${trip.destination}技术交流与业务交流`,
+                    startDate: trip.startDate,
+                    endDate: trip.endDate,
+                    applicantName: trip.applicantName || applicantName,
+                    expenseRecordIds,
+                    expenseCount: expenseRecordIds.length,
+                    invoiceCount,
+                    totalAmount: Math.round(totalAmount * 100) / 100,
+                    budgetAllocations,
+                    projectId: projId,
+                    projectName: projName,
+                    customerCharge: false,
+                    departmentName: '',
+                    travelReport: trip.travelReport || '',
+                    scPlan,
+                    status: 'draft',
+                    errorMessage: '',
+                    sourceTripId: trip.id,
+                    billCode: trip.billCode,
+                    billMainId: trip.billMainId,
+                });
+            }
+        }
+        // ── 2. 日常经费 → BJ 报销单行 ──
+        const nonTripExpenses = groups.filter(g => tripPlans.length > 0
+            ? (g.tripId === 'NON_TRIP' || !g.tripId)
+            : getGroupBillFlow(g) === 'BJ');
+        if (nonTripExpenses.length > 0) {
+            const expenseRecordIds = nonTripExpenses.map(g => g.expenseRecordId);
+            const invoiceCount = nonTripExpenses.reduce((sum, g) => sum + (g.invoiceCount || 0), 0);
+            const totalAmount = nonTripExpenses.reduce((sum, g) => sum + Number(g.expenseAmount || 0), 0);
+            const budgetAllocations = buildInitialBudgetAllocations(nonTripExpenses, '', projectName);
+            plans.push({
+                id: nextBillId('BJ'),
+                type: 'BJ',
+                title: `日常经费报销 (${nonTripExpenses.length}笔费用)`,
+                tripType: '境内出張',
+                destination: '',
+                purpose: '日常办公与技术服务经费报销',
+                startDate: '',
+                endDate: '',
+                applicantName,
+                expenseRecordIds,
+                expenseCount: expenseRecordIds.length,
+                invoiceCount,
+                totalAmount: Math.round(totalAmount * 100) / 100,
+                budgetAllocations,
+                projectId: '',
+                projectName: projectName,
+                customerCharge: false,
+                departmentName: '',
+                travelReport: '',
+                scPlan: null,
+                status: 'draft',
+                errorMessage: '',
+                sourceTripId: 'NON_TRIP',
+            });
+        }
+        return plans;
+    }
+    /**
+     * 创建看板初始状态
+     */
+    function createInitialBillManagementState(groups, tripPlans, applicantName = '', projectName = '') {
+        const plans = aggregateExpensesIntoBillPlans(groups, tripPlans, applicantName, projectName);
+        return {
+            billPlans: plans,
+            selectedBillIds: new Set(plans.map(p => p.id)),
+            expandedBillIds: new Set(plans.filter(p => p.type === 'BC').map(p => p.id)),
+            isProcessing: false,
+            progressText: '',
+            searchQuery: '',
+        };
+    }
+    /**
+     * 不可变更新单据主表行字段
+     */
+    function updateBillPlanField(plans, billId, field, value) {
+        return plans.map(p => {
+            if (p.id !== billId)
+                return p;
+            const updated = { ...p, [field]: value };
+            // 若同时修改了主项目，且有关联 SC 申请单，同步 SC 项目
+            if (field === 'projectName' && updated.scPlan) {
+                updated.scPlan = { ...updated.scPlan, projectName: value };
+            }
+            return updated;
+        });
+    }
+    /**
+     * 不可变更新 SC 申请单字段
+     */
+    function updateSCField(plans, billId, field, value) {
+        return plans.map(p => {
+            if (p.id !== billId || !p.scPlan)
+                return p;
+            const updatedSC = { ...p.scPlan, [field]: value };
+            // 自动重算 4 项预算合计
+            if (['airfareBudget', 'hotelBudget', 'mealAllowance', 'otherBudget'].includes(field)) {
+                updatedSC.totalBudget = computeSCTotal(updatedSC);
+            }
+            return {
+                ...p,
+                scPlan: updatedSC,
+            };
+        });
+    }
+    /**
+     * 拆分某项费用的预算归属 (例如 50% 客户请款，50% 公司负担)
+     */
+    function splitBudgetAllocation(plans, billId, allocationId) {
+        return plans.map(p => {
+            if (p.id !== billId)
+                return p;
+            const target = p.budgetAllocations.find(a => a.id === allocationId);
+            if (!target)
+                return p;
+            // 默认将比例对半拆分
+            const halfRatio = Math.round((target.ratioPercent / 2) * 100) / 100;
+            const halfAmount = Math.round((target.allocatedAmount / 2) * 100) / 100;
+            const updatedAllocations = p.budgetAllocations.flatMap(a => {
+                if (a.id !== allocationId)
+                    return [a];
+                const originalUpdated = {
+                    ...a,
+                    ratioPercent: halfRatio,
+                    allocatedAmount: halfAmount,
+                };
+                const newSplitRow = {
+                    ...a,
+                    id: `alloc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                    ratioPercent: halfRatio,
+                    allocatedAmount: halfAmount,
+                    customerCharge: !a.customerCharge, // 另一半默认请款状态相反
+                };
+                return [originalUpdated, newSplitRow];
+            });
+            return { ...p, budgetAllocations: updatedAllocations };
+        });
+    }
+    /**
+     * 删除拆分出来的多余预算归属行
+     */
+    function removeBudgetAllocation(plans, billId, allocationId) {
+        return plans.map(p => {
+            if (p.id !== billId)
+                return p;
+            if (p.budgetAllocations.length <= 1)
+                return p;
+            return {
+                ...p,
+                budgetAllocations: p.budgetAllocations.filter(a => a.id !== allocationId),
+            };
+        });
+    }
+    /**
+     * 修改预算归属行字段
+     */
+    function updateBudgetAllocationField(plans, billId, allocationId, field, value) {
+        return plans.map(p => {
+            if (p.id !== billId)
+                return p;
+            return {
+                ...p,
+                budgetAllocations: p.budgetAllocations.map(a => a.id === allocationId ? { ...a, [field]: value } : a),
+            };
+        });
+    }
+    /**
+     * 校验所有待建报销单的必填项与合规性
+     */
+    function validateBillPlans(plans) {
+        const errors = [];
+        const errorMapByBillId = {};
+        const addError = (err) => {
+            errors.push(err);
+            if (!errorMapByBillId[err.billId]) {
+                errorMapByBillId[err.billId] = {};
+            }
+            errorMapByBillId[err.billId][err.field] = err.message;
+        };
+        for (const plan of plans) {
+            // 1. 出差人员 / 申请人
+            if (!plan.applicantName || !plan.applicantName.trim()) {
+                addError({
+                    billId: plan.id,
+                    field: 'applicantName',
+                    label: '出差人员',
+                    message: '出差人员/申请人不能为空',
+                });
+            }
+            // 2. 出差目的 (PURPOSE)
+            if (!plan.purpose || !plan.purpose.trim()) {
+                addError({
+                    billId: plan.id,
+                    field: 'purpose',
+                    label: '出差目的',
+                    message: '出差目的/业务事由不能为空',
+                });
+            }
+            // 3. 项目维表 (主预算归属)
+            if (!plan.projectName || !plan.projectName.trim()) {
+                addError({
+                    billId: plan.id,
+                    field: 'projectName',
+                    label: '预算归属',
+                    message: '预算归属(项目维表)不能为空',
+                });
+            }
+            // 4. BC 专属校验
+            if (plan.type === 'BC') {
+                // 出差目的地 (出張先)
+                if (!plan.destination || !plan.destination.trim()) {
+                    addError({
+                        billId: plan.id,
+                        field: 'destination',
+                        label: '出張先',
+                        message: '出張先(目的地城市)不能为空',
+                    });
+                }
+                // 期間 From ~ To
+                if (!plan.startDate) {
+                    addError({
+                        billId: plan.id,
+                        field: 'startDate',
+                        label: '期间From',
+                        message: '出差起始日期不能为空',
+                    });
+                }
+                if (!plan.endDate) {
+                    addError({
+                        billId: plan.id,
+                        field: 'endDate',
+                        label: '期间To',
+                        message: '出差回程日期不能为空',
+                    });
+                }
+                if (plan.startDate && plan.endDate && plan.startDate > plan.endDate) {
+                    addError({
+                        billId: plan.id,
+                        field: 'startDate',
+                        label: '期间范围',
+                        message: '回程日期不可早于出发日期',
+                    });
+                }
+                // SC 申请单子表校验
+                if (plan.scPlan) {
+                    // 预算总额需 >= 实际报销金额
+                    if (plan.scPlan.totalBudget < plan.totalAmount) {
+                        addError({
+                            billId: plan.id,
+                            field: 'scTotalBudget',
+                            label: '预算合计',
+                            message: `预算合计(¥${plan.scPlan.totalBudget})低于实报金额(¥${plan.totalAmount})，需大于等于实际报销`,
+                            subTable: 'BUDGET',
+                        });
+                    }
+                    // 航段明细检验
+                    if (!plan.scPlan.legs || plan.scPlan.legs.length === 0) {
+                        addError({
+                            billId: plan.id,
+                            field: 'legs_empty',
+                            label: '旅程明细',
+                            message: '旅程(ITINERARY)子表格至少需要包含 1 趟航段明细',
+                            subTable: 'ITINERARY',
+                        });
+                    }
+                    else {
+                        plan.scPlan.legs.forEach((leg, idx) => {
+                            if (!leg.date) {
+                                addError({
+                                    billId: plan.id,
+                                    field: `leg_${idx}_date`,
+                                    label: `航段${idx + 1}日期`,
+                                    message: `航段 ${idx + 1} 日期时间不能为空`,
+                                    subTable: 'ITINERARY',
+                                    rowIndex: idx,
+                                });
+                            }
+                            if (!leg.fromCity || !leg.fromCity.trim()) {
+                                addError({
+                                    billId: plan.id,
+                                    field: `leg_${idx}_fromCity`,
+                                    label: `航段${idx + 1}出发地`,
+                                    message: `航段 ${idx + 1} 出发地不能为空`,
+                                    subTable: 'ITINERARY',
+                                    rowIndex: idx,
+                                });
+                            }
+                            if (!leg.toCity || !leg.toCity.trim()) {
+                                addError({
+                                    billId: plan.id,
+                                    field: `leg_${idx}_toCity`,
+                                    label: `航段${idx + 1}目的地`,
+                                    message: `航段 ${idx + 1} 目的地不能为空`,
+                                    subTable: 'ITINERARY',
+                                    rowIndex: idx,
+                                });
+                            }
+                        });
+                    }
+                }
+            }
+            // 5. 预算归属分摊子表格 (BUDGET ALLOCATION & SPLIT)
+            if (plan.budgetAllocations && plan.budgetAllocations.length > 0) {
+                const ratioSumsByType = new Map();
+                plan.budgetAllocations.forEach((alloc, idx) => {
+                    if (!alloc.projectName || !alloc.projectName.trim()) {
+                        addError({
+                            billId: plan.id,
+                            field: `alloc_${alloc.id}_projectName`,
+                            label: `分摊行${idx + 1}项目`,
+                            message: `费用类型"${alloc.expenseTypeName}"分摊行 ${idx + 1} 的项目归属不能为空`,
+                            subTable: 'ALLOCATION',
+                            rowIndex: idx,
+                        });
+                    }
+                    const cur = ratioSumsByType.get(alloc.expenseTypeName) || 0;
+                    ratioSumsByType.set(alloc.expenseTypeName, cur + Number(alloc.ratioPercent || 0));
+                });
+                ratioSumsByType.forEach((sum, expType) => {
+                    if (Math.abs(sum - 100) > 0.01) {
+                        addError({
+                            billId: plan.id,
+                            field: `alloc_ratio_sum_${expType}`,
+                            label: `${expType}比例合计`,
+                            message: `费用类型"${expType}"的分摊比例合计为 ${sum}%，必须等于 100%`,
+                            subTable: 'ALLOCATION',
+                        });
+                    }
+                });
+            }
+        }
+        return {
+            isValid: errors.length === 0,
+            missingCount: errors.length,
+            errors,
+            errorMapByBillId,
+        };
+    }
+    /**
+     * 动态提取通用城市名（去除站、机场、市等标准后缀，严禁写死静态城市表）
+     */
+    function cleanCityName(raw) {
+        if (!raw)
+            return '';
+        let s = raw.trim();
+        s = s.replace(/(?:站|南站|北站|东站|西站|客运站|火车站|国际机场|机场|航站楼|高铁站)$/, '');
+        if (s.length > 2 && s.endsWith('市')) {
+            s = s.slice(0, -1);
+        }
+        return s.trim();
+    }
+    /**
+     * AI 智能副驾一键补全漏填字段（通用推理，无任何特定人员/客户/城市硬编码）
+     */
+    function autoFillBillPlansWithAi(plans, groups, defaultProjectName, defaultApplicantName) {
+        let filledCount = 0;
+        const updatedPlans = plans.map(plan => {
+            const aiFilled = new Set(plan.aiFilledFields || []);
+            let updated = { ...plan };
+            const associatedGroups = groups.filter(g => plan.expenseRecordIds.includes(g.expenseRecordId));
+            // 1. 补全出差人员
+            if (!updated.applicantName || !updated.applicantName.trim()) {
+                const foundName = defaultApplicantName ||
+                    associatedGroups.find(g => g.applicantName)?.applicantName ||
+                    '';
+                if (foundName) {
+                    updated.applicantName = foundName;
+                    aiFilled.add('applicantName');
+                    filledCount++;
+                }
+            }
+            // 2. 补全目的地城市 (从发票详情与动态字段中智能频率提取)
+            if (updated.type === 'BC' && (!updated.destination || !updated.destination.trim())) {
+                const cityFreq = new Map();
+                for (const g of associatedGroups) {
+                    if (g.dynamicFields?.city) {
+                        const c = cleanCityName(g.dynamicFields.city);
+                        if (c)
+                            cityFreq.set(c, (cityFreq.get(c) || 0) + 3);
+                    }
+                    if (g.dynamicFields?.dynTo) {
+                        const c = cleanCityName(g.dynamicFields.dynTo);
+                        if (c)
+                            cityFreq.set(c, (cityFreq.get(c) || 0) + 2);
+                    }
+                    if (g.invoices) {
+                        for (const inv of g.invoices) {
+                            if (inv.stationGetOff) {
+                                const c = cleanCityName(inv.stationGetOff);
+                                if (c)
+                                    cityFreq.set(c, (cityFreq.get(c) || 0) + 2);
+                            }
+                        }
+                    }
+                }
+                let bestCity = '';
+                let maxCount = 0;
+                cityFreq.forEach((cnt, city) => {
+                    if (cnt > maxCount) {
+                        maxCount = cnt;
+                        bestCity = city;
+                    }
+                });
+                if (bestCity) {
+                    updated.destination = bestCity;
+                    aiFilled.add('destination');
+                    filledCount++;
+                }
+            }
+            // 3. 补全起止日期 (从费用业务日与发票日提取范围)
+            if (updated.type === 'BC' && (!updated.startDate || !updated.endDate)) {
+                const allDates = [];
+                for (const g of associatedGroups) {
+                    if (g.businessDate && /^\d{4}-\d{2}-\d{2}/.test(g.businessDate)) {
+                        allDates.push(g.businessDate.slice(0, 10));
+                    }
+                    if (g.earliestInvoiceDate && /^\d{4}-\d{2}-\d{2}/.test(g.earliestInvoiceDate)) {
+                        allDates.push(g.earliestInvoiceDate.slice(0, 10));
+                    }
+                    if (g.dynamicFields?.dynStartDate && /^\d{4}-\d{2}-\d{2}/.test(g.dynamicFields.dynStartDate)) {
+                        allDates.push(g.dynamicFields.dynStartDate.slice(0, 10));
+                    }
+                    if (g.dynamicFields?.dynEndDate && /^\d{4}-\d{2}-\d{2}/.test(g.dynamicFields.dynEndDate)) {
+                        allDates.push(g.dynamicFields.dynEndDate.slice(0, 10));
+                    }
+                }
+                allDates.sort();
+                if (allDates.length > 0) {
+                    if (!updated.startDate) {
+                        updated.startDate = allDates[0];
+                        aiFilled.add('startDate');
+                        filledCount++;
+                    }
+                    if (!updated.endDate) {
+                        updated.endDate = allDates[allDates.length - 1];
+                        aiFilled.add('endDate');
+                        filledCount++;
+                    }
+                }
+            }
+            // 4. 补全项目维表 (若为空，从费用说明或全局默认中继承)
+            if (!updated.projectName || !updated.projectName.trim()) {
+                let foundProj = defaultProjectName || '';
+                if (!foundProj) {
+                    for (const g of associatedGroups) {
+                        const match = (g.description || g.newDescription || '').match(/(?:\[)?([A-Z0-9]{3,}-[0-9]+[^\]\s]*)/);
+                        if (match) {
+                            foundProj = match[1];
+                            break;
+                        }
+                    }
+                }
+                if (foundProj) {
+                    updated.projectName = foundProj;
+                    aiFilled.add('projectName');
+                    filledCount++;
+                }
+            }
+            // 5. 补全出差目的 (PURPOSE)
+            if (!updated.purpose || !updated.purpose.trim() || updated.purpose.includes('暂无')) {
+                const dest = updated.destination || '出差地';
+                const projStr = updated.projectName ? `${updated.projectName} ` : '';
+                updated.purpose = `赴${dest}开展${projStr}现场业务交流与系统导入技术支持`;
+                aiFilled.add('purpose');
+                filledCount++;
+            }
+            // 6. SC 申请单预算与旅程深度推导 (仅BC)
+            if (updated.type === 'BC') {
+                const dest = updated.destination || '出差地';
+                const start = updated.startDate || '2026-07-20';
+                const end = updated.endDate || '2026-07-25';
+                const sTime = new Date(start).getTime();
+                const eTime = new Date(end).getTime();
+                const days = Math.max(1, Math.round((eTime - sTime) / 86400000) + 1);
+                const nights = Math.max(1, days - 1);
+                // 统计已发生的真实交通、酒店与杂费
+                let actualAirfare = 0;
+                let actualHotel = 0;
+                let actualOther = 0;
+                for (const g of associatedGroups) {
+                    const amt = Number(g.expenseAmount) || 0;
+                    const type = g.expenseTypeName || '';
+                    if (type.includes('飞机') || type.includes('火车') || type.includes('机票') || type.includes('交通')) {
+                        actualAirfare += amt;
+                    }
+                    else if (type.includes('住宿') || type.includes('酒店')) {
+                        actualHotel += amt;
+                    }
+                    else {
+                        actualOther += amt;
+                    }
+                }
+                // 计算合规充裕预算
+                const airfareBudget = Math.round(Math.max(actualAirfare * 1.25, actualAirfare + 500, 1800) * 100) / 100;
+                const hotelBudget = Math.round(Math.max(actualHotel * 1.15, nights * 700, 700) * 100) / 100;
+                const mealAllowance = Math.round(Math.max(days * 250, 250) * 100) / 100;
+                let otherBudget = Math.round(Math.max(actualOther * 1.2, days * 100, 300) * 100) / 100;
+                let totalBudget = computeSCTotal({ airfareBudget, hotelBudget, mealAllowance, otherBudget });
+                // 确保总预算覆盖实报金额
+                if (totalBudget < updated.totalAmount) {
+                    const gap = Math.round((updated.totalAmount - totalBudget + 300) * 100) / 100;
+                    otherBudget = Math.round((otherBudget + gap) * 100) / 100;
+                    totalBudget = computeSCTotal({ airfareBudget, hotelBudget, mealAllowance, otherBudget });
+                }
+                // 智能推导航段 (若为空，生成标准往返闭环)
+                let existingLegs = updated.scPlan?.legs || [];
+                if (existingLegs.length === 0) {
+                    // 尝试从真实发票提取航段起点与终点
+                    let originCity = '上海';
+                    for (const g of associatedGroups) {
+                        if (g.dynamicFields?.dynFrom) {
+                            const oc = cleanCityName(g.dynamicFields.dynFrom);
+                            if (oc && oc !== dest) {
+                                originCity = oc;
+                                break;
+                            }
+                        }
+                        if (g.invoices) {
+                            for (const inv of g.invoices) {
+                                if (inv.stationGetOn) {
+                                    const oc = cleanCityName(inv.stationGetOn);
+                                    if (oc && oc !== dest) {
+                                        originCity = oc;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    existingLegs = [
+                        {
+                            date: `${start}T09:00`,
+                            fromCity: originCity,
+                            toCity: dest,
+                            transport: '飞机/高铁',
+                            flightOrTrain: `去程交通 | 外驻:${updated.applicantName || '出差人'}`,
+                            travelerName: updated.applicantName,
+                        },
+                        {
+                            date: `${end}T18:00`,
+                            fromCity: dest,
+                            toCity: originCity,
+                            transport: '飞机/高铁',
+                            flightOrTrain: `返程交通 | 外驻:${updated.applicantName || '出差人'}`,
+                            travelerName: updated.applicantName,
+                        }
+                    ];
+                    aiFilled.add('legs');
+                    filledCount++;
+                }
+                const scPlan = {
+                    applicantName: updated.applicantName,
+                    tripType: updated.tripType,
+                    destination: dest,
+                    purpose: updated.purpose,
+                    startDate: start,
+                    endDate: end,
+                    days,
+                    nights,
+                    legs: existingLegs,
+                    airfareBudget,
+                    hotelBudget,
+                    mealAllowance,
+                    otherBudget,
+                    totalBudget,
+                    projectId: updated.projectId,
+                    projectName: updated.projectName,
+                    customerCharge: updated.customerCharge,
+                };
+                updated.scPlan = scPlan;
+                aiFilled.add('scPlan');
+                filledCount++;
+                // 7. 补全出差报告草稿 (若为空)
+                if (!updated.travelReport || !updated.travelReport.trim()) {
+                    updated.travelReport = `## ${dest}出差工作总结报告\n\n- **出差时间**：${start} 至 ${end} (共 ${days} 天)\n- **出差人员**：${updated.applicantName}\n- **主要目的地**：${dest}\n- **归属项目**：${updated.projectName || '未指定'}\n\n### 一、主要任务与工作成果\n1. 赴 ${dest} 据点开展现场系统导入与技术需求对齐，完成了业务场景与系统接口的技术论证；\n2. 会同客户项目组进行联合联调测试，梳理并闭环关键业务用例；\n3. 现场举行系统交接与培训会，收集现场反馈并形成后续迭代待办清单。\n\n### 二、后续跟进计划\n- 推进联调遗留事项整改，完成交付物归档与验收；\n- 持续关注客户运行环境稳定性，提供线上技术支持。`;
+                    aiFilled.add('travelReport');
+                    filledCount++;
+                }
+            }
+            // 8. 同步预算归属分摊表中的项目名称
+            if (updated.projectName && updated.budgetAllocations) {
+                updated.budgetAllocations = updated.budgetAllocations.map(alloc => {
+                    if (!alloc.projectName || !alloc.projectName.trim()) {
+                        aiFilled.add(`alloc_${alloc.id}_projectName`);
+                        filledCount++;
+                        return {
+                            ...alloc,
+                            projectName: updated.projectName,
+                            projectId: updated.projectId,
+                        };
+                    }
+                    return alloc;
+                });
+            }
+            return {
+                ...updated,
+                aiFilledFields: Array.from(aiFilled),
+            };
+        });
+        return { updatedPlans, filledCount };
+    }
+
+    // ─── Status Badge ────────────────────────────────────────────
+    const StatusBadge = React.memo(({ status, error }) => {
+        const cls = `yn-bm-badge yn-bm-badge--${status}`;
+        const labels = {
+            draft: '草稿就绪',
+            saving: '保存中...',
+            saved: '已入库',
+            error: '失败',
+        };
+        return (jsxRuntimeExports.jsxs("span", { className: cls, title: error || '', children: [status === 'saving' && jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-pulse" }), labels[status] || status] }));
+    });
+    // ─── Toggle Switch (iOS / Linear 微动效) ─────────────────────
+    const ToggleSwitch = React.memo(({ checked, onChange, labelActive = '是', labelInactive = '否', }) => (jsxRuntimeExports.jsxs("label", { className: "yn-bm-toggle-wrap", title: `点击切换：${checked ? labelActive : labelInactive}`, children: [jsxRuntimeExports.jsx("input", { type: "checkbox", className: "yn-bm-toggle-input", checked: checked, onChange: e => onChange(e.target.checked) }), jsxRuntimeExports.jsx("span", { className: "yn-bm-toggle-track", children: jsxRuntimeExports.jsx("span", { className: "yn-bm-toggle-thumb" }) }), jsxRuntimeExports.jsx("span", { className: `yn-bm-toggle-label ${checked ? 'is-active' : ''}`, children: checked ? labelActive : labelInactive })] })));
+    // ─── Project Search Input (动态维表联想输入框) ───────────────
+    const ProjectSearchInput = React.memo(({ value, onChange, onSearch, isMissing, missingMessage, isAiFilled, dataBillId, dataField = 'projectName', }) => {
+        const [open, setOpen] = reactExports.useState(false);
+        const [keyword, setKeyword] = reactExports.useState(value || '');
+        const [results, setResults] = reactExports.useState([]);
+        const [loading, setLoading] = reactExports.useState(false);
+        const wrapRef = reactExports.useRef(null);
+        reactExports.useEffect(() => {
+            setKeyword(value || '');
+        }, [value]);
+        reactExports.useEffect(() => {
+            const handleClickOutside = (e) => {
+                if (wrapRef.current && !wrapRef.current.contains(e.target)) {
+                    setOpen(false);
+                }
+            };
+            document.addEventListener('mousedown', handleClickOutside);
+            return () => document.removeEventListener('mousedown', handleClickOutside);
+        }, []);
+        const handleFocus = reactExports.useCallback(async () => {
+            setOpen(true);
+            if (results.length === 0) {
+                setLoading(true);
+                try {
+                    const list = await onSearch(keyword);
+                    setResults(list.slice(0, 15));
+                }
+                finally {
+                    setLoading(false);
+                }
+            }
+        }, [keyword, results.length, onSearch]);
+        const handleInputChange = reactExports.useCallback(async (text) => {
+            setKeyword(text);
+            onChange(text);
+            setOpen(true);
+            setLoading(true);
+            try {
+                const list = await onSearch(text);
+                setResults(list.slice(0, 15));
+            }
+            finally {
+                setLoading(false);
+            }
+        }, [onChange, onSearch]);
+        const handleSelect = reactExports.useCallback((p) => {
+            setKeyword(p.name);
+            onChange(p.name, p);
+            setOpen(false);
+        }, [onChange]);
+        return (jsxRuntimeExports.jsxs("div", { className: "yn-bm-project-search-wrap", ref: wrapRef, children: [jsxRuntimeExports.jsx("input", { type: "text", className: `yn-bm-cell-input yn-bm-project-input ${isMissing ? 'is-missing' : ''} ${isAiFilled ? 'is-ai-filled' : ''}`, placeholder: isMissing ? "⚠️ 必填项目归属(维表)..." : "搜索项目维表...", value: keyword, title: isMissing ? missingMessage : (isAiFilled ? '✦ AI 智能对齐项目' : ''), "data-bill-id": dataBillId, "data-field": dataField, onFocus: handleFocus, onChange: e => handleInputChange(e.target.value) }), open && (jsxRuntimeExports.jsx("div", { className: "yn-bm-project-dropdown", children: loading ? (jsxRuntimeExports.jsx("div", { className: "yn-bm-dropdown-loading", children: "\u6B63\u5728\u68C0\u7D22\u7EF4\u8868..." })) : results.length === 0 ? (jsxRuntimeExports.jsx("div", { className: "yn-bm-dropdown-empty", children: "\u672A\u5339\u914D\u5230\u9879\u76EE (\u652F\u6301\u76F4\u63A5\u624B\u586B)" })) : (results.map(p => (jsxRuntimeExports.jsxs("div", { className: "yn-bm-dropdown-item", onClick: () => handleSelect(p), children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-project-code", children: p.code }), jsxRuntimeExports.jsx("span", { className: "yn-bm-project-name", children: p.name })] }, p.id)))) }))] }));
+    });
+    // ─── 子表格 1：✈️ 旅程明细表 (ITINERARY) ──────────────────────
+    const ItinerarySubTable = React.memo(({ billId, legs, onAddLeg, onRemoveLeg, onUpdateLeg, missingMap, aiFilled, }) => {
+        const isLegsEmpty = Boolean(missingMap?.legs_empty);
+        return (jsxRuntimeExports.jsxs("div", { className: "yn-bm-subgrid-box", children: [jsxRuntimeExports.jsxs("div", { className: "yn-bm-subgrid-header", children: [jsxRuntimeExports.jsxs("span", { className: "title", children: ["\u2708\uFE0F \u65C5\u7A0B (ITINERARY) \u5B50\u8868\u683C", aiFilled && jsxRuntimeExports.jsx("span", { className: "yn-bm-ai-sparkle-tag", children: "\u2726 AI \u751F\u6210" })] }), jsxRuntimeExports.jsx("span", { className: "hint", children: isLegsEmpty ? (jsxRuntimeExports.jsx("strong", { style: { color: '#dc2626' }, children: "\u26A0\uFE0F \u65C5\u7A0B\u81F3\u5C11\u9700\u5305\u542B 1 \u8D9F\u822A\u6BB5\u660E\u7EC6\uFF08\u53EF\u70B9\u51FB\u53F3\u4FA7 +\u589E\u52A0\u822A\u6BB5 \u6216\u70B9\u51FB\u9876\u680F AI \u4E00\u952E\u8865\u5168\uFF09" })) : ('※ 出差申请时请务必写明交通明细（如航班、高铁二等座）及费用概算') }), jsxRuntimeExports.jsx("button", { type: "button", className: "yn-bm-btn-table-action", onClick: () => onAddLeg(billId), children: "+ \u589E\u52A0\u822A\u6BB5" })] }), jsxRuntimeExports.jsxs("table", { className: "yn-bm-detail-table", children: [jsxRuntimeExports.jsx("thead", { children: jsxRuntimeExports.jsxs("tr", { children: [jsxRuntimeExports.jsx("th", { style: { width: '45px', textAlign: 'center' }, children: "\u884C\u53F7" }), jsxRuntimeExports.jsxs("th", { style: { width: '190px' }, children: ["DATE (\u65E5\u671F\u65F6\u95F4) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsxs("th", { style: { width: '150px' }, children: ["FROM (\u51FA\u53D1\u5730\u57CE\u5E02) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsxs("th", { style: { width: '150px' }, children: ["TO (\u51FA\u5DEE\u76EE\u7684\u5730\u57CE\u5E02) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsxs("th", { children: ["FLIGHT/TRAIN ETC. (\u822A\u73ED/\u8F66\u6B21\u5907\u6CE8\uFF0C\u5982\u201C\u53BB\u7A0B\u98DE\u673A / \u4E8C\u7B49\u5EA7\u201D) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsx("th", { style: { width: '50px', textAlign: 'center' }, children: "\u64CD\u4F5C" })] }) }), jsxRuntimeExports.jsx("tbody", { children: legs.map((leg, idx) => {
+                                const isDateMissing = Boolean(missingMap?.[`leg_${idx}_date`]);
+                                const isFromMissing = Boolean(missingMap?.[`leg_${idx}_fromCity`]);
+                                const isToMissing = Boolean(missingMap?.[`leg_${idx}_toCity`]);
+                                return (jsxRuntimeExports.jsxs("tr", { children: [jsxRuntimeExports.jsx("td", { style: { textAlign: 'center', fontWeight: 600 }, children: idx + 1 }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsx("input", { type: "datetime-local", className: `yn-bm-cell-input ${isDateMissing ? 'is-missing' : ''}`, value: leg.date ? (leg.date.includes('T') ? leg.date.slice(0, 16) : `${leg.date}T09:00`) : '', "data-bill-id": billId, "data-field": `leg_${idx}_date`, title: isDateMissing ? missingMap?.[`leg_${idx}_date`] : '', onChange: e => onUpdateLeg(billId, idx, 'date', e.target.value) }) }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsx("input", { type: "text", className: `yn-bm-cell-input ${isFromMissing ? 'is-missing' : ''}`, value: leg.fromCity, placeholder: isFromMissing ? "⚠️ 必填出发城市" : "如：上海", "data-bill-id": billId, "data-field": `leg_${idx}_fromCity`, title: isFromMissing ? missingMap?.[`leg_${idx}_fromCity`] : '', onChange: e => onUpdateLeg(billId, idx, 'fromCity', e.target.value) }) }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsx("input", { type: "text", className: `yn-bm-cell-input ${isToMissing ? 'is-missing' : ''}`, value: leg.toCity, placeholder: isToMissing ? "⚠️ 必填目的城市" : "如：天津", "data-bill-id": billId, "data-field": `leg_${idx}_toCity`, title: isToMissing ? missingMap?.[`leg_${idx}_toCity`] : '', onChange: e => onUpdateLeg(billId, idx, 'toCity', e.target.value) }) }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsx("input", { type: "text", className: "yn-bm-cell-input", value: leg.flightOrTrain || leg.transport || '', onChange: e => onUpdateLeg(billId, idx, 'flightOrTrain', e.target.value), placeholder: "\u5982\uFF1ACZ6534 | \u5916\u9A7B:\u674E\u5EFA\u52C7 \u53BB\u7A0B\u98DE\u673A" }) }), jsxRuntimeExports.jsx("td", { style: { textAlign: 'center' }, children: jsxRuntimeExports.jsx("button", { type: "button", className: "yn-bm-btn-delete-row", onClick: () => onRemoveLeg(billId, idx), title: "\u5220\u9664\u8BE5\u822A\u6BB5", children: "\u2715" }) })] }, idx));
+                            }) })] })] }));
+    });
+    // ─── 子表格 2：💰 4 项预算核算表 (BUDGET ESTIMATION) ──────────
+    const BudgetEstimationSubTable = React.memo(({ billId, sc, claimAmount, onSCFieldChange, isBudgetInsufficient, missingMessage, }) => {
+        const total = computeSCTotal(sc);
+        const isCovered = total >= claimAmount;
+        const diff = total - claimAmount;
+        return (jsxRuntimeExports.jsxs("div", { className: "yn-bm-subgrid-box", children: [jsxRuntimeExports.jsxs("div", { className: "yn-bm-subgrid-header", children: [jsxRuntimeExports.jsx("span", { className: "title", children: "\uD83D\uDCB0 \u4E88\u7B97 (BUDGET ESTIMATION) \u6838\u7B97\u8868\u683C" }), jsxRuntimeExports.jsx("span", { className: `diff-pill ${isCovered ? 'diff-ok' : 'diff-warn'}`, children: isCovered ? `✅ 预算全额覆盖实际报销 (留存差额: ${formatCurrency(diff)})` : `⚠️ 预警: 预算合计低于报销实付 ${formatCurrency(-diff)} (需增加预算)` })] }), jsxRuntimeExports.jsxs("table", { className: "yn-bm-detail-table", children: [jsxRuntimeExports.jsx("thead", { children: jsxRuntimeExports.jsxs("tr", { children: [jsxRuntimeExports.jsx("th", { style: { width: '20%' }, children: "\u822A\u7A7A\u904B\u8CC3\uFF08\u4EA4\u901A\u8CBB\uFF09(AIRFARE ETC)" }), jsxRuntimeExports.jsx("th", { style: { width: '20%' }, children: "\u30DB\u30C6\u30EB\u4EE3 (HOTEL FEE)" }), jsxRuntimeExports.jsx("th", { style: { width: '20%' }, children: "\u8AA4\u9910\u88DC\u52A9 (Dining-delay ALLOW.)" }), jsxRuntimeExports.jsx("th", { style: { width: '20%' }, children: "\u305D\u306E\u4ED6 (OTHERS / \u5E02\u5185\u4EA4\u901A\u7B49)" }), jsxRuntimeExports.jsxs("th", { style: { width: '20%', background: isBudgetInsufficient ? '#fef2f2' : '#eff6ff' }, children: ["\u5408\u8A08 (TOTAL - \u9700 \u2265 \u5B9E\u9645\u62A5\u9500) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] })] }) }), jsxRuntimeExports.jsx("tbody", { children: jsxRuntimeExports.jsxs("tr", { children: [jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsxs("div", { className: "yn-bm-currency-cell", children: [jsxRuntimeExports.jsx("span", { className: "prefix", children: "\u00A5" }), jsxRuntimeExports.jsx("input", { type: "number", step: "0.01", className: "yn-bm-cell-input yn-bm-number-input", value: sc.airfareBudget, onChange: e => onSCFieldChange(billId, 'airfareBudget', Number(e.target.value) || 0) })] }) }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsxs("div", { className: "yn-bm-currency-cell", children: [jsxRuntimeExports.jsx("span", { className: "prefix", children: "\u00A5" }), jsxRuntimeExports.jsx("input", { type: "number", step: "0.01", className: "yn-bm-cell-input yn-bm-number-input", value: sc.hotelBudget, onChange: e => onSCFieldChange(billId, 'hotelBudget', Number(e.target.value) || 0) })] }) }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsxs("div", { className: "yn-bm-currency-cell", children: [jsxRuntimeExports.jsx("span", { className: "prefix", children: "\u00A5" }), jsxRuntimeExports.jsx("input", { type: "number", step: "0.01", className: "yn-bm-cell-input yn-bm-number-input", value: sc.mealAllowance, onChange: e => onSCFieldChange(billId, 'mealAllowance', Number(e.target.value) || 0) })] }) }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsxs("div", { className: "yn-bm-currency-cell", children: [jsxRuntimeExports.jsx("span", { className: "prefix", children: "\u00A5" }), jsxRuntimeExports.jsx("input", { type: "number", step: "0.01", className: "yn-bm-cell-input yn-bm-number-input", value: sc.otherBudget, onChange: e => onSCFieldChange(billId, 'otherBudget', Number(e.target.value) || 0) })] }) }), jsxRuntimeExports.jsx("td", { style: { background: isBudgetInsufficient ? '#fef2f2' : '#f8fafc', fontWeight: 800 }, children: jsxRuntimeExports.jsx("span", { className: `yn-bm-budget-total-val ${isBudgetInsufficient ? 'is-budget-insufficient' : ''}`, title: isBudgetInsufficient ? missingMessage : '', children: formatCurrency(total) }) })] }) })] })] }));
+    });
+    // ─── 子表格 3：📑 费用信息与预算归属分摊表 (BUDGET ALLOCATION & SPLIT) ───
+    const BudgetAllocationSubTable = React.memo(({ billId, allocations, onSplit, onRemove, onUpdateField, onSearchProject, missingMap, }) => {
+        return (jsxRuntimeExports.jsxs("div", { className: "yn-bm-subgrid-box", children: [jsxRuntimeExports.jsxs("div", { className: "yn-bm-subgrid-header", children: [jsxRuntimeExports.jsx("span", { className: "title", children: "\uD83D\uDCD1 \u8D39\u7528\u4FE1\u606F\u4E0E\u9884\u7B97\u5F52\u5C5E\u5206\u644A\u8868\u683C (BUDGET ALLOCATION & SPLIT)" }), jsxRuntimeExports.jsx("span", { className: "hint", children: "\u203B \u652F\u6301\u6309\u8D39\u7528\u7C7B\u578B\u5206\u914D\u9879\u76EE\uFF0C\u70B9\u51FB\u3010+ \u62C6\u5206\u3011\u53EF\u5C06\u5355\u9879\u8D39\u7528\u62C6\u4E3A\u591A\u884C\u9884\u7B97\u5F52\u5C5E\uFF08\u5982\u90E8\u5206\u5411\u5BA2\u6237\u8BF7\u6B3E\u3001\u90E8\u5206\u81EA\u8D1F\uFF09" })] }), jsxRuntimeExports.jsxs("table", { className: "yn-bm-detail-table", children: [jsxRuntimeExports.jsx("thead", { children: jsxRuntimeExports.jsxs("tr", { children: [jsxRuntimeExports.jsx("th", { style: { width: '45px', textAlign: 'center' }, children: "\u884C\u53F7" }), jsxRuntimeExports.jsx("th", { style: { width: '130px' }, children: "\u8D39\u7528\u7C7B\u578B" }), jsxRuntimeExports.jsx("th", { style: { width: '110px', textAlign: 'right' }, children: "\u8D39\u7528\u603B\u989D" }), jsxRuntimeExports.jsxs("th", { style: { width: '320px' }, children: ["\u9884\u7B97\u5F52\u5C5E (\u9879\u76EE\u7EF4\u8868) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsx("th", { style: { width: '110px', textAlign: 'right' }, children: "\u5206\u644A\u91D1\u989D" }), jsxRuntimeExports.jsxs("th", { style: { width: '95px', textAlign: 'right' }, children: ["\u5206\u644A\u6BD4\u4F8B ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsx("th", { style: { width: '100px', textAlign: 'center' }, children: "\u662F\u5426\u5411\u5BA2\u6237\u8BF7\u6B3E" }), jsxRuntimeExports.jsx("th", { style: { width: '90px', textAlign: 'center' }, children: "\u64CD\u4F5C" })] }) }), jsxRuntimeExports.jsx("tbody", { children: allocations.map((alloc, idx) => {
+                                const isProjectMissing = Boolean(missingMap?.[`alloc_${alloc.id}_projectName`]);
+                                const isRatioSumError = Boolean(missingMap?.[`alloc_ratio_sum_${alloc.expenseTypeName}`]);
+                                return (jsxRuntimeExports.jsxs("tr", { children: [jsxRuntimeExports.jsx("td", { style: { textAlign: 'center', fontWeight: 600 }, children: idx + 1 }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsx("span", { className: "yn-bm-exp-type-badge", children: alloc.expenseTypeName }) }), jsxRuntimeExports.jsx("td", { style: { textAlign: 'right', fontFamily: 'var(--bm-mono)' }, children: formatCurrency(alloc.expenseAmount) }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsx(ProjectSearchInput, { value: alloc.projectName, isMissing: isProjectMissing, missingMessage: missingMap?.[`alloc_${alloc.id}_projectName`], dataBillId: billId, dataField: `alloc_${alloc.id}_projectName`, onChange: (name, vo) => {
+                                                    onUpdateField(billId, alloc.id, 'projectName', name);
+                                                    if (vo?.id)
+                                                        onUpdateField(billId, alloc.id, 'projectId', vo.id);
+                                                }, onSearch: onSearchProject }) }), jsxRuntimeExports.jsx("td", { style: { textAlign: 'right' }, children: jsxRuntimeExports.jsx("input", { type: "number", step: "0.01", className: "yn-bm-cell-input yn-bm-number-input", value: alloc.allocatedAmount, onChange: e => onUpdateField(billId, alloc.id, 'allocatedAmount', Number(e.target.value) || 0) }) }), jsxRuntimeExports.jsx("td", { style: { textAlign: 'right' }, children: jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '3px' }, children: [jsxRuntimeExports.jsx("input", { type: "number", step: "1", style: { width: '52px', textAlign: 'right', padding: '1px 4px' }, className: `yn-bm-cell-input yn-bm-number-input ${isRatioSumError ? 'is-missing' : ''}`, value: alloc.ratioPercent, title: isRatioSumError ? missingMap?.[`alloc_ratio_sum_${alloc.expenseTypeName}`] : '', onChange: e => onUpdateField(billId, alloc.id, 'ratioPercent', Number(e.target.value) || 0) }), jsxRuntimeExports.jsx("span", { style: { fontSize: '11px', color: '#64748b' }, children: "%" })] }) }), jsxRuntimeExports.jsx("td", { style: { textAlign: 'center' }, children: jsxRuntimeExports.jsx(ToggleSwitch, { checked: alloc.customerCharge, onChange: v => onUpdateField(billId, alloc.id, 'customerCharge', v) }) }), jsxRuntimeExports.jsx("td", { style: { textAlign: 'center' }, children: jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }, children: [jsxRuntimeExports.jsx("button", { type: "button", className: "yn-bm-btn-split-row", onClick: () => onSplit(billId, alloc.id), title: "\u62C6\u5206\u4E3A\u591A\u884C\u9884\u7B97\u5F52\u5C5E (\u5982\u90E8\u5206\u8BF7\u6B3E)", children: "+ \u62C6\u5206" }), allocations.length > 1 && (jsxRuntimeExports.jsx("button", { type: "button", className: "yn-bm-btn-delete-row", onClick: () => onRemove(billId, alloc.id), title: "\u5220\u9664\u6B64\u62C6\u5206\u884C", children: "\u2715" }))] }) })] }, alloc.id));
+                            }) })] })] }));
+    });
+    // ─── 出差工作总结报告抽屉 (Markdown) ───────────────────────────
+    const TravelReportDrawer = React.memo(({ isOpen, title, content, onClose, onSave, }) => {
+        const [text, setText] = reactExports.useState(content || '');
+        reactExports.useEffect(() => {
+            setText(content || '');
+        }, [content]);
+        if (!isOpen)
+            return null;
+        return (jsxRuntimeExports.jsx("div", { className: "yn-bm-drawer-mask", onClick: onClose, children: jsxRuntimeExports.jsxs("div", { className: "yn-bm-drawer-content", onClick: e => e.stopPropagation(), children: [jsxRuntimeExports.jsxs("div", { className: "yn-bm-drawer-header", children: [jsxRuntimeExports.jsxs("div", { children: [jsxRuntimeExports.jsx("span", { className: "title", children: "\uD83D\uDCDD \u51FA\u5DEE\u5DE5\u4F5C\u603B\u7ED3\u62A5\u544A (Markdown)" }), jsxRuntimeExports.jsxs("span", { className: "subtitle", children: [title, " \u00B7 \u5BF9\u5E94\u5355\u636E F_BGNR \u5BCC\u6587\u672C\u533A"] })] }), jsxRuntimeExports.jsx("div", { style: { display: 'flex', alignItems: 'center', gap: '8px' }, children: jsxRuntimeExports.jsx("button", { type: "button", className: "yn-bm-close-x", onClick: onClose, children: "\u2715" }) })] }), jsxRuntimeExports.jsx("div", { className: "yn-bm-drawer-body", children: jsxRuntimeExports.jsx("textarea", { className: "yn-bm-report-textarea", placeholder: "\u5728\u6B64\u8F93\u5165\u51FA\u5DEE\u603B\u7ED3\u62A5\u544A (\u652F\u6301 Markdown \u683C\u5F0F\uFF0C\u5305\u542B\u6280\u672F\u4EA4\u6D41\u6210\u679C\u3001\u4E1A\u52A1\u63A8\u8FDB\u4E0E\u540E\u7EED\u8DDF\u8FDB\u7B49)...", value: text, onChange: e => setText(e.target.value) }) }), jsxRuntimeExports.jsxs("div", { className: "yn-bm-drawer-footer", children: [jsxRuntimeExports.jsxs("span", { className: "count", children: ["\u5B57\u6570\u7EDF\u8BA1: ", text.length, " \u5B57\u7B26"] }), jsxRuntimeExports.jsxs("div", { style: { display: 'flex', gap: '8px' }, children: [jsxRuntimeExports.jsx("button", { type: "button", className: "yn-bm-btn yn-bm-btn--secondary", onClick: onClose, children: "\u53D6\u6D88" }), jsxRuntimeExports.jsx("button", { type: "button", className: "yn-bm-btn yn-bm-btn--primary", onClick: () => {
+                                            onSave(text);
+                                            onClose();
+                                        }, children: "\u4FDD\u5B58\u51FA\u5DEE\u62A5\u544A" })] })] })] }) }));
+    });
+    // ─── 主看板工作台组件 (Pure Table Grid Mode) ──────────────────
+    function BillManagementDashboard({ initialState, onSaveDrafts, onSearchProject, rawGroups, defaultProjectName, defaultApplicantName, }) {
+        const [billPlans, setBillPlans] = reactExports.useState(initialState.billPlans);
+        const [selectedIds, setSelectedIds] = reactExports.useState(initialState.selectedBillIds);
+        const [expandedIds, setExpandedIds] = reactExports.useState(new Set(initialState.billPlans.filter(b => b.type === 'BC').map(b => b.id)));
+        const [isProcessing, setIsProcessing] = reactExports.useState(false);
+        const [progressText, setProgressText] = reactExports.useState('');
+        const [searchQuery, setSearchQuery] = reactExports.useState('');
+        const [activeReportBillId, setActiveReportBillId] = reactExports.useState(null);
+        // ── 必填与数据完整性校验 (实时) ──
+        const validation = reactExports.useMemo(() => validateBillPlans(billPlans), [billPlans]);
+        // ── 统计计算 ──
+        const stats = reactExports.useMemo(() => {
+            const selected = billPlans.filter(b => selectedIds.has(b.id));
+            return {
+                totalBills: billPlans.length,
+                bcCount: billPlans.filter(b => b.type === 'BC').length,
+                bjCount: billPlans.filter(b => b.type === 'BJ').length,
+                selectedCount: selected.length,
+                totalExpenses: selected.reduce((s, b) => s + b.expenseCount, 0),
+                totalInvoices: selected.reduce((s, b) => s + b.invoiceCount, 0),
+                totalAmount: selected.reduce((s, b) => s + b.totalAmount, 0),
+                scTotalBudget: selected
+                    .filter(b => b.scPlan)
+                    .reduce((s, b) => s + (b.scPlan?.totalBudget || 0), 0),
+            };
+        }, [billPlans, selectedIds]);
+        // ── 过滤搜索 ──
+        const filteredPlans = reactExports.useMemo(() => {
+            if (!searchQuery.trim())
+                return billPlans;
+            const q = searchQuery.toLowerCase();
+            return billPlans.filter(b => b.title.toLowerCase().includes(q) ||
+                b.destination.toLowerCase().includes(q) ||
+                b.purpose.toLowerCase().includes(q) ||
+                b.projectName.toLowerCase().includes(q) ||
+                BILL_TYPE_LABELS[b.type].includes(q));
+        }, [billPlans, searchQuery]);
+        // ── Handlers ──
+        const handleSelect = reactExports.useCallback((id) => {
+            setSelectedIds(prev => {
+                const next = new Set(prev);
+                if (next.has(id))
+                    next.delete(id);
+                else
+                    next.add(id);
+                return next;
+            });
+        }, []);
+        const handleSelectAll = reactExports.useCallback(() => {
+            if (selectedIds.size === filteredPlans.length) {
+                setSelectedIds(new Set());
+            }
+            else {
+                setSelectedIds(new Set(filteredPlans.map(b => b.id)));
+            }
+        }, [selectedIds, filteredPlans]);
+        const handleToggleExpand = reactExports.useCallback((id) => {
+            setExpandedIds(prev => {
+                const next = new Set(prev);
+                if (next.has(id))
+                    next.delete(id);
+                else
+                    next.add(id);
+                return next;
+            });
+        }, []);
+        const handleExpandAll = reactExports.useCallback(() => {
+            const bcIds = billPlans.filter(b => b.type === 'BC').map(b => b.id);
+            if (expandedIds.size === bcIds.length) {
+                setExpandedIds(new Set());
+            }
+            else {
+                setExpandedIds(new Set(bcIds));
+            }
+        }, [billPlans, expandedIds]);
+        const handleFieldChange = reactExports.useCallback((billId, field, val) => {
+            setBillPlans(prev => updateBillPlanField(prev, billId, field, val));
+        }, []);
+        const handleSCFieldChange = reactExports.useCallback((billId, field, val) => {
+            setBillPlans(prev => updateSCField(prev, billId, field, val));
+        }, []);
+        const handleAddLeg = reactExports.useCallback((billId) => {
+            setBillPlans(prev => prev.map(p => {
+                if (p.id !== billId || !p.scPlan)
+                    return p;
+                const newLegs = [
+                    ...(p.scPlan.legs || []),
+                    {
+                        date: p.scPlan.endDate ? `${p.scPlan.endDate}T18:00` : '2026-07-25T18:00',
+                        fromCity: p.scPlan.destination || '出差地',
+                        toCity: '上海',
+                        transport: '飞机/高铁',
+                        travelerName: p.scPlan.applicantName,
+                    }
+                ];
+                return {
+                    ...p,
+                    scPlan: { ...p.scPlan, legs: newLegs }
+                };
+            }));
+        }, []);
+        const handleRemoveLeg = reactExports.useCallback((billId, idx) => {
+            setBillPlans(prev => prev.map(p => {
+                if (p.id !== billId || !p.scPlan)
+                    return p;
+                const newLegs = (p.scPlan.legs || []).filter((_, i) => i !== idx);
+                return {
+                    ...p,
+                    scPlan: { ...p.scPlan, legs: newLegs }
+                };
+            }));
+        }, []);
+        const handleUpdateLeg = reactExports.useCallback((billId, idx, field, val) => {
+            setBillPlans(prev => prev.map(p => {
+                if (p.id !== billId || !p.scPlan)
+                    return p;
+                const newLegs = (p.scPlan.legs || []).map((leg, i) => i === idx ? { ...leg, [field]: val } : leg);
+                return {
+                    ...p,
+                    scPlan: { ...p.scPlan, legs: newLegs }
+                };
+            }));
+        }, []);
+        // 预算归属分摊操作
+        const handleSplitAllocation = reactExports.useCallback((billId, allocId) => {
+            setBillPlans(prev => splitBudgetAllocation(prev, billId, allocId));
+        }, []);
+        const handleRemoveAllocation = reactExports.useCallback((billId, allocId) => {
+            setBillPlans(prev => removeBudgetAllocation(prev, billId, allocId));
+        }, []);
+        const handleUpdateAllocationField = reactExports.useCallback((billId, allocId, field, val) => {
+            setBillPlans(prev => updateBudgetAllocationField(prev, billId, allocId, field, val));
+        }, []);
+        const handleSaveReport = reactExports.useCallback((text) => {
+            if (!activeReportBillId)
+                return;
+            setBillPlans(prev => updateBillPlanField(prev, activeReportBillId, 'travelReport', text));
+        }, [activeReportBillId]);
+        // ── AI 智能副驾一键补全漏填字段 ──
+        const handleAutoFillWithAi = reactExports.useCallback(() => {
+            const { updatedPlans, filledCount } = autoFillBillPlansWithAi(billPlans, rawGroups || [], defaultProjectName, defaultApplicantName);
+            setBillPlans(updatedPlans);
+            setProgressText(`✨ AI 智能副驾已成功补全 ${filledCount} 处要素（出差地、日程、航段、充裕预算与项目归属）`);
+            // 自动展开所有出差单，方便用户一目了然核对
+            const bcIds = updatedPlans.filter(b => b.type === 'BC').map(b => b.id);
+            setExpandedIds(new Set(bcIds));
+        }, [billPlans, rawGroups, defaultProjectName, defaultApplicantName]);
+        // ── 一键聚焦跳转首处漏填项 ──
+        const handleFocusFirstMissing = reactExports.useCallback(() => {
+            if (validation.errors.length === 0)
+                return;
+            const firstErr = validation.errors[0];
+            // 如果属于某个单据的子表格，先自动展开该单据
+            if (firstErr.subTable) {
+                setExpandedIds(prev => new Set(prev).add(firstErr.billId));
+            }
+            setTimeout(() => {
+                const el = document.querySelector(`[data-bill-id="${firstErr.billId}"][data-field="${firstErr.field}"]`) ||
+                    document.querySelector('.yn-bm-cell-input.is-missing');
+                if (el) {
+                    el.focus();
+                    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+            }, 60);
+        }, [validation]);
+        // ── 注册全局 AI Copilot 通信桥 (支持右侧 AssistantChatPanel 对话驱动) ──
+        reactExports.useEffect(() => {
+            const bridge = {
+                getState: () => ({
+                    plans: billPlans,
+                    validation,
+                }),
+                updateField: (billId, field, val) => {
+                    setBillPlans(prev => updateBillPlanField(prev, billId, field, val));
+                },
+                updateSCField: (billId, field, val) => {
+                    setBillPlans(prev => updateSCField(prev, billId, field, val));
+                },
+                autoFillAll: handleAutoFillWithAi,
+                setPlans: (newPlans) => {
+                    setBillPlans(newPlans);
+                },
+            };
+            window.__YN_BILL_COPILOT__ = bridge;
+            const handleCustomEvent = (e) => {
+                const detail = e.detail;
+                if (!detail)
+                    return;
+                if (detail.action === 'AUTO_FILL') {
+                    handleAutoFillWithAi();
+                }
+                else if (detail.action === 'UPDATE_FIELD' && detail.billId && detail.field) {
+                    setBillPlans(prev => updateBillPlanField(prev, detail.billId, detail.field, detail.val));
+                }
+                else if (detail.action === 'UPDATE_SC_FIELD' && detail.billId && detail.field) {
+                    setBillPlans(prev => updateSCField(prev, detail.billId, detail.field, detail.val));
+                }
+            };
+            window.addEventListener('YN_COPILOT_BILL_COMMAND', handleCustomEvent);
+            return () => {
+                delete window.__YN_BILL_COPILOT__;
+                window.removeEventListener('YN_COPILOT_BILL_COMMAND', handleCustomEvent);
+            };
+        }, [billPlans, validation, handleAutoFillWithAi]);
+        const handleSaveSelected = reactExports.useCallback(async () => {
+            const selected = billPlans.filter(b => selectedIds.has(b.id));
+            if (selected.length === 0)
+                return;
+            // 检查所选单据中是否有漏填必填项
+            const selectedErrors = validation.errors.filter(e => selectedIds.has(e.billId));
+            if (selectedErrors.length > 0) {
+                const confirmMsg = `⚠️ 检出所选单据仍有 ${selectedErrors.length} 处必填项未填写/不合规（已用红框高亮）：\n` +
+                    selectedErrors.slice(0, 3).map(e => `• ${e.message}`).join('\n') +
+                    (selectedErrors.length > 3 ? `\n...等共 ${selectedErrors.length} 处` : '') +
+                    `\n\n建议点击右上角【✨ AI 智能副驾一键补全漏填】自动补齐后再入库。\n是否仍然强制保存草稿？`;
+                if (!window.confirm(confirmMsg)) {
+                    handleFocusFirstMissing();
+                    return;
+                }
+            }
+            setIsProcessing(true);
+            setProgressText(`正在极速持久化 ${selected.length} 张单据草稿 (commit: false)...`);
+            try {
+                setBillPlans(prev => prev.map(p => selectedIds.has(p.id) ? { ...p, status: 'saving' } : p));
+                await onSaveDrafts(selected);
+                setBillPlans(prev => prev.map(p => selectedIds.has(p.id) ? { ...p, status: 'saved', errorMessage: '' } : p));
+                setProgressText(`✅ 已成功持久化 ${selected.length} 张单据草稿入库`);
+            }
+            catch (err) {
+                setBillPlans(prev => prev.map(p => selectedIds.has(p.id) ? { ...p, status: 'error', errorMessage: err?.message || '保存失败' } : p));
+                setProgressText(`❌ 保存失败: ${err?.message || '接口异常'}`);
+            }
+            finally {
+                setIsProcessing(false);
+            }
+        }, [billPlans, selectedIds, validation, onSaveDrafts, handleFocusFirstMissing]);
+        const activeReportPlan = reactExports.useMemo(() => {
+            return billPlans.find(b => b.id === activeReportBillId);
+        }, [billPlans, activeReportBillId]);
+        const isAllSelected = selectedIds.size === filteredPlans.length && filteredPlans.length > 0;
+        return (jsxRuntimeExports.jsxs("div", { className: "yn-bm-fullscreen-workspace", children: [jsxRuntimeExports.jsxs("div", { className: "yn-bm-workspace-topbar", children: [jsxRuntimeExports.jsxs("div", { className: "yn-bm-topbar-left", children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-workspace-title", children: "\uD83D\uDCCB \u62A5\u9500\u5355\u4E0E\u7533\u8BF7\u5355\u7BA1\u7406\u5DE5\u4F5C\u53F0 (\u7EAF\u8868\u683C\u6A21\u5F0F)" }), jsxRuntimeExports.jsxs("span", { className: "yn-bm-top-stat", children: ["\u5171 ", stats.totalBills, " \u5F20\u5355\u636E (", jsxRuntimeExports.jsxs("span", { className: "yn-bm-tag yn-bm-tag--bc", children: [stats.bcCount, " \u5F20\u51FA\u5DEE\u5355"] }), ' + ', jsxRuntimeExports.jsxs("span", { className: "yn-bm-tag yn-bm-tag--bj", children: [stats.bjCount, " \u5F20\u7ECF\u8D39\u5355"] }), ")"] }), validation.missingCount > 0 ? (jsxRuntimeExports.jsxs("button", { type: "button", className: "yn-bm-health-badge is-warning", onClick: handleFocusFirstMissing, title: "\u70B9\u51FB\u81EA\u52A8\u805A\u7126\u5B9A\u4F4D\u9996\u5904\u6F0F\u586B\u9879", children: ["\u26A0\uFE0F \u68C0\u51FA ", validation.missingCount, " \u5904\u5F85\u8865\u5FC5\u586B (\u70B9\u51FB\u5B9A\u4F4D)"] })) : (jsxRuntimeExports.jsx("span", { className: "yn-bm-health-badge is-ok", title: "\u6240\u6709\u5355\u636E\u5FC5\u586B\u8981\u7D20\u5747\u5DF2\u9F50\u5907\uFF0C\u53EF\u5B89\u5168\u4FDD\u5B58\u8349\u7A3F", children: "\u2705 \u5FC5\u586B\u9879\u5DF2\u9F50\u5907 \u00B7 \u53EF\u968F\u65F6\u5165\u5E93" }))] }), jsxRuntimeExports.jsx("div", { className: "yn-bm-topbar-center", children: jsxRuntimeExports.jsx("input", { type: "text", className: "yn-bm-cell-input yn-bm-search-input", placeholder: "\u641C\u7D22\u76EE\u7684\u5730 / \u51FA\u5DEE\u76EE\u7684 / \u9879\u76EE\u540D\u79F0...", value: searchQuery, onChange: e => setSearchQuery(e.target.value) }) }), jsxRuntimeExports.jsxs("div", { className: "yn-bm-topbar-right", children: [jsxRuntimeExports.jsx("button", { type: "button", className: "yn-bm-btn yn-bm-btn--ai-hero yn-bm-btn--sm", onClick: handleAutoFillWithAi, title: "\u6839\u636E\u53D1\u7968\u51ED\u8BC1\u4E0E\u6392\u671F\u81EA\u52A8\u63A8\u5BFC\u51FA\u5DEE\u76EE\u7684\u5730\u3001\u822A\u6BB5\u3001\u5408\u89C4\u9884\u7B97\u53CA\u9879\u76EE\u5F52\u5C5E", children: "\u2728 AI \u667A\u80FD\u526F\u9A7E\u4E00\u952E\u8865\u5168\u6F0F\u586B" }), jsxRuntimeExports.jsx("button", { type: "button", className: "yn-bm-btn yn-bm-btn--secondary yn-bm-btn--sm", onClick: handleExpandAll, title: "\u5C55\u5F00\u6216\u6298\u53E0\u5168\u90E8\u660E\u7EC6\u5B50\u8868\u683C", children: expandedIds.size > 0 ? '⊟ 折叠全部子表格' : '⊞ 平铺全部子表格' })] })] }), jsxRuntimeExports.jsx("div", { className: "yn-bm-table-scroll-wrap", children: filteredPlans.length === 0 ? (jsxRuntimeExports.jsxs("div", { className: "yn-bm-empty", children: [jsxRuntimeExports.jsx("span", { className: "icon", children: "\uD83D\uDCC2" }), jsxRuntimeExports.jsx("span", { className: "text", children: "\u6682\u65E0\u5F85\u5EFA\u5355\u636E" }), jsxRuntimeExports.jsx("span", { className: "sub", children: "\u8BF7\u5148\u5728\u3010\uD83D\uDCB3 \u8D39\u7528\u4FE1\u606F\u660E\u7EC6\u3011Tab \u4E2D\u6574\u7406\u8D39\u7528\u5E76\u805A\u7C7B Trip" })] })) : (jsxRuntimeExports.jsxs("table", { className: "yn-bm-spread-table", children: [jsxRuntimeExports.jsx("thead", { children: jsxRuntimeExports.jsxs("tr", { children: [jsxRuntimeExports.jsx("th", { style: { width: '38px', textAlign: 'center' }, children: jsxRuntimeExports.jsx("input", { type: "checkbox", checked: isAllSelected, onChange: handleSelectAll, className: "yn-bm-checkbox" }) }), jsxRuntimeExports.jsx("th", { style: { width: '30px' } }), jsxRuntimeExports.jsx("th", { style: { width: '125px' }, children: "\u5355\u636E\u7C7B\u578B" }), jsxRuntimeExports.jsx("th", { style: { width: '90px' }, children: "\u51FA\u5DEE\u7C7B\u578B" }), jsxRuntimeExports.jsxs("th", { style: { width: '95px' }, children: ["\u51FA\u5DEE\u4EBA\u5458 ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsxs("th", { style: { width: '100px' }, children: ["\u51FA\u5F35\u5148 (\u57CE\u5E02) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsxs("th", { style: { width: '360px' }, children: ["\u51FA\u5F35\u76EE\u7684 (PURPOSE) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsxs("th", { style: { width: '215px' }, children: ["\u671F\u9593 (From ~ To) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsxs("th", { style: { width: '290px' }, children: ["\u9884\u7B97\u5F52\u5C5E (\u9879\u76EE\u7EF4\u8868) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsx("th", { style: { width: '85px', textAlign: 'center' }, children: "\u5411\u5BA2\u6237\u8BF7\u6B3E" }), jsxRuntimeExports.jsxs("th", { style: { width: '120px', textAlign: 'right' }, children: ["\u9884\u7B97\u5408\u8BA1 (SC) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsx("th", { style: { width: '110px', textAlign: 'right' }, children: "\u5B9E\u62A5\u5B9E\u9500\u91D1\u989D" }), jsxRuntimeExports.jsx("th", { style: { width: '95px', textAlign: 'center' }, children: "\u51FA\u5DEE\u603B\u7ED3\u62A5\u544A" }), jsxRuntimeExports.jsx("th", { style: { width: '95px', textAlign: 'center' }, children: "\u72B6\u6001" })] }) }), jsxRuntimeExports.jsx("tbody", { children: filteredPlans.map(plan => {
+                                    const isSelected = selectedIds.has(plan.id);
+                                    const isExpanded = expandedIds.has(plan.id);
+                                    const isBC = plan.type === 'BC';
+                                    const sc = plan.scPlan;
+                                    const missingMap = validation.errorMapByBillId[plan.id] || {};
+                                    const isApplicantMissing = Boolean(missingMap.applicantName);
+                                    const isApplicantAi = plan.aiFilledFields?.includes('applicantName');
+                                    const isDestMissing = isBC && Boolean(missingMap.destination);
+                                    const isDestAi = plan.aiFilledFields?.includes('destination');
+                                    const isPurposeMissing = Boolean(missingMap.purpose);
+                                    const isPurposeAi = plan.aiFilledFields?.includes('purpose');
+                                    const isStartMissing = isBC && Boolean(missingMap.startDate);
+                                    const isStartAi = plan.aiFilledFields?.includes('startDate');
+                                    const isEndMissing = isBC && Boolean(missingMap.endDate);
+                                    const isEndAi = plan.aiFilledFields?.includes('endDate');
+                                    const isProjectMissing = Boolean(missingMap.projectName);
+                                    const isProjectAi = plan.aiFilledFields?.includes('projectName');
+                                    const isBudgetInsufficient = isBC && sc && Boolean(missingMap.scTotalBudget);
+                                    Boolean(plan.aiFilledFields && plan.aiFilledFields.length > 0);
+                                    return (jsxRuntimeExports.jsxs(React.Fragment, { children: [jsxRuntimeExports.jsxs("tr", { className: `yn-bm-master-row ${isSelected ? 'is-selected' : ''}`, children: [jsxRuntimeExports.jsx("td", { style: { textAlign: 'center' }, children: jsxRuntimeExports.jsx("input", { type: "checkbox", checked: isSelected, onChange: () => handleSelect(plan.id), className: "yn-bm-checkbox" }) }), jsxRuntimeExports.jsx("td", { style: { textAlign: 'center' }, children: jsxRuntimeExports.jsx("button", { type: "button", className: `yn-bm-expand-btn ${isExpanded ? 'is-open' : ''}`, onClick: () => handleToggleExpand(plan.id), title: "\u5C55\u5F00/\u6536\u8D77\u5B50\u8868\u683C", children: "\u25B6" }) }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsxs("select", { className: "yn-bm-cell-input yn-bm-select", value: plan.type, onChange: e => handleFieldChange(plan.id, 'type', e.target.value), children: [jsxRuntimeExports.jsx("option", { value: "BC", children: BILL_TYPE_LABELS.BC }), jsxRuntimeExports.jsx("option", { value: "BJ", children: BILL_TYPE_LABELS.BJ })] }) }), jsxRuntimeExports.jsx("td", { children: isBC ? (jsxRuntimeExports.jsxs("select", { className: "yn-bm-cell-input yn-bm-select", value: plan.tripType, onChange: e => {
+                                                                const val = e.target.value;
+                                                                handleFieldChange(plan.id, 'tripType', val);
+                                                                if (sc)
+                                                                    handleSCFieldChange(plan.id, 'tripType', val);
+                                                            }, children: [jsxRuntimeExports.jsx("option", { value: "\u5883\u5185\u51FA\u5F35", children: "\u5883\u5185\u51FA\u5F35" }), jsxRuntimeExports.jsx("option", { value: "\u5883\u5916\u51FA\u5F35", children: "\u5883\u5916\u51FA\u5F35" })] })) : (jsxRuntimeExports.jsx("span", { className: "yn-bm-muted", children: "\u2014" })) }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsx("input", { type: "text", className: `yn-bm-cell-input ${isApplicantMissing ? 'is-missing' : ''} ${isApplicantAi ? 'is-ai-filled' : ''}`, value: plan.applicantName, placeholder: isApplicantMissing ? "⚠️ 必填申请人" : "申请人", "data-bill-id": plan.id, "data-field": "applicantName", title: isApplicantMissing ? missingMap.applicantName : (isApplicantAi ? '✦ AI 已自动对齐出差人' : ''), onChange: e => {
+                                                                handleFieldChange(plan.id, 'applicantName', e.target.value);
+                                                                if (sc)
+                                                                    handleSCFieldChange(plan.id, 'applicantName', e.target.value);
+                                                            } }) }), jsxRuntimeExports.jsx("td", { children: isBC ? (jsxRuntimeExports.jsx("input", { type: "text", className: `yn-bm-cell-input ${isDestMissing ? 'is-missing' : ''} ${isDestAi ? 'is-ai-filled' : ''}`, value: plan.destination, placeholder: isDestMissing ? "⚠️ 必填出差城市" : "目的地城市", "data-bill-id": plan.id, "data-field": "destination", title: isDestMissing ? missingMap.destination : (isDestAi ? '✦ AI 已智能提取城市' : ''), onChange: e => {
+                                                                handleFieldChange(plan.id, 'destination', e.target.value);
+                                                                if (sc)
+                                                                    handleSCFieldChange(plan.id, 'destination', e.target.value);
+                                                            } })) : (jsxRuntimeExports.jsx("span", { className: "yn-bm-muted", children: "\u2014" })) }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsx("input", { type: "text", className: `yn-bm-cell-input ${isPurposeMissing ? 'is-missing' : ''} ${isPurposeAi ? 'is-ai-filled' : ''}`, value: plan.purpose, placeholder: isPurposeMissing ? "⚠️ 必填出差目的/业务事由..." : "输入出差目的...", "data-bill-id": plan.id, "data-field": "purpose", title: isPurposeMissing ? missingMap.purpose : (isPurposeAi ? '✦ AI 已自动规范化事由' : ''), onChange: e => {
+                                                                handleFieldChange(plan.id, 'purpose', e.target.value);
+                                                                if (sc)
+                                                                    handleSCFieldChange(plan.id, 'purpose', e.target.value);
+                                                            } }) }), jsxRuntimeExports.jsx("td", { children: isBC ? (jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: '3px' }, children: [jsxRuntimeExports.jsx("input", { type: "date", style: { width: '92px', fontSize: '11px', padding: '1px 3px' }, className: `yn-bm-cell-input ${isStartMissing ? 'is-missing' : ''} ${isStartAi ? 'is-ai-filled' : ''}`, value: plan.startDate, "data-bill-id": plan.id, "data-field": "startDate", title: isStartMissing ? missingMap.startDate : (isStartAi ? '✦ AI 提取行程起日' : ''), onChange: e => {
+                                                                        handleFieldChange(plan.id, 'startDate', e.target.value);
+                                                                        if (sc)
+                                                                            handleSCFieldChange(plan.id, 'startDate', e.target.value);
+                                                                    } }), jsxRuntimeExports.jsx("span", { style: { color: '#94a3b8' }, children: "~" }), jsxRuntimeExports.jsx("input", { type: "date", style: { width: '92px', fontSize: '11px', padding: '1px 3px' }, className: `yn-bm-cell-input ${isEndMissing ? 'is-missing' : ''} ${isEndAi ? 'is-ai-filled' : ''}`, value: plan.endDate, "data-bill-id": plan.id, "data-field": "endDate", title: isEndMissing ? missingMap.endDate : (isEndAi ? '✦ AI 提取行程止日' : ''), onChange: e => {
+                                                                        handleFieldChange(plan.id, 'endDate', e.target.value);
+                                                                        if (sc)
+                                                                            handleSCFieldChange(plan.id, 'endDate', e.target.value);
+                                                                    } })] })) : (jsxRuntimeExports.jsx("span", { className: "yn-bm-muted", children: "\u2014" })) }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsx(ProjectSearchInput, { value: plan.projectName, isMissing: isProjectMissing, missingMessage: missingMap.projectName, isAiFilled: isProjectAi, dataBillId: plan.id, dataField: "projectName", onChange: (name, vo) => {
+                                                                handleFieldChange(plan.id, 'projectName', name);
+                                                                if (vo?.id)
+                                                                    handleFieldChange(plan.id, 'projectId', vo.id);
+                                                            }, onSearch: onSearchProject }) }), jsxRuntimeExports.jsx("td", { style: { textAlign: 'center' }, children: jsxRuntimeExports.jsx(ToggleSwitch, { checked: plan.customerCharge, onChange: v => handleFieldChange(plan.id, 'customerCharge', v) }) }), jsxRuntimeExports.jsx("td", { style: { textAlign: 'right' }, children: sc ? (jsxRuntimeExports.jsx("span", { className: `yn-bm-budget-total-col ${isBudgetInsufficient ? 'is-budget-insufficient' : ''}`, "data-bill-id": plan.id, "data-field": "scTotalBudget", title: isBudgetInsufficient ? missingMap.scTotalBudget : '预算合计 (需 ≥ 实际报销)', children: formatCurrency(sc.totalBudget) })) : (jsxRuntimeExports.jsx("span", { className: "yn-bm-muted", children: "\u2014" })) }), jsxRuntimeExports.jsx("td", { style: { textAlign: 'right' }, children: jsxRuntimeExports.jsx("span", { className: "yn-bm-currency-val", children: formatCurrency(plan.totalAmount) }) }), jsxRuntimeExports.jsx("td", { style: { textAlign: 'center' }, children: isBC ? (jsxRuntimeExports.jsx("button", { type: "button", className: `yn-bm-report-pill ${plan.travelReport ? 'has-content' : ''}`, onClick: () => setActiveReportBillId(plan.id), children: plan.travelReport ? `✅ 已填 (${plan.travelReport.length}字)` : '📝 撰写' })) : (jsxRuntimeExports.jsx("span", { className: "yn-bm-muted", children: "\u2014" })) }), jsxRuntimeExports.jsx("td", { style: { textAlign: 'center' }, children: jsxRuntimeExports.jsx(StatusBadge, { status: plan.status, error: plan.errorMessage }) })] }), isExpanded && (jsxRuntimeExports.jsx("tr", { className: "yn-bm-subtables-row", children: jsxRuntimeExports.jsx("td", { colSpan: 14, className: "yn-bm-subtables-cell", children: jsxRuntimeExports.jsxs("div", { className: "yn-bm-subtables-container", children: [isBC && sc && (jsxRuntimeExports.jsx(ItinerarySubTable, { billId: plan.id, legs: sc.legs || [], onAddLeg: handleAddLeg, onRemoveLeg: handleRemoveLeg, onUpdateLeg: handleUpdateLeg, missingMap: missingMap, aiFilled: plan.aiFilledFields?.includes('legs') })), isBC && sc && (jsxRuntimeExports.jsx(BudgetEstimationSubTable, { billId: plan.id, sc: sc, claimAmount: plan.totalAmount, onSCFieldChange: handleSCFieldChange, isBudgetInsufficient: isBudgetInsufficient, missingMessage: missingMap.scTotalBudget })), jsxRuntimeExports.jsx(BudgetAllocationSubTable, { billId: plan.id, allocations: plan.budgetAllocations || [], onSplit: handleSplitAllocation, onRemove: handleRemoveAllocation, onUpdateField: handleUpdateAllocationField, onSearchProject: onSearchProject, missingMap: missingMap })] }) }) }))] }, plan.id));
+                                }) })] })) }), jsxRuntimeExports.jsxs("div", { className: "yn-bm-workspace-footer", children: [jsxRuntimeExports.jsxs("div", { className: "yn-bm-footer-summary", children: [jsxRuntimeExports.jsxs("span", { className: "pill", children: ["\u5DF2\u9009 ", jsxRuntimeExports.jsx("strong", { children: stats.selectedCount }), " \u5F20\u5355\u636E"] }), jsxRuntimeExports.jsxs("span", { className: "pill", children: ["\u5173\u8054 ", jsxRuntimeExports.jsx("strong", { children: stats.totalExpenses }), " \u7B14\u8D39\u7528"] }), jsxRuntimeExports.jsxs("span", { className: "pill", children: ["\u7968\u636E ", jsxRuntimeExports.jsx("strong", { children: stats.totalInvoices }), " \u5F20\u53D1\u7968"] }), jsxRuntimeExports.jsxs("span", { className: "pill pill-primary", children: ["\u5B9E\u62A5\u5B9E\u9500\u5408\u8BA1: ", jsxRuntimeExports.jsx("strong", { children: formatCurrency(stats.totalAmount) })] }), stats.scTotalBudget > 0 && (jsxRuntimeExports.jsxs("span", { className: "pill pill-sc", children: ["SC \u9884\u7B97\u603B\u8BA1: ", jsxRuntimeExports.jsx("strong", { children: formatCurrency(stats.scTotalBudget) })] }))] }), jsxRuntimeExports.jsxs("div", { className: "yn-bm-footer-actions", children: [progressText && (jsxRuntimeExports.jsx("span", { className: "yn-bm-progress-msg", children: progressText })), jsxRuntimeExports.jsx("button", { type: "button", className: "yn-bm-btn yn-bm-btn--primary yn-bm-btn--lg", onClick: handleSaveSelected, disabled: isProcessing || stats.selectedCount === 0, children: isProcessing
+                                        ? '⏳ 正在保存入库...'
+                                        : `💾 批量持久化已选 ${stats.selectedCount} 张草稿入库 (commit: false)` })] })] }), jsxRuntimeExports.jsx(TravelReportDrawer, { isOpen: Boolean(activeReportBillId), title: activeReportPlan?.title || '出差工作报告', content: activeReportPlan?.travelReport || '', onClose: () => setActiveReportBillId(null), onSave: handleSaveReport })] }));
+    }
+
+    /**
+     * 批量撰写各出差行程的出差报告 (用于聊天面板中用户输入多段行程)
+     */
+    async function generateBatchTravelReportsWithAi(userPromptText, existingPlans = [], signal) {
+        const canUseLlm = isLlmConfigured();
+        if (canUseLlm) {
+            try {
+                AutopilotLogger.info(`[TravelReport] 正在通过 LLM 批量解析并撰写各行程出差报告...`);
+                const systemPrompt = `你是一名资深企业 IT 与差旅管理专家。
+用户提供了出差行程排期或各轮出差的具体调研过程（例如天津、广州、金山、合肥、大连、嘉兴等多轮行程）。
+你的核心任务是：深入阅读用户提供的所有日程细节，为其中的【每一轮独立出差行程】分别撰写一份内容翔实、条理清晰、具备极高可读性的【出差工作总结报告】(Markdown 格式)。
+
+请严格按如下 JSON 结构返回（以便系统在界面中展示并支持用户一键回填到对应出差单）：
+{
+  "summaryMarkdown": "对本次批量报告撰写的总览概述（约100字），列出共撰写了几份报告",
+  "reports": [
+    {
+      "tripIndex": 1,
+      "title": "出差报告一：天津一期（SRK-JD、SRK-TH、TCT）",
+      "dest": "天津",
+      "content": "## 天津一期出差工作总结报告\\n\\n- **出差时间**：2026年7月20日 – 7月25日\\n- **出差人员**：陈浩、成勇、李建勇\\n- **调查据点**：住理工津荣模具（SRK-JD）、瑗宇住理工（SRK-TH）、东海化成（TCT）\\n...\\n### 一、现场主要任务与工作成果\\n1. ...\\n### 二、发现的主要问题与备忘\\n...\\n### 三、后续推进计划\\n..."
+    }
+  ]
+}
+
+【撰写铁律】：
+1. 每一份报告的 content 必须详尽充分，充分消化用户给出的调研细节（包括具体日期开展的弱电查验、车间点位核对、与外协运维座谈、机房巡检等），绝不能敷衍缩写！
+2. 格式必须规范，包含：时间与人员、调查据点、现场主要任务与成果、发现的问题与备忘、后续推进计划；
+3. 输出合法的 JSON 格式。`;
+                const res = await callDirectLlmJson(systemPrompt, userPromptText, signal, 90000 // 90秒超时
+                );
+                if (res.success && res.data?.reports && Array.isArray(res.data.reports) && res.data.reports.length > 0) {
+                    const reports = res.data.reports.map((r, i) => ({
+                        tripIndex: r.tripIndex || (i + 1),
+                        title: r.title || `出差报告 ${i + 1} (${r.dest || '出差地'})`,
+                        dest: r.dest || '出差地',
+                        content: r.content || ''
+                    }));
+                    const summary = res.data.summaryMarkdown || `✨ 已成功基于您的出差过程记录，为您深度撰写并排版了 **${reports.length}** 份出差工作总结报告：`;
+                    return {
+                        summaryMarkdown: summary,
+                        reports
+                    };
+                }
+            }
+            catch (e) {
+                AutopilotLogger.warn(`[TravelReport] LLM 批量撰写报告异常: ${e?.message || e}`);
+            }
+        }
+        // 容灾兜底：基于用户输入文本的分段解析
+        return parseBatchReportsFromRawText(userPromptText, existingPlans);
+    }
+    /**
+     * 动态组装单份出差报告（非死文本，融合全部动态参数）
+     */
+    function assembleDynamicReportFallback(dest, start, end, applicant, purpose, project, legsText, expenseTypes) {
+        const expenseDesc = expenseTypes.length > 0 ? `（包含${expenseTypes.join('、')}等财务凭据支持）` : '';
+        return `## ${dest}出差工作总结报告
+
+### 📋 基本信息
+- **出差时间**：${start || '未指定'} 至 ${end || '未指定'}
+- **出差人员**：${applicant}
+- **出差目的地**：${dest}
+- **归属项目**：${project}
+- **出差目的**：${purpose}
+
+### ✈️ 往返交通与行程记录
+${legsText}
+
+### 一、主要任务与现场工作成果
+1. **现场业务调研与方案对接**：赴 ${dest} 据点展开实地工作，与本地系统负责人及关键业务岗位进行深入交流，核对业务流转现状及需求口径；
+2. **核心指标核验与现场勘验**：针对 ${project} 推进中的关键节点进行实地查验，核对运行环境及相关配置参数，排查潜在业务风险；
+3. **协同交流与反馈闭环**：组织现场沟通会议，梳理汇总现场提出的改进意见与业务阻碍，达成阶段性共识并制定后续推进节点。
+
+### 二、关键问题梳理与备忘
+- 梳理现场收集的技术及业务需求，明确各方职责分工；
+- 核实 ${dest} 现场实际运行情况与方案设计的匹配度，登记差异点备忘。
+
+### 三、后续跟进事项
+- 根据现场勘验结果更新项目文档与交付方案，完成阶段性技术材料归档；
+- 保持与 ${dest} 现场团队的高效沟通，持续提供技术与业务支持${expenseDesc}。`;
+    }
+    /**
+     * 离线/兜底解析用户长文本中的多段出差报告
+     */
+    function parseBatchReportsFromRawText(rawText, existingPlans) {
+        const reports = [];
+        const sections = rawText.split(/(?=\*\*出差报告[一二三四五六七八九十0-9]+[：:])/g);
+        sections.forEach((sec, idx) => {
+            const trimmed = sec.trim();
+            if (!trimmed)
+                return;
+            const titleMatch = trimmed.match(/^\*\*([^*]+)\*\*/);
+            const title = titleMatch ? titleMatch[1] : `出差报告 ${idx + 1}`;
+            // 尝试提取目的地
+            const destMatch = title.match(/([^\s（(]+出差|[\u4e00-\u9fa5]{2,6}一期|[\u4e00-\u9fa5]{2,6}二期|[\u4e00-\u9fa5]{2,6})/);
+            const dest = destMatch ? destMatch[1].replace(/出差|一期|二期/g, '') : '出差地';
+            // 构造 Markdown 格式内容
+            const cleanContent = `## ${title}\n\n` + trimmed.replace(/^\*\*[^*]+\*\*\s*/, '');
+            reports.push({
+                tripIndex: idx + 1,
+                title,
+                dest,
+                content: cleanContent
+            });
+        });
+        if (reports.length === 0 && existingPlans.length > 0) {
+            existingPlans.forEach((p, idx) => {
+                if (p.type === 'BC') {
+                    reports.push({
+                        tripIndex: idx + 1,
+                        title: `Trip #${idx + 1}: ${p.destination}出差工作报告`,
+                        dest: p.destination,
+                        content: assembleDynamicReportFallback(p.destination, p.startDate, p.endDate, p.applicantName, p.purpose, p.projectName, p.scPlan?.legs?.map(l => `- ${l.date} ${l.fromCity} ➔ ${l.toCity}`).join('\n') || '', [])
+                    });
+                }
+            });
+        }
+        return {
+            summaryMarkdown: `已提取并梳理出 **${reports.length}** 份出差报告：`,
+            reports
+        };
+    }
+
     const BILL_DEFINE_IDS = {
-        TRIP_APPLICATION_SC: '0355cf627fede1653e55bb00bc610001', // 出差申请单 (SC)
         TRIP_CLAIM_BC: '035a50ee6d3de1653e55bb00bc610001', // 出差费用报销单 (BC)
         GENERAL_CLAIM_BJ: '035cd1b4d46de1653e55bb00bc610000' // 经费报销单 (BJ)
     };
@@ -64293,6 +66744,7 @@ JSON 输出格式：
     ];
     const initialSessions = loadChatSessionsFromStorage();
     let modalState = {
+        activeTab: 'EXPENSES',
         groups: [],
         selectedRecordIds: new Set(),
         sortKey: 'earliestInvoiceDate',
@@ -65399,30 +67851,45 @@ JSON 输出格式：
             // 构造行程区 Legs
             const legs = [];
             for (const item of cluster) {
+                const dyn = item.group.dynamicFields || {};
                 for (const inv of item.group.invoices) {
-                    if (inv.stationGetOn || inv.stationGetOff) {
-                        const isFlight = (inv.invoiceType || '').includes('飞机') || (inv.salesName || '').includes('航空');
+                    const isFlight = (inv.invoiceType || '').includes('飞机') || (inv.salesName || '').includes('航空');
+                    const isTrain = (inv.invoiceType || '').includes('火车') || (inv.salesName || '').includes('铁路') || Boolean(inv.trainNo);
+                    const fromStation = inv.stationGetOn || dyn.flightFromCity || dyn.trainFromStation || dyn.dynFrom || '';
+                    const toStation = inv.stationGetOff || dyn.flightToCity || dyn.trainToStation || dyn.dynTo || '';
+                    if (fromStation || toStation || isFlight || isTrain) {
                         legs.push({
                             date: (inv.departureDate || item.minDate || sDate).split(' ')[0],
-                            fromCity: inv.stationGetOn || '出发地',
-                            toCity: inv.stationGetOff || destination,
+                            fromCity: fromStation || '上海',
+                            toCity: toStation || destination,
                             transport: isFlight ? '飞机' : '火车',
-                            flightOrTrain: inv.trainNo || item.group.dynamicFields?.dynTransitNo || ''
+                            flightOrTrain: inv.trainNo || dyn.dynTransitNo || dyn.flightNumber || ''
                         });
                     }
+                }
+                // 容灾：发票列表未带明细，但 dynamicFields 包含航段/车次信息
+                if (item.group.invoices.length === 0 && (dyn.flightFromCity || dyn.flightToCity || dyn.trainFromStation || dyn.trainToStation || dyn.dynFrom || dyn.dynTo)) {
+                    const isFlight = Boolean(dyn.flightFromCity || dyn.flightToCity);
+                    legs.push({
+                        date: (item.minDate || sDate).split(' ')[0],
+                        fromCity: dyn.flightFromCity || dyn.trainFromStation || dyn.dynFrom || '上海',
+                        toCity: dyn.flightToCity || dyn.trainToStation || dyn.dynTo || destination,
+                        transport: isFlight ? '飞机' : '火车',
+                        flightOrTrain: dyn.dynTransitNo || dyn.flightNumber || ''
+                    });
                 }
             }
             if (legs.length === 0) {
                 legs.push({
                     date: sDate,
-                    fromCity: '出发地',
+                    fromCity: '上海',
                     toCity: destination,
                     transport: '火车/飞机'
                 });
                 legs.push({
                     date: eDate,
                     fromCity: destination,
-                    toCity: '返回地',
+                    toCity: '上海',
                     transport: '火车/飞机'
                 });
             }
@@ -66366,56 +68833,72 @@ JSON 输出格式：
         const warnCount = modalState.groups.filter(g => g.hasWarn).length;
         const missingRequiredCount = modalState.groups.filter(g => isGroupMissingRequired(g)).length;
         const saveErrorCount = modalState.saveErrors ? modalState.saveErrors.size : 0;
+        const tripCount = modalState.tripPlans.length;
         const isAllCollapsed = modalState.collapsedGroupKeys.size > 0;
         return `
         <div class="yn-bem-top-bar" id="yn-bem-top-bar">
-            <!-- 左侧：标题 + 分组 + 展开/折叠单按钮 + 选区快速操作 + 状态过滤 -->
+            <!-- 左侧：Segmented Control 双视图导航 + 专属控制条 -->
             <div class="yn-bem-header-left">
-                <span class="yn-bem-brand">
-                    批量修改费用信息
-                </span>
-                ${warnCount > 0 ? `<span class="yn-bem-warn-indicator">⚠️ 检出 ${warnCount} 处差异</span>` : ''}
-
-                <div class="yn-bem-field-group" style="align-items:center; gap:4px; margin-left:4px;">
-                    <label style="font-size:11px; color:#525252; font-weight:600;">分组:</label>
-                    <select id="yn-bem-opt-grouping" class="yn-bem-select" style="font-size:11px; padding:2px 6px; font-weight:600; color:#171717;">
-                        <option value="TRIP" ${modalState.groupingMode === 'TRIP' ? 'selected' : ''}>按 Trip 轮次</option>
-                        <option value="TYPE" ${modalState.groupingMode === 'TYPE' ? 'selected' : ''}>按费用类型</option>
-                        <option value="TRIP_AND_TYPE" ${modalState.groupingMode === 'TRIP_AND_TYPE' ? 'selected' : ''}>Trip+类型两级</option>
-                        <option value="NONE" ${modalState.groupingMode === 'NONE' ? 'selected' : ''}>平铺 (不分组)</option>
-                    </select>
-                    <button type="button" class="yn-bem-btn-mini" id="yn-bem-btn-toggle-all-groups"
-                            title="点击展开或折叠所有分组" ${modalState.groupingMode === 'NONE' ? 'disabled style="opacity:0.4; cursor:not-allowed;"' : ''}>
-                        ${isAllCollapsed ? '展开' : '折叠'}
+                <!-- 平级双视图 Tab 切换 -->
+                <div class="yn-bem-nav-tabs" id="yn-bem-nav-tabs">
+                    <button type="button" class="yn-bem-tab-btn ${modalState.activeTab === 'EXPENSES' ? 'is-active' : ''}" data-nav-tab="EXPENSES">
+                        💳 费用信息明细 (${totalGroups})
+                    </button>
+                    <button type="button" class="yn-bem-tab-btn ${modalState.activeTab === 'BILLS' ? 'is-active' : ''}" data-nav-tab="BILLS">
+                        📋 报销单与申请单管理 ${tripCount > 0 ? `(${tripCount}轮出差+日常)` : ''}
                     </button>
                 </div>
 
-                <div class="yn-bem-quick-select-wrap" style="display:inline-flex; align-items:center; gap:6px; margin-left:6px; padding-left:8px; border-left:1px solid var(--coss-border);">
-                    <span class="yn-bem-quick-link" id="yn-bem-qa-select-all">全选</span>
-                    <span class="yn-bem-quick-link" id="yn-bem-qa-deselect">全不选</span>
-                    <span class="yn-bem-quick-link" id="yn-bem-qa-invert">反选</span>
-                    ${saveErrorCount > 0 ? `<span class="yn-bem-quick-link" id="yn-bem-qa-select-failed" style="color:#b91c1c; border-color:#fca5a5; background:#fef2f2; font-weight:700;">❌ 仅看失败 (${saveErrorCount})</span>` : ''}
-                    ${missingRequiredCount > 0 ? `<span class="yn-bem-quick-link" id="yn-bem-qa-select-missing" style="color:#dc2626; border-color:#fee2e2; background:#fef2f2;">仅选待补 (${missingRequiredCount})</span>` : ''}
-                    ${warnCount > 0 ? `<span class="yn-bem-quick-link" id="yn-bem-qa-select-warn" style="color:#b45309; border-color:#fef3c7; background:#fffbeb;">仅选预警 (${warnCount})</span>` : ''}
+                <!-- 费用视图专属控制条 (仅在 EXPENSES Tab 呈现) -->
+                <div id="yn-bem-tab-controls-expenses" style="display: ${modalState.activeTab === 'EXPENSES' ? 'inline-flex' : 'none'}; align-items:center; gap:6px;">
+                    ${warnCount > 0 ? `<span class="yn-bem-warn-indicator">⚠️ 检出 ${warnCount} 处差异</span>` : ''}
 
-                    <select id="yn-bem-filter-mode" class="yn-bem-select" style="font-size:11px; padding:2px 6px; margin-left:2px;">
-                        ${saveErrorCount > 0 ? `<option value="SAVE_ERROR" ${modalState.filterMode === 'SAVE_ERROR' ? 'selected' : ''}>❌ 保存失败 (${saveErrorCount})</option>` : ''}
-                        <option value="ALL" ${modalState.filterMode === 'ALL' ? 'selected' : ''}>全部 (${totalGroups})</option>
-                        <option value="MISSING_REQUIRED" ${modalState.filterMode === 'MISSING_REQUIRED' ? 'selected' : ''}>待补必填 (${missingRequiredCount})</option>
-                        <option value="WARN" ${modalState.filterMode === 'WARN' ? 'selected' : ''}>预警 (${warnCount})</option>
-                        <option value="OK" ${modalState.filterMode === 'OK' ? 'selected' : ''}>正常 (${totalGroups - warnCount - missingRequiredCount})</option>
-                    </select>
+                    <div class="yn-bem-field-group" style="align-items:center; gap:4px; margin-left:4px;">
+                        <label style="font-size:11px; color:#525252; font-weight:600;">分组:</label>
+                        <select id="yn-bem-opt-grouping" class="yn-bem-select" style="font-size:11px; padding:2px 6px; font-weight:600; color:#171717;">
+                            <option value="TRIP" ${modalState.groupingMode === 'TRIP' ? 'selected' : ''}>按 Trip 轮次</option>
+                            <option value="TYPE" ${modalState.groupingMode === 'TYPE' ? 'selected' : ''}>按费用类型</option>
+                            <option value="TRIP_AND_TYPE" ${modalState.groupingMode === 'TRIP_AND_TYPE' ? 'selected' : ''}>Trip+类型两级</option>
+                            <option value="NONE" ${modalState.groupingMode === 'NONE' ? 'selected' : ''}>平铺 (不分组)</option>
+                        </select>
+                        <button type="button" class="yn-bem-btn-mini" id="yn-bem-btn-toggle-all-groups"
+                                title="点击展开或折叠所有分组" ${modalState.groupingMode === 'NONE' ? 'disabled style="opacity:0.4; cursor:not-allowed;"' : ''}>
+                            ${isAllCollapsed ? '展开' : '折叠'}
+                        </button>
+                    </div>
+
+                    <div class="yn-bem-quick-select-wrap" style="display:inline-flex; align-items:center; gap:6px; margin-left:6px; padding-left:8px; border-left:1px solid var(--coss-border);">
+                        <span class="yn-bem-quick-link" id="yn-bem-qa-select-all">全选</span>
+                        <span class="yn-bem-quick-link" id="yn-bem-qa-deselect">全不选</span>
+                        <span class="yn-bem-quick-link" id="yn-bem-qa-invert">反选</span>
+                        ${saveErrorCount > 0 ? `<span class="yn-bem-quick-link" id="yn-bem-qa-select-failed" style="color:#b91c1c; border-color:#fca5a5; background:#fef2f2; font-weight:700;">❌ 仅看失败 (${saveErrorCount})</span>` : ''}
+                        ${missingRequiredCount > 0 ? `<span class="yn-bem-quick-link" id="yn-bem-qa-select-missing" style="color:#dc2626; border-color:#fee2e2; background:#fef2f2;">仅选待补 (${missingRequiredCount})</span>` : ''}
+                        ${warnCount > 0 ? `<span class="yn-bem-quick-link" id="yn-bem-qa-select-warn" style="color:#b45309; border-color:#fef3c7; background:#fffbeb;">仅选预警 (${warnCount})</span>` : ''}
+
+                        <select id="yn-bem-filter-mode" class="yn-bem-select" style="font-size:11px; padding:2px 6px; margin-left:2px;">
+                            ${saveErrorCount > 0 ? `<option value="SAVE_ERROR" ${modalState.filterMode === 'SAVE_ERROR' ? 'selected' : ''}>❌ 保存失败 (${saveErrorCount})</option>` : ''}
+                            <option value="ALL" ${modalState.filterMode === 'ALL' ? 'selected' : ''}>全部 (${totalGroups})</option>
+                            <option value="MISSING_REQUIRED" ${modalState.filterMode === 'MISSING_REQUIRED' ? 'selected' : ''}>待补必填 (${missingRequiredCount})</option>
+                            <option value="WARN" ${modalState.filterMode === 'WARN' ? 'selected' : ''}>预警 (${warnCount})</option>
+                            <option value="OK" ${modalState.filterMode === 'OK' ? 'selected' : ''}>正常 (${totalGroups - warnCount - missingRequiredCount})</option>
+                        </select>
+                    </div>
+
+                    <div id="yn-bem-active-filters-wrap" style="display:inline-flex; align-items:center; gap:4px; margin-left:4px;">
+                        ${renderActiveFilterTagsHtml()}
+                    </div>
                 </div>
 
-                <div id="yn-bem-active-filters-wrap" style="display:inline-flex; align-items:center; gap:4px; margin-left:4px;">
-                    ${renderActiveFilterTagsHtml()}
+                <!-- 报销单视图专属提示 (仅在 BILLS Tab 呈现) -->
+                <div id="yn-bem-tab-controls-bills" style="display: ${modalState.activeTab === 'BILLS' ? 'inline-flex' : 'none'}; align-items:center; gap:8px; margin-left:8px;">
+                    <span style="font-size:12px; color:#525252;">承接建单：以报销单 (BC/BJ) 为条目，平铺管理出差申请 (SC) 与工作报告</span>
                 </div>
             </div>
 
             <!-- 中间：顶部居中搜索框 -->
             <div class="yn-bem-header-center">
                 <input type="text" id="yn-bem-search" class="yn-bem-input yn-bem-search-center"
-                       placeholder="搜索开票日/发票号/销方/说明..." value="${escapeHtml(modalState.searchQuery)}" />
+                       placeholder="搜索单据/开票日/发票号/销方/说明..." value="${escapeHtml(modalState.searchQuery)}" />
             </div>
 
             <!-- 右侧：AI 助手切换 + 关闭 (全宽固定在顶栏最右侧) -->
@@ -66516,10 +68999,7 @@ JSON 输出格式：
                     runAutopilotPlan(container);
                 }
                 else if (key === 'dashboard') {
-                    if (modalState.tripPlans.length === 0) {
-                        clusterExpensesIntoTrips(modalState.groups, modalState.proxyPersonName || modalState.currentEmployeeName, modalState.projectName);
-                    }
-                    openAutopilotDecisionDashboard(container);
+                    switchMainTab(container, 'BILLS');
                 }
             },
             onApplyTripPlans: async (msgId, action) => {
@@ -66593,6 +69073,53 @@ JSON 输出格式：
                     saveChatSessionsToStorage(modalState.chatSessions);
                     renderAssistantChat(container);
                 }
+            },
+            onApplyTravelReports: async (msgId, action) => {
+                if (!action || !action.reports || action.reports.length === 0)
+                    return;
+                action.applied = true;
+                action.appliedTime = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+                let backfilledCount = 0;
+                // 1. 同步更新 __YN_BILL_COPILOT__ 中的 billPlans
+                const copilot = window.__YN_BILL_COPILOT__;
+                if (copilot?.getState) {
+                    const st = copilot.getState();
+                    const plans = st.plans || [];
+                    const updated = plans.map((p, idx) => {
+                        const rep = action.reports.find(r => (r.tripIndex && r.tripIndex === (idx + 1)) ||
+                            (r.dest && p.destination && (r.dest.includes(p.destination) || p.destination.includes(r.dest))) ||
+                            (r.title && p.destination && r.title.includes(p.destination)));
+                        if (rep && rep.content) {
+                            backfilledCount++;
+                            return { ...p, travelReport: rep.content };
+                        }
+                        return p;
+                    });
+                    if (copilot.setPlans) {
+                        copilot.setPlans(updated);
+                    }
+                }
+                // 2. 同步更新 modalState.tripPlans (如果存在)
+                if (modalState.tripPlans && modalState.tripPlans.length > 0) {
+                    modalState.tripPlans.forEach((tp) => {
+                        const rep = action.reports.find(r => (r.tripIndex && r.tripIndex === tp.tripNo) ||
+                            (r.dest && tp.destination && (r.dest.includes(tp.destination) || tp.destination.includes(r.dest))) ||
+                            (r.title && tp.destination && r.title.includes(tp.destination)));
+                        if (rep && rep.content) {
+                            tp.travelReport = rep.content;
+                        }
+                    });
+                    saveTripPlansToStorage(modalState.tripPlans);
+                }
+                // 3. 更新消息状态
+                const curSession = modalState.chatSessions.find(s => s.id === modalState.currentSessionId) || modalState.chatSessions[0];
+                const msg = curSession?.messages.find(m => m.id === msgId);
+                if (msg) {
+                    msg.confirmationAction = { ...action };
+                }
+                showToast('success', `🎉 已成功将 ${backfilledCount || action.reports.length} 份出差总结报告回填写入出差单！`);
+                saveChatSessionsToStorage(modalState.chatSessions);
+                renderAssistantChat(container);
             },
             selectedExpenseCount: selectedCount,
             selectedExpenseAmount: totalAmountDecimal.toNumber(),
@@ -67173,19 +69700,6 @@ JSON 输出格式：
                                         <span class="yn-bem-group-title">${sec.title}</span>
                                         <span class="yn-bem-group-flow-tag yn-bem-tag-${sec.flow.toLowerCase()}">${sec.flowTag}</span>
                                         <span class="yn-bem-group-summary-badge">${sec.items.length} 笔费用 (${sec.totalInvoices} 张发票) · 小计 ¥${sec.totalAmount.toFixed(2)}</span>
-                                        ${sec.tripConfig ? `
-                                            <div style="margin-left:auto; display:flex; align-items:center; gap:6px;">
-                                                <button type="button" class="yn-bem-btn-trip-edit" data-trip-edit-id="${sec.tripConfig.id}" title="查看并修改本轮 Trip 行程、酒店、拜访客户据点及预算">
-                                                    ✏️ 编辑/打磨 Trip
-                                                </button>
-                                                <button type="button" class="yn-bem-btn-trip-edit" data-trip-report-id="${sec.tripConfig.id}" title="生成并复制本轮出差报告 (Markdown) 总结草稿">
-                                                    📄 出差报告草稿
-                                                </button>
-                                                <button type="button" class="yn-bem-btn-mini yn-bem-btn-trip-create-sc" data-trip-id="${sec.tripConfig.id}">
-                                                    ⚡ 生成该轮申请单 (SC)
-                                                </button>
-                                            </div>
-                                        ` : ''}
                                     </div>
                                 </td>
                             </tr>
@@ -67270,24 +69784,32 @@ JSON 输出格式：
         <!-- 1. 顶部融合操作栏 (单行 46px 全宽置顶，左右端固定，搜索居中) -->
         ${renderTopBarHtml()}
 
-        <!-- 2. 主工作区：明细表格 (100% 满宽，零布局偏移 CLS=0) -->
+        <!-- 2. 主工作区：平级双工作台 (100% 满宽，零布局偏移 CLS=0) -->
         <div class="yn-bem-modal-main-wrapper" id="yn-bem-modal-main-wrapper">
             <div class="yn-bem-main-layout" id="yn-bem-main-layout">
-                <div class="yn-bem-table-wrap" id="yn-bem-table-wrap">
-                    ${renderTableHtml()}
+                <!-- 视图 1：费用信息明细表格 -->
+                <div id="yn-bem-tab-view-expenses" style="display: ${modalState.activeTab === 'EXPENSES' ? 'flex' : 'none'}; flex-direction:column; width:100%; height:100%; overflow:hidden;">
+                    <div class="yn-bem-table-wrap" id="yn-bem-table-wrap">
+                        ${renderTableHtml()}
+                    </div>
+                    <div class="yn-bem-footer">
+                        <div class="yn-bem-footer-stats" id="yn-bem-footer-stats">
+                            ${renderFooterStatsHtml()}
+                        </div>
+                    </div>
                 </div>
-            </div>
 
-            <!-- 3. 底部极简状态指示条 (Clean Status Strip) -->
-            <div class="yn-bem-footer">
-                <div class="yn-bem-footer-stats" id="yn-bem-footer-stats">
-                    ${renderFooterStatsHtml()}
+                <!-- 视图 2：报销单与申请单管理全景平铺工作台 (React Root) -->
+                <div id="yn-bem-tab-view-bills" style="display: ${modalState.activeTab === 'BILLS' ? 'flex' : 'none'}; flex-direction:column; width:100%; height:100%; overflow:hidden;">
+                    <div id="yn-bem-bills-workspace-root" style="width:100%; height:100%;"></div>
                 </div>
             </div>
         </div>
 
-        <!-- 4. 底部悬浮操作岛 (Floating Action Island - 选中时弹性浮现) -->
-        ${renderFloatingIslandHtml()}
+        <!-- 4. 底部悬浮操作岛 (Floating Action Island - 仅在费用明细 Tab 且有选中时浮现) -->
+        <div id="yn-bem-floating-island-wrap" style="display: ${modalState.activeTab === 'EXPENSES' ? 'block' : 'none'};">
+            ${renderFloatingIslandHtml()}
+        </div>
 
         <!-- 5. 居中批量修改弹窗容器 (按需挂载) -->
         <div id="yn-bem-batch-dialog-wrap">
@@ -67669,349 +70191,422 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
         }
         renderAssistantChat(container);
     }
+    let billDashboardRoot = null;
     /**
-     * 全景报销决策复核与极速建单看板 (HITL)
-     * 允许用户在单一看板中一览所有出差申请单 (SC)、出差报销单 (BC) 与日常经费报销单 (BJ) 的规划构成、
-     * 预算展开及历史防重比对，确认无误后一键调用 API 管道极速持久化草稿入库 (commit: false)
+     * 切换顶层主工作台视图 (平级双视图：EXPENSES 费用明细 ⟷ BILLS 报销单与申请单管理)
      */
-    function openAutopilotDecisionDashboard(container, focusTripId) {
-        const existing = container.querySelector('#yn-bem-decision-dashboard-modal');
-        if (existing)
-            existing.remove();
+    function switchMainTab(container, targetTab) {
+        modalState.activeTab = targetTab;
+        // 1. 更新顶栏 Tab 切换按钮激活态
+        const tabBtns = container.querySelectorAll('.yn-bem-tab-btn');
+        tabBtns.forEach(btn => {
+            if (btn.dataset.navTab === targetTab) {
+                btn.classList.add('is-active');
+            }
+            else {
+                btn.classList.remove('is-active');
+            }
+        });
+        // 2. 控制专属控制栏的显隐
+        const expensesControls = container.querySelector('#yn-bem-tab-controls-expenses');
+        const billsControls = container.querySelector('#yn-bem-tab-controls-bills');
+        if (expensesControls)
+            expensesControls.style.display = targetTab === 'EXPENSES' ? 'inline-flex' : 'none';
+        if (billsControls)
+            billsControls.style.display = targetTab === 'BILLS' ? 'inline-flex' : 'none';
+        // 3. 控制主工作台视图容器切换
+        const viewExpenses = container.querySelector('#yn-bem-tab-view-expenses');
+        const viewBills = container.querySelector('#yn-bem-tab-view-bills');
+        if (viewExpenses)
+            viewExpenses.style.display = targetTab === 'EXPENSES' ? 'flex' : 'none';
+        if (viewBills)
+            viewBills.style.display = targetTab === 'BILLS' ? 'flex' : 'none';
+        // 4. 底部费用批量修改悬浮操作岛：仅在 EXPENSES Tab 呈现
+        const islandWrap = container.querySelector('#yn-bem-floating-island-wrap');
+        if (islandWrap)
+            islandWrap.style.display = targetTab === 'EXPENSES' ? 'block' : 'none';
+        // 5. 若切入 BILLS Tab，挂载或刷新报销单工作台
+        if (targetTab === 'BILLS') {
+            renderBillManagementWorkspace(container);
+        }
+    }
+    /**
+     * 渲染/挂载报销单与申请单平铺全景大工作台 (React Root)
+     */
+    function renderBillManagementWorkspace(container) {
         if (modalState.tripPlans.length === 0) {
             clusterExpensesIntoTrips(modalState.groups, modalState.proxyPersonName || modalState.currentEmployeeName, modalState.projectName);
         }
-        const tripPlans = modalState.tripPlans;
-        const groups = modalState.groups;
-        const globalState = getInvoicePoolGlobalState();
-        const nonTripItems = groups.filter(g => !g.tripId || g.tripId === 'NON_TRIP');
-        const nonTripTotal = nonTripItems.reduce((acc, g) => acc + Number(g.expenseAmount || 0), 0);
-        const nonTripInvoices = nonTripItems.reduce((acc, g) => acc + g.invoices.length, 0);
-        const targetDoc = container.ownerDocument || (typeof window !== 'undefined' && window.top && window.top.document ? window.top.document : document);
-        if (!targetDoc.getElementById('yn-injected-styles')) {
+        const targetDoc = container.ownerDocument || document;
+        // 动态注入样式系统
+        if (!targetDoc.getElementById('yn-bm-styles')) {
             const styleEl = targetDoc.createElement('style');
-            styleEl.id = 'yn-injected-styles';
-            styleEl.innerHTML = MODAL_STYLES;
+            styleEl.id = 'yn-bm-styles';
+            styleEl.innerHTML = getBillManagementStyles();
             (targetDoc.head || targetDoc.body).appendChild(styleEl);
         }
-        const overlay = targetDoc.createElement('div');
-        overlay.id = 'yn-bem-decision-dashboard-modal';
-        overlay.className = 'yn-bem-decision-modal-overlay';
-        let tripsHtml = '';
-        if (tripPlans.length === 0) {
-            tripsHtml = `
-            <div style="padding:24px; text-align:center; color:#737373; background:#f8fafc; border:1px dashed #cbd5e1; border-radius:8px;">
-                未检测到差旅类费用（飞机票/火车票/住宿费/出差打车）。如全部为本地日常支出，请直接查看下方【日常经费报销 (BJ)】。
-            </div>
-        `;
-        }
-        else {
-            tripsHtml = tripPlans.map(trip => {
-                const tripItems = groups.filter(g => g.tripId === trip.id);
-                const tripSum = tripItems.reduce((acc, g) => acc + Number(g.expenseAmount || 0), 0);
-                const isGenerated = Boolean(modalState.tripBillCodes[trip.id]);
-                const billCode = modalState.tripBillCodes[trip.id] || '';
-                return `
-                <div class="yn-bem-dashboard-card ${focusTripId === trip.id ? 'is-focused' : ''}">
-                    <div class="yn-bem-dashboard-card-header">
-                        <div class="yn-bem-dashboard-card-title">
-                            <span class="yn-bem-badge-trip">Trip ${trip.tripNo}</span>
-                            出差申请单 (SC) ➔ 出差费用报销单 (BC)
-                            <span class="yn-bem-tag-bc" style="margin-left:6px;">[差旅·BC]</span>
-                        </div>
-                        <div style="display:flex; align-items:center; gap:8px;">
-                            ${isGenerated
-                ? `<span class="yn-bem-group-draft-badge">✅ 已生成草稿: ${billCode}</span>`
-                : `<span style="font-size:12px; color:#f59e0b; font-weight:600;">⏳ 待创建草稿</span>`}
-                            <button type="button" class="yn-bem-btn-trip-edit" data-dashboard-edit-trip="${trip.id}" title="查看并修改本轮出差行程与申请单预算">
-                                ✏️ 打磨
-                            </button>
-                            <button type="button" class="yn-bem-btn-trip-edit" data-dashboard-report-trip="${trip.id}" title="复制本轮出差总结报告草稿">
-                                📄 报告
-                            </button>
-                        </div>
-                    </div>
-                    <div class="yn-bem-dashboard-grid">
-                        <div class="yn-bem-dashboard-field">
-                            <span class="label">出差区间:</span>
-                            <span class="val">${trip.startDate} ~ ${trip.endDate} (${trip.days}天${trip.nights}晚)</span>
-                        </div>
-                        <div class="yn-bem-dashboard-field">
-                            <span class="label">目的地城市:</span>
-                            <span class="val">${trip.destination || '未指定'}</span>
-                        </div>
-                        <div class="yn-bem-dashboard-field">
-                            <span class="label">出差人/申请人:</span>
-                            <span class="val">${trip.applicantName} ${trip.isProxy ? '(外驻代报)' : '(本人)'}</span>
-                        </div>
-                        <div class="yn-bem-dashboard-field">
-                            <span class="label">归属项目:</span>
-                            <span class="val" style="color:#0284c7; font-weight:600;">${trip.projectName || modalState.projectName || '未指定'}</span>
-                        </div>
-                        <div class="yn-bem-dashboard-field" style="grid-column: span 2;">
-                            <span class="label">出差事由:</span>
-                            <span class="val">${trip.purpose || '业务交流及现场技术支持'}</span>
-                        </div>
-                    </div>
-
-                    <div class="yn-bem-dashboard-budget-row">
-                        <div class="yn-bem-budget-item">
-                            <span class="b-label">交通费预算</span>
-                            <span class="b-val">¥${trip.trafficFee.toFixed(2)}</span>
-                        </div>
-                        <div class="yn-bem-budget-item">
-                            <span class="b-label">住宿费预算</span>
-                            <span class="b-val">¥${trip.hotelFee.toFixed(2)}</span>
-                        </div>
-                        <div class="yn-bem-budget-item">
-                            <span class="b-label">误餐补贴</span>
-                            <span class="b-val">¥${trip.mealFee.toFixed(2)}</span>
-                        </div>
-                        <div class="yn-bem-budget-item">
-                            <span class="b-label">市内交通Buffer</span>
-                            <span class="b-val">¥${trip.otherFee.toFixed(2)}</span>
-                        </div>
-                        <div class="yn-bem-budget-item">
-                            <span class="b-label">交通改签Buffer</span>
-                            <span class="b-val">¥${trip.trafficBuffer.toFixed(2)}</span>
-                        </div>
-                        <div class="yn-bem-budget-item is-total">
-                            <span class="b-label">申请总额 (SC)</span>
-                            <span class="b-val" style="color:#15803d; font-weight:700;">¥${trip.totalAmount.toFixed(2)}</span>
-                        </div>
-                    </div>
-
-                    <div style="margin-top:10px; font-size:12px; color:#525252; display:flex; justify-content:space-between; align-items:center; background:#f9fafb; padding:8px 12px; border-radius:6px;">
-                        <span>关联本轮实际发票报销: <strong>${tripItems.length}</strong> 笔费用，报销金额 <strong>¥${tripSum.toFixed(2)}</strong></span>
-                        <span style="color:#737373;">(申请单总额已自动包含充裕 Buffer，确保报销金额绝不超标)</span>
-                    </div>
-
-                    ${trip.matchedHistoryBill ? `
-                        <div style="margin-top:8px; padding:6px 10px; background:#fffbeb; border:1px solid #fef3c7; border-radius:4px; font-size:11px; color:#b45309;">
-                            ⚠️ 系统交叉对比命中历史相近出差申请单: <strong>${trip.matchedHistoryBill.billCode}</strong> (申报金额 ¥${trip.matchedHistoryBill.amount}，申请日 ${trip.matchedHistoryBill.billDate})
-                        </div>
-                    ` : ''}
-                </div>
-            `;
-            }).join('');
-        }
-        let nonTripHtml = '';
-        if (nonTripItems.length > 0) {
-            const isGenerated = Boolean(modalState.tripBillCodes['NON_TRIP']);
-            const billCode = modalState.tripBillCodes['NON_TRIP'] || '';
-            nonTripHtml = `
-            <div class="yn-bem-dashboard-card">
-                <div class="yn-bem-dashboard-card-header">
-                    <div class="yn-bem-dashboard-card-title">
-                        <span class="yn-bem-tag-bj" style="margin-right:6px;">[经费·BJ]</span>
-                        日常办公与市内交通经费报销单 (BJ)
-                    </div>
-                    <div>
-                        ${isGenerated
-            ? `<span class="yn-bem-group-draft-badge">✅ 已生成草稿: ${billCode}</span>`
-            : `<span style="font-size:12px; color:#f59e0b; font-weight:600;">⏳ 待创建草稿</span>`}
-                    </div>
-                </div>
-                <div class="yn-bem-dashboard-grid">
-                    <div class="yn-bem-dashboard-field">
-                        <span class="label">费用笔数:</span>
-                        <span class="val">${nonTripItems.length} 笔 (${nonTripInvoices} 张发票)</span>
-                    </div>
-                    <div class="yn-bem-dashboard-field">
-                        <span class="label">报销总额:</span>
-                        <span class="val" style="color:#15803d; font-weight:700;">¥${nonTripTotal.toFixed(2)}</span>
-                    </div>
-                    <div class="yn-bem-dashboard-field">
-                        <span class="label">主申请人:</span>
-                        <span class="val">${modalState.proxyPersonName || modalState.currentEmployeeName || '当前社员'}</span>
-                    </div>
-                    <div class="yn-bem-dashboard-field">
-                        <span class="label">归属项目:</span>
-                        <span class="val" style="color:#0284c7; font-weight:600;">${modalState.projectName || '未指定'}</span>
-                    </div>
-                    <div class="yn-bem-dashboard-field" style="grid-column: span 2;">
-                        <span class="label">包含类型:</span>
-                        <span class="val">${Array.from(new Set(nonTripItems.map(g => g.newExpenseTypeName || g.expenseTypeName))).join('、')}</span>
-                    </div>
-                </div>
-            </div>
-        `;
-        }
-        overlay.innerHTML = `
-        <div class="yn-bem-decision-modal">
-            <div class="yn-bem-decision-modal-header">
-                <div>
-                    <h2 class="title">🚀 全景报销决策复核与极速建单看板 (HITL)</h2>
-                    <p class="subtitle">人类在回路复核确认：核验出差申请单 (SC) 预算与各报销单 (BC/BJ) 分流。点击下方一键极速创建草稿入库（刚性锁定 commit: false 保存草稿，绝不提交审批）。</p>
-                </div>
-                <button type="button" class="yn-bem-decision-modal-close" id="yn-bem-btn-close-dashboard">✕</button>
-            </div>
-
-            <div class="yn-bem-decision-modal-body">
-                <div style="margin-bottom:16px;">
-                    <h3 style="font-size:14px; font-weight:700; color:#171717; margin-bottom:8px; display:flex; align-items:center; gap:6px;">
-                        <span>🛫 异地出差轮次与申请单 (SC / BC) 规划</span>
-                        <span style="font-size:12px; color:#737373; font-weight:normal;">(共 ${tripPlans.length} 轮出差)</span>
-                    </h3>
-                    ${tripsHtml}
-                </div>
-
-                ${nonTripItems.length > 0 ? `
-                    <div style="margin-bottom:16px;">
-                        <h3 style="font-size:14px; font-weight:700; color:#171717; margin-bottom:8px; display:flex; align-items:center; gap:6px;">
-                            <span>🏢 日常办公与市内经费 (BJ) 规划</span>
-                            <span style="font-size:12px; color:#737373; font-weight:normal;">(共 ${nonTripItems.length} 笔)</span>
-                        </h3>
-                        ${nonTripHtml}
-                    </div>
-                ` : ''}
-            </div>
-
-            <div class="yn-bem-decision-modal-footer">
-                <div class="yn-bem-dashboard-status" id="yn-bem-dashboard-status">
-                    就绪：请复核上述出差单与报销单方案，确认无误后点击右侧按钮极速入库。
-                </div>
-                <div style="display:flex; gap:10px; align-items:center;">
-                    <button type="button" class="yn-bem-btn yn-bem-btn-secondary" id="yn-bem-btn-cancel-dashboard">
-                        返回表格复核
-                    </button>
-                    <button type="button" class="yn-bem-btn yn-bem-btn-autopilot-execute" id="yn-bem-btn-execute-autopilot">
-                        ⚡ 一键极速创建草稿入库 (commit: false)
-                    </button>
-                </div>
-            </div>
-        </div>
-    `;
-        targetDoc.body.appendChild(overlay);
-        // Bind Close
-        const closeDashboard = () => overlay.remove();
-        overlay.querySelector('#yn-bem-btn-close-dashboard')?.addEventListener('click', closeDashboard);
-        overlay.querySelector('#yn-bem-btn-cancel-dashboard')?.addEventListener('click', closeDashboard);
-        // Bind Dashboard In-place Edit and Report Clicks
-        overlay.addEventListener('click', (e) => {
-            const target = e.target;
-            const editBtn = target.closest('[data-dashboard-edit-trip]');
-            if (editBtn && editBtn.dataset.dashboardEditTrip) {
-                const tId = editBtn.dataset.dashboardEditTrip;
-                openEditTripModal(tId, container);
-                return;
-            }
-            const repBtn = target.closest('[data-dashboard-report-trip]');
-            if (repBtn && repBtn.dataset.dashboardReportTrip) {
-                const tId = repBtn.dataset.dashboardReportTrip;
-                const t = tripPlans.find(p => p.id === tId);
-                if (t) {
-                    const items = groups.filter(g => g.tripId === t.id);
-                    const md = generateTripReportMarkdown(t, items);
-                    if (navigator.clipboard && navigator.clipboard.writeText) {
-                        navigator.clipboard.writeText(md).then(() => {
-                            showToast('success', `✨ 已复制 Trip ${t.tripNo} 出差报告草稿到剪贴板！`);
-                        }).catch(() => {
-                            copyFallback(md);
-                            showToast('success', `✨ 已复制 Trip ${t.tripNo} 出差报告草稿到剪贴板！`);
-                        });
-                    }
-                    else {
-                        copyFallback(md);
-                        showToast('success', `✨ 已复制 Trip ${t.tripNo} 出差报告草稿到剪贴板！`);
-                    }
-                }
-                return;
-            }
-        });
-        // Bind Execute Pipeline
-        const btnExec = overlay.querySelector('#yn-bem-btn-execute-autopilot');
-        const statusDiv = overlay.querySelector('#yn-bem-dashboard-status');
-        btnExec?.addEventListener('click', async () => {
-            if (!confirm('确认按照复核看板中的规划，一键自动创建出差申请单 (SC) 与报销单 (BC/BJ) 草稿吗？\\n\\n【安全承诺】：所有单据均以草稿形式保存在系统（commit: false），绝不自动提交审批。')) {
-                return;
-            }
-            btnExec.disabled = true;
-            btnExec.innerText = '正在极速入库...';
+        const mountPoint = container.querySelector('#yn-bem-bills-workspace-root');
+        if (!mountPoint)
+            return;
+        // 清理已有挂载实例
+        if (billDashboardRoot) {
             try {
-                // Step 1: 如果表格中有修改的费用记录，先批量保存费用记录更新
-                const updates = [];
-                for (const g of modalState.groups) {
-                    const isDescChanged = g.newDescription !== undefined && g.newDescription !== g.description;
-                    const isDateChanged = g.newBusinessDate !== undefined && g.newBusinessDate !== g.businessDate;
-                    const isTypeChanged = Boolean(g.newExpenseTypeId && g.newExpenseTypeId !== g.expenseTypeId);
-                    const hasDynChanged = Boolean(g.dynamicFields && Object.keys(g.dynamicFields).length > 0);
-                    if (isDescChanged || isDateChanged || isTypeChanged || hasDynChanged) {
-                        updates.push({
-                            expenseRecordId: g.expenseRecordId,
-                            targetExpenseTypeId: g.newExpenseTypeId || g.expenseTypeId,
-                            targetExpenseTypeName: g.newExpenseTypeName || g.expenseTypeName,
-                            newBusinessDate: g.newBusinessDate || g.businessDate,
-                            newDescription: g.newDescription !== undefined ? g.newDescription : g.description,
-                            dynamicFields: g.dynamicFields
-                        });
-                    }
-                }
-                if (updates.length > 0) {
-                    if (statusDiv)
-                        statusDiv.innerHTML = `<span class="spinner"></span> 正在保存 ${updates.length} 笔修改后的费用记录...`;
-                    await batchUpdateExpenseRecordsApi(updates, globalState);
-                }
-                const resultsSummary = [];
-                // Step 2: 为每个 Trip 生成 SC 申请单草稿，随后生成 BC 出差报销单草稿
-                for (const trip of tripPlans) {
-                    if (statusDiv)
-                        statusDiv.innerHTML = `<span class="spinner"></span> 正在生成 Trip ${trip.tripNo} 出差申请单 (SC)...`;
-                    const scRes = await createSingleTripApplicationApi(trip, globalState);
-                    if (scRes.success && scRes.billCode) {
-                        modalState.tripBillCodes[trip.id] = scRes.billCode;
-                        resultsSummary.push(`Trip ${trip.tripNo} 出差申请单: ${scRes.billCode}`);
-                    }
-                    else {
-                        throw new Error(`创建 Trip ${trip.tripNo} 出差申请单失败: ${scRes.message || '未知异常'}`);
-                    }
-                    // 收集该 Trip 下所有费用 ID
-                    const tripExpenseIds = groups.filter(g => g.tripId === trip.id).map(g => g.expenseRecordId);
-                    if (tripExpenseIds.length > 0) {
-                        if (statusDiv)
-                            statusDiv.innerHTML = `<span class="spinner"></span> 正在生成 Trip ${trip.tripNo} 出差费用报销单 (BC) 关联 ${tripExpenseIds.length} 笔费用...`;
-                        const bcRes = await createBillDataAndTemplateByExpenseIdListApi(BILL_DEFINE_IDS.TRIP_CLAIM_BC, tripExpenseIds, globalState);
-                        if (bcRes?.billData) {
-                            const savedBc = await saveBillDataApi(bcRes.billData, globalState);
-                            const bcCode = savedBc?.billCode || bcRes.billData.billCode || 'BC草稿';
-                            resultsSummary.push(`Trip ${trip.tripNo} 出差报销单: ${bcCode}`);
+                billDashboardRoot.unmount();
+            }
+            catch (e) { }
+            billDashboardRoot = null;
+        }
+        const initialState = createInitialBillManagementState(modalState.groups, modalState.tripPlans, modalState.proxyPersonName || modalState.currentEmployeeName, modalState.projectName);
+        const root = clientExports.createRoot(mountPoint);
+        billDashboardRoot = root;
+        const handleSearchProject = async (query) => {
+            const globalState = getInvoicePoolGlobalState();
+            try {
+                const list = await searchProjectList(query, globalState, window);
+                return (list || []).map(p => ({
+                    id: p.id,
+                    name: p.name,
+                    code: p.code
+                }));
+            }
+            catch (e) {
+                return [];
+            }
+        };
+        /**
+         * 动态提取行程全部出差人员及全员大交通往返行程 (零硬编码，严格遵循 Anti-Hardcoding 铁律)
+         */
+        const extractTripTravelersAndLegs = (plan, expenses) => {
+            const rawApplicant = plan.applicantName || modalState.proxyPersonName || modalState.currentEmployeeName || '当前社员';
+            const mainApplicant = rawApplicant.replace(/（.*）|\(.*\)/g, '').trim();
+            const travelerSet = new Set();
+            if (mainApplicant) {
+                travelerSet.add(mainApplicant);
+            }
+            // 1. 从 travelReport 中动态提取出差人员名单 (如 "出差人员：陈浩、成勇、李建勇" 或 "调研人员为陈浩、成勇、李建勇")
+            if (plan.travelReport) {
+                const reportMatch = plan.travelReport.match(/(?:调研人员为|出差人员[：:]\s*|同行人员[：:]\s*|同行者[：:]\s*)([^\n。\r]+)/);
+                if (reportMatch && reportMatch[1]) {
+                    const rawNames = reportMatch[1].split(/[、,，\s]+/);
+                    for (const name of rawNames) {
+                        const clean = name.replace(/（.*）|\(.*\)/g, '').replace(/[*#-]/g, '').trim();
+                        if (clean && clean.length >= 2 && clean.length <= 10 && !['人员', '同行', '等', '至', '到'].includes(clean)) {
+                            travelerSet.add(clean);
                         }
                     }
                 }
-                // Step 3: 为日常费用生成 BJ 经费报销单草稿
-                if (nonTripItems.length > 0) {
-                    const bjExpenseIds = nonTripItems.map(g => g.expenseRecordId);
-                    if (statusDiv)
-                        statusDiv.innerHTML = `<span class="spinner"></span> 正在生成日常经费报销单 (BJ) 关联 ${bjExpenseIds.length} 笔费用...`;
-                    const bjRes = await createBillDataAndTemplateByExpenseIdListApi(BILL_DEFINE_IDS.GENERAL_CLAIM_BJ, bjExpenseIds, globalState);
-                    if (bjRes?.billData) {
-                        const savedBj = await saveBillDataApi(bjRes.billData, globalState);
-                        const bjCode = savedBj?.billCode || bjRes.billData.billCode || 'BJ草稿';
-                        modalState.tripBillCodes['NON_TRIP'] = bjCode;
-                        resultsSummary.push(`日常经费报销单: ${bjCode}`);
+            }
+            // 2. 从关联费用记录的备注中动态提取外驻出行人 ([外驻:姓名])
+            if (Array.isArray(expenses)) {
+                for (const exp of expenses) {
+                    if (plan.expenseRecordIds.includes(exp.expenseRecordId)) {
+                        const textsToCheck = [
+                            exp.newDescription,
+                            exp.description,
+                            exp.remarks,
+                            ...(exp.invoices || []).map((inv) => inv.remarks || inv.description || '')
+                        ].filter(Boolean);
+                        for (const text of textsToCheck) {
+                            const externalMatches = text.matchAll(/\[外驻[:：]([^\]]+)\]/g);
+                            for (const m of externalMatches) {
+                                const clean = (m[1] || '').replace(/（.*）|\(.*\)/g, '').trim();
+                                if (clean && clean.length >= 2 && clean.length <= 10) {
+                                    travelerSet.add(clean);
+                                }
+                            }
+                        }
                     }
                 }
-                if (statusDiv) {
-                    statusDiv.innerHTML = `<span style="color:#15803d; font-weight:700;">🎉 全部单据草稿极速创建入库成功！(已保存为未提交草稿)</span>`;
-                }
-                btnExec.innerText = '✅ 入库成功';
-                showToast('success', `🎉 全流程草稿已全部生成入库！共生成 ${resultsSummary.length} 张单据。\n请在系统【我的申请】/【我的报销】中复核`, 8000);
-                refreshTableView(container);
-                setTimeout(() => {
-                    closeDashboard();
-                }, 2500);
             }
-            catch (err) {
-                AutopilotLogger.error(`[Autopilot Pipeline] 入库异常: ${err.message}`);
-                if (statusDiv) {
-                    statusDiv.innerHTML = `<span style="color:#dc2626; font-weight:700;">❌ 入库失败: ${err.message || '网络或接口异常'}</span>`;
+            const allTravelers = Array.from(travelerSet);
+            const companionsList = allTravelers.filter(t => t !== mainApplicant);
+            const companions = companionsList.join('、');
+            // 3. 构建包含所有人员的大交通行程 (ITINERARY legs)
+            const legs = [];
+            const destCity = plan.destination || '目的地';
+            const originCity = '上海';
+            // 若原有 scPlan.legs 中已有具体航班/车次信息，按人员归类
+            const existingLegs = plan.scPlan?.legs || [];
+            for (const t of allTravelers) {
+                const tLegs = existingLegs.filter(l => {
+                    const legTraveler = (l.travelerName || '').replace(/（.*）|\(.*\)/g, '').trim();
+                    return legTraveler === t || (!legTraveler && t === mainApplicant);
+                });
+                if (tLegs.length > 0) {
+                    tLegs.forEach(l => {
+                        legs.push({
+                            date: l.date || plan.startDate,
+                            fromCity: (!l.fromCity || l.fromCity === '出发地') ? originCity : l.fromCity,
+                            toCity: (!l.toCity || l.toCity === '返回地') ? destCity : l.toCity,
+                            transport: l.transport || '飞机/高铁',
+                            flightOrTrain: l.flightOrTrain || l.transport || '飞机/高铁',
+                            travelerName: t
+                        });
+                    });
                 }
-                btnExec.disabled = false;
-                btnExec.innerText = '重试极速建单';
-                showToast('error', `极速建单失败: ${err.message || '网络或接口异常'}`);
+                else {
+                    // 为该人员自动补齐去程与返程对称大交通
+                    legs.push({
+                        date: plan.startDate,
+                        fromCity: originCity,
+                        toCity: destCity,
+                        transport: '飞机/高铁',
+                        flightOrTrain: '飞机/高铁',
+                        travelerName: t
+                    });
+                    legs.push({
+                        date: plan.endDate,
+                        fromCity: destCity,
+                        toCity: originCity,
+                        transport: '飞机/高铁',
+                        flightOrTrain: '飞机/高铁',
+                        travelerName: t
+                    });
+                }
             }
-        });
+            // 按日期与出行人正序排序
+            legs.sort((a, b) => {
+                const timeDiff = new Date(a.date.replace(/-/g, '/')).getTime() - new Date(b.date.replace(/-/g, '/')).getTime();
+                if (timeDiff !== 0)
+                    return timeDiff;
+                return (a.travelerName || '').localeCompare(b.travelerName || '');
+            });
+            return { allTravelers, companions, legs };
+        };
+        const handleSaveDrafts = async (plans) => {
+            const globalState = getInvoicePoolGlobalState();
+            const resultsSummary = [];
+            // 预先查询当前用户未提交的出差申请单与报销单草稿，保障幂等就地更新 (Update in Place)
+            let existingScDrafts = [];
+            let existingBcDrafts = [];
+            try {
+                // 申请单列表 (V_MYAPPLICATION, sheetId: df023624bfba11ec99e696d1bc9d5c7e)
+                const scListRes = await callNativeHttp('/fssc/billViewConfig/getBillViewQueryDataList', 'POST', {
+                    conditionMap: {},
+                    pageOrderParam: { pageNum: 1, pageSize: 50, enableCountLimit: true, countLimit: 1000, count: false },
+                    sheetId: 'df023624bfba11ec99e696d1bc9d5c7e',
+                    appId: globalState.appId || 'e3d5e4787ff911e88b1997bee3518b4d'
+                });
+                const scItems = scListRes?.data?.list || [];
+                existingScDrafts = scItems.filter((it) => {
+                    const status = it.e2bf9fe2a4f211e88f5e9d87398070eb?.showValue || it.e2bf9fe2a4f211e88f5e9d87398070eb?.value;
+                    return status === '未提交';
+                }).map((it) => ({
+                    billMainId: it.BILL_MAIN_ID?.value || it.BILL_MAIN_ID,
+                    billCode: it.e2bedc68a4f211e88f5e0154a3e7bffc?.value || it.e2bedc68a4f211e88f5e0154a3e7bffc,
+                    billName: it.e2bedc66a4f211e88f5ef99ecdff44af?.showValue || it.e2bedc66a4f211e88f5ef99ecdff44af?.value
+                }));
+                existingScDrafts.sort((a, b) => (a.billCode || '').localeCompare(b.billCode || ''));
+                // 报销单列表 (V_MYREIMBURSEMENT, sheetId: 80b9cd76d02611ec99e696d1bc9d5c7e)
+                const bcListRes = await callNativeHttp('/fssc/billViewConfig/getBillViewQueryDataList', 'POST', {
+                    conditionMap: {},
+                    pageOrderParam: { pageNum: 1, pageSize: 50, enableCountLimit: true, countLimit: 1000, count: false },
+                    sheetId: '80b9cd76d02611ec99e696d1bc9d5c7e',
+                    appId: globalState.appId || 'e3d5e4787ff911e88b1997bee3518b4d'
+                });
+                const bcItems = bcListRes?.data?.list || [];
+                existingBcDrafts = bcItems.filter((it) => {
+                    const status = it.e2bf9fe2a4f211e88f5e9d87398070eb?.showValue || it.e2bf9fe2a4f211e88f5e9d87398070eb?.value;
+                    return status === '未提交';
+                }).map((it) => {
+                    const codeObj = Object.values(it).find((v) => typeof v === 'string' && (v.startsWith('BC') || v.startsWith('BJ')))
+                        || Object.values(it).find((v) => typeof v === 'object' && String(v?.value).startsWith('BC'));
+                    const billCode = typeof codeObj === 'object' ? codeObj?.value : codeObj;
+                    return {
+                        billMainId: it.BILL_MAIN_ID?.value || it.BILL_MAIN_ID?.id || it.BILL_MAIN_ID,
+                        billCode: billCode || ''
+                    };
+                });
+                existingBcDrafts.sort((a, b) => (a.billCode || '').localeCompare(b.billCode || ''));
+            }
+            catch (e) {
+                AutopilotLogger.warn(`[DraftCheck] 查询已有草稿失败: ${e.message}`);
+            }
+            let bcDraftIdx = 0;
+            let scDraftIdx = 0;
+            for (let pIdx = 0; pIdx < plans.length; pIdx++) {
+                const plan = plans[pIdx];
+                if (plan.type === 'BC') {
+                    const { allTravelers, legs } = extractTripTravelersAndLegs(plan, modalState.groups);
+                    // 1. 若包含 SC 申请单预算计划，先创建/更新出差申请单 (SC)
+                    let scBillCode = plan.scPlan?.billCode || '';
+                    let scBillMainId = plan.scPlan?.billMainId || '';
+                    // 若内存无单号，尝试从已有未提交申请单草稿中按顺序对齐
+                    if (!scBillMainId && scDraftIdx < existingScDrafts.length) {
+                        scBillMainId = existingScDrafts[scDraftIdx].billMainId;
+                        scBillCode = existingScDrafts[scDraftIdx].billCode;
+                        scDraftIdx++;
+                    }
+                    if (plan.scPlan) {
+                        const sc = plan.scPlan;
+                        const projId = sc.projectId || plan.projectId;
+                        const projName = sc.projectName || plan.projectName || modalState.projectName;
+                        const projectVO = projId ? { value: projId, title: { zh_CN: projName } } : undefined;
+                        const destCity = sc.destination || plan.destination || '出差目的地';
+                        const tripConfig = {
+                            id: plan.sourceTripId || plan.id,
+                            tripNo: pIdx + 1,
+                            applicantName: sc.applicantName || modalState.proxyPersonName || modalState.currentEmployeeName || '当前社员',
+                            isProxy: false,
+                            startDate: sc.startDate || plan.startDate,
+                            endDate: sc.endDate || plan.endDate,
+                            days: sc.days,
+                            nights: sc.nights,
+                            destination: destCity,
+                            purpose: sc.purpose || plan.purpose || `出差${destCity}业务交流及现场技术支持`,
+                            targetFactories: '',
+                            hotelName: '',
+                            trafficFee: sc.airfareBudget,
+                            hotelFee: sc.hotelBudget,
+                            mealFee: sc.mealAllowance,
+                            otherFee: sc.otherBudget,
+                            trafficBuffer: 0,
+                            totalAmount: sc.totalBudget,
+                            travelers: allTravelers, // BUG 3: 涵盖全部出差人员
+                            legs: legs, // BUG 3: 涵盖全员大交通往返行程
+                            projectVO,
+                            projectName: projName,
+                            billMainId: scBillMainId || undefined,
+                            billCode: scBillCode || undefined,
+                            status: '就绪'
+                        };
+                        const scRes = await createSingleTripApplicationApi(tripConfig, globalState);
+                        if (scRes.success && scRes.billCode) {
+                            scBillCode = scRes.billCode;
+                            scBillMainId = scRes.billMainId || scBillMainId;
+                            if (plan.sourceTripId) {
+                                modalState.tripBillCodes[plan.sourceTripId] = scBillCode;
+                            }
+                            plan.scPlan.billCode = scBillCode;
+                            plan.scPlan.billMainId = scBillMainId;
+                            resultsSummary.push(`出差申请单: ${scBillCode}`);
+                        }
+                        else {
+                            throw new Error(`创建/更新出差申请单 (${plan.title}) 失败: ${scRes.message || '接口异常'}`);
+                        }
+                    }
+                    // 2. 创建或更新出差费用报销单 (BC)
+                    if (plan.expenseRecordIds.length > 0) {
+                        let bcBillMainId = plan.billMainId || '';
+                        if (!bcBillMainId && bcDraftIdx < existingBcDrafts.length) {
+                            bcBillMainId = existingBcDrafts[bcDraftIdx].billMainId;
+                            bcDraftIdx++;
+                        }
+                        let bcBillData;
+                        if (bcBillMainId) {
+                            // 幂等就地更新已有报销单草稿
+                            const res = await fetchBillDataAndTemplateApi(bcBillMainId, globalState);
+                            bcBillData = res.billData;
+                            bcBillData.operationType = 'UPDATE';
+                        }
+                        else {
+                            // 从费用记录初始化新报销单草稿
+                            const bcRes = await createBillDataAndTemplateByExpenseIdListApi(BILL_DEFINE_IDS.TRIP_CLAIM_BC, plan.expenseRecordIds, globalState);
+                            if (!bcRes?.billData) {
+                                throw new Error(`初始化出差报销单模板失败: ${plan.title}`);
+                            }
+                            bcBillData = bcRes.billData;
+                            bcBillData.operationType = 'ADD';
+                        }
+                        if (!bcBillData.appId)
+                            bcBillData.appId = globalState?.appId || 'e3d5e4787ff911e88b1997bee3518b4d';
+                        // BUG 1 修复：回填主表区 (MAIN) 必填表头字段
+                        const mainRow = bcBillData.area.rowDatas[0];
+                        const sDate = plan.startDate.includes('T') ? plan.startDate : `${plan.startDate}T00:00`;
+                        const eDate = plan.endDate.includes('T') ? plan.endDate : `${plan.endDate}T00:00`;
+                        if (scBillCode) {
+                            ensureRowField(mainRow, 'F_CCSQD', {
+                                title: scBillCode,
+                                machineAccountId: scBillMainId,
+                                machineAccountDefineId: '3299661bb34111e8846f7b262b3e5000'
+                            }, 'MACHINE_ACCOUNT');
+                        }
+                        ensureRowField(mainRow, 'F_CCLX', { value: '03560c40cb4de1653e55bb00bc610000', title: { zh_CN: '境内出張' } }, 'RADIO');
+                        ensureRowField(mainRow, 'F_MDDCZX', plan.destination, 'STEXT');
+                        ensureRowField(mainRow, 'DESCRIPTION', plan.purpose || `出差${plan.destination}业务交流及现场技术支持`, 'MTEXT');
+                        ensureRowField(mainRow, 'START_TRIP_DATE', sDate, 'DATE');
+                        ensureRowField(mainRow, 'END_TRIP_DATE', eDate, 'DATE');
+                        // BUG 2 修复：回填出差报告子表区 (T_BILL_AREA_BGQ_DEF_001, 035af6b91fdde1653e55bb00bc610000)
+                        const bgqAreaId = '035af6b91fdde1653e55bb00bc610000';
+                        if (!mainRow.subAreaDatas)
+                            mainRow.subAreaDatas = {};
+                        let bgqArea = mainRow.subAreaDatas[bgqAreaId];
+                        if (!bgqArea || !bgqArea.rowDatas || bgqArea.rowDatas.length === 0) {
+                            const rowId = generateUuid();
+                            bgqArea = {
+                                boAreaCode: 'T_BILL_AREA_BGQ_DEF_001',
+                                boAreaId: bgqAreaId,
+                                rowDatas: [{
+                                        rowId,
+                                        parentId: bcBillData.billMainId,
+                                        reserve: false,
+                                        datas: {
+                                            ROW_NUM: { dataType: 'NUMBER', value: 1 },
+                                            BILL_PARENT_ID: { dataType: 'STEXT', value: bcBillData.billMainId },
+                                            BILL_MAIN_ID: { dataType: 'STEXT', value: bcBillData.billMainId },
+                                            BILL_ROW_ID: { dataType: 'STEXT', value: rowId },
+                                            BILL_DEFINE_ID: { dataType: 'STEXT', value: BILL_DEFINE_IDS.TRIP_CLAIM_BC },
+                                            VERSION: { dataType: 'NUMBER', value: 1 }
+                                        }
+                                    }]
+                            };
+                            mainRow.subAreaDatas[bgqAreaId] = bgqArea;
+                        }
+                        const bgqRow = bgqArea.rowDatas[0];
+                        const reportContent = plan.travelReport || `出差报告: 前往${plan.destination}开展技术支持与客户业务交流。`;
+                        const reportSubject = plan.purpose || `出差${plan.destination}业务交流及现场技术支持`;
+                        ensureRowField(bgqRow, 'ROW_NUM', 1, 'NUMBER');
+                        ensureRowField(bgqRow, 'F_QJFROM', sDate, 'DATE');
+                        ensureRowField(bgqRow, 'F_TOQJ', eDate, 'DATE');
+                        ensureRowField(bgqRow, 'F_CZX', plan.destination, 'STEXT');
+                        ensureRowField(bgqRow, 'F_YJ', reportSubject, 'STEXT');
+                        ensureRowField(bgqRow, 'F_BG', reportSubject, 'MTEXT');
+                        ensureRowField(bgqRow, 'F_BGNR', reportContent, 'MTEXT');
+                        // 保存草稿 (严格锁定 commit: false)
+                        const savedBc = await saveBillDataApi(bcBillData, globalState);
+                        const bcCode = savedBc?.billCode || bcBillData.billCode || 'BC草稿';
+                        plan.billCode = bcCode;
+                        plan.billMainId = savedBc?.billMainId || bcBillData.billMainId;
+                        resultsSummary.push(`出差费用报销单: ${bcCode}`);
+                    }
+                }
+                else if (plan.type === 'BJ') {
+                    // 创建经费报销单 (BJ)
+                    if (plan.expenseRecordIds.length > 0) {
+                        const bjRes = await createBillDataAndTemplateByExpenseIdListApi(BILL_DEFINE_IDS.GENERAL_CLAIM_BJ, plan.expenseRecordIds, globalState);
+                        if (!bjRes?.billData) {
+                            throw new Error(`初始化经费报销单模板失败: ${plan.title}`);
+                        }
+                        const savedBj = await saveBillDataApi(bjRes.billData, globalState);
+                        const bjCode = savedBj?.billCode || bjRes.billData.billCode || 'BJ草稿';
+                        plan.billCode = bjCode;
+                        plan.billMainId = savedBj?.billMainId || bjRes.billData.billMainId;
+                        resultsSummary.push(`经费报销单: ${bjCode}`);
+                    }
+                }
+            }
+            showToast('success', `🎉 已成功生成/更新 ${resultsSummary.length} 张单据草稿！\n请在系统【我的申请】/【我的报销】中人工核对`, 6000);
+            refreshTableView(container);
+        };
+        root.render(React.createElement(BillManagementDashboard, {
+            initialState,
+            onSaveDrafts: handleSaveDrafts,
+            onSearchProject: handleSearchProject,
+            rawGroups: modalState.groups,
+            defaultProjectName: modalState.projectName,
+            defaultApplicantName: modalState.proxyPersonName || modalState.currentEmployeeName,
+        }));
     }
+    /**
+     * 兼容旧入口：打开报销单管理（平级切换至 BILLS Tab）
+     */
+    function openBillManagementDashboard(container) {
+        switchMainTab(container, 'BILLS');
+    }
+    /**
+     * 向后兼容别名：原全景报销决策复核与极速建单看板 (HITL) 统一重定向至全新的报销单管理看板
+     */
+    const openAutopilotDecisionDashboard = openBillManagementDashboard;
     /**
      * 从文本中智能抽取航班号 (支持往返双航班号如 CZ6534/CZ6523, MU5123/MU5124, CZ6534-CZ6523, CZ6534/6523, 以及单航班号 CZ6534)
      */
@@ -69284,13 +71879,120 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
         renderAssistantChat(container);
         // 2. 意图分流与助理回复
         const lowerText = text.toLowerCase();
-        const isInfer = modalState.activeSkillId === 'infer' || lowerText.includes('推断') || lowerText.includes('infer') || lowerText.includes('必填');
-        const isItin = modalState.activeSkillId === 'itinerary' || lowerText.includes('排期') || lowerText.includes('行程');
+        // 意图 A: 出差报告撰写与总结
+        const isReportIntent = lowerText.includes('出差报告') || lowerText.includes('写报告') || lowerText.includes('撰写') || lowerText.includes('总结报告') || lowerText.includes('工作总结');
+        // 意图 B: 报销单与申请单管理工作台一键补全
+        const isBillAutoFill = !isReportIntent && (lowerText.includes('补全') || lowerText.includes('自动填') || lowerText.includes('报销单') || lowerText.includes('申请单') || lowerText.includes('漏填') || lowerText.includes('autofill'));
+        // 意图 C: 行程排期录入与切分 (必须排除报告诉求)
         const hasSchedule = text.length >= 20 && (text.includes('\n') || text.includes('\t') || text.includes('|') || /\d{4}[-/]\d{1,2}[-/]\d{1,2}/.test(text));
+        const isItin = !isReportIntent && (modalState.activeSkillId === 'itinerary' || lowerText.includes('排期') || (hasSchedule && !lowerText.includes('报告')));
+        // 意图 D: 发票专属必填字段智能推断
+        const isInfer = !isReportIntent && (modalState.activeSkillId === 'infer' || lowerText.includes('推断') || lowerText.includes('infer') || lowerText.includes('专属字段') || lowerText.includes('必填'));
         modalState.activeSkillId = null;
         modalState.isAssistantExecuting = true;
         renderAssistantChat(container);
-        if (isItin || hasSchedule) {
+        if (isReportIntent) {
+            const usingLlm = isLlmConfigured();
+            const startTime = Date.now();
+            const reportTool = {
+                id: 'tool_gen_report',
+                name: 'generateBatchTravelReportsWithAi',
+                title: '出差工作总结报告深度认知撰写',
+                icon: '📝',
+                status: 'running',
+                progress: usingLlm ? '正在通过大模型深度分析各行程调研过程与工作成果...' : '正在梳理各行程调研过程并整理报告...'
+            };
+            const assistMsg = {
+                id: `msg_${Date.now()}_a`,
+                role: 'assistant',
+                text: '',
+                time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+                thinking: {
+                    content: usingLlm
+                        ? '正在阅读您的出差行程过程记录，结合各据点调研、现场弱电/机房勘测、技术交流等细节，撰写专业出差总结报告...'
+                        : '正在梳理出差行程与调研据点，整理出差总结报告...',
+                    status: 'thinking',
+                    durationMs: 0,
+                    isExpanded: true
+                },
+                toolCalls: [reportTool]
+            };
+            curSession.messages.push(assistMsg);
+            curSession.updatedAt = Date.now();
+            saveChatSessionsToStorage(modalState.chatSessions);
+            renderAssistantChat(container);
+            try {
+                const copilot = window.__YN_BILL_COPILOT__;
+                const currentPlans = copilot?.getState?.()?.plans || [];
+                const result = await generateBatchTravelReportsWithAi(text, currentPlans);
+                const duration = Date.now() - startTime;
+                assistMsg.thinking = {
+                    content: `出差报告撰写完成：共生成 ${result.reports.length} 份详尽的独立行程工作总结报告。`,
+                    status: 'done',
+                    durationMs: duration,
+                    isExpanded: false
+                };
+                reportTool.status = 'done';
+                reportTool.progress = undefined;
+                reportTool.output = { count: result.reports.length, reports: result.reports.map(r => r.title) };
+                let fullText = `${result.summaryMarkdown}\n\n`;
+                result.reports.forEach((rep) => {
+                    fullText += `---\n\n${rep.content}\n\n`;
+                });
+                assistMsg.text = fullText.trim();
+                if (result.reports.length > 0) {
+                    assistMsg.confirmationAction = {
+                        type: 'APPLY_TRAVEL_REPORTS',
+                        reports: result.reports,
+                        applied: false
+                    };
+                }
+                modalState.isAssistantExecuting = false;
+                curSession.updatedAt = Date.now();
+                saveChatSessionsToStorage(modalState.chatSessions);
+                renderAssistantChat(container);
+            }
+            catch (err) {
+                if (assistMsg.thinking) {
+                    assistMsg.thinking.status = 'done';
+                    assistMsg.thinking.durationMs = Date.now() - startTime;
+                }
+                reportTool.status = 'error';
+                reportTool.output = err?.message || String(err);
+                assistMsg.text = `出差报告撰写异常: ${err?.message || '未知错误'}`;
+                modalState.isAssistantExecuting = false;
+                curSession.updatedAt = Date.now();
+                saveChatSessionsToStorage(modalState.chatSessions);
+                renderAssistantChat(container);
+            }
+        }
+        else if (isBillAutoFill) {
+            if (modalState.activeTab !== 'BILLS') {
+                switchMainTab(container, 'BILLS');
+            }
+            setTimeout(() => {
+                if (window.__YN_BILL_COPILOT__?.autoFillAll) {
+                    window.__YN_BILL_COPILOT__.autoFillAll();
+                }
+                else {
+                    window.dispatchEvent(new CustomEvent('YN_COPILOT_BILL_COMMAND', {
+                        detail: { action: 'AUTO_FILL' }
+                    }));
+                }
+            }, 120);
+            const assistMsg = {
+                id: `msg_${Date.now()}_a`,
+                role: 'assistant',
+                text: `✨ **已在【报销单管理】大表格中触发 AI 智能副驾一键补齐！**\n\n• **全链路推断**：根据发票证据链自动识别出差目的地城市、出行起止日期、往返程航段（航班/车次/城市）；\n• **合规预算计算**：按公司标准（一线城市 ¥800/晚、其他 ¥700/晚）生成充裕覆盖实际报销额的 4 项预算；\n• **项目维表对齐**：自动匹配预算归属项目；\n• **必填视觉反馈**：待补必填红框已消除，AI 补全字段带有紫蓝色微光标识。\n\n您可直接在左侧全景大表格中人工复核，确认无误后点击右下角【💾 批量持久化草稿入库】。`,
+                time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+            };
+            curSession.messages.push(assistMsg);
+            curSession.updatedAt = Date.now();
+            modalState.isAssistantExecuting = false;
+            saveChatSessionsToStorage(modalState.chatSessions);
+            renderAssistantChat(container);
+        }
+        else if (isItin || hasSchedule) {
             const usingLlm = isLlmConfigured();
             const startTime = Date.now();
             const assistMsg = {
@@ -69439,19 +72141,82 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
             refreshTableView(container, 'STATS');
         }
         else {
-            const warnCount = modalState.groups.filter(g => g.hasWarn).length;
-            const missingCount = modalState.groups.filter(g => isGroupMissingRequired(g)).length;
-            const assistMsg = {
-                id: `msg_${Date.now()}_a`,
-                role: 'assistant',
-                text: `已收到您的指令：\n\n**当前费控账目快照**：\n• 费用总笔数：**${modalState.groups.length}** 笔 (已选 **${selectedCount}** 笔，总额 ¥**${totalAmountDecimal.toFixed(2)}**)\n• 必填待补项目：**${missingCount}** 笔\n• 日期预警项目：**${warnCount}** 处\n\n您可以随时告诉我：\n1. *"智能推断必填项"* 或键入 \`/infer\` — 自动提取交通与住宿专属字段\n2. *"规划出差行程"* 或键入 \`/itinerary\` — 按排期自动切分聚类 Trip\n3. *"外驻社员名 项目号"* 或键入 \`/proxy\` — 批量规范化生成企业费控说明`,
-                time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-            };
-            curSession.messages.push(assistMsg);
-            curSession.updatedAt = Date.now();
-            modalState.isAssistantExecuting = false;
-            saveChatSessionsToStorage(modalState.chatSessions);
-            renderAssistantChat(container);
+            const canUseLlm = isLlmConfigured();
+            if (canUseLlm) {
+                const startTime = Date.now();
+                const assistMsg = {
+                    id: `msg_${Date.now()}_a`,
+                    role: 'assistant',
+                    text: '',
+                    time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+                    thinking: {
+                        content: '正在思考并结合当前费控账目上下文为您解答...',
+                        status: 'thinking',
+                        durationMs: 0,
+                        isExpanded: true
+                    }
+                };
+                curSession.messages.push(assistMsg);
+                curSession.updatedAt = Date.now();
+                saveChatSessionsToStorage(modalState.chatSessions);
+                renderAssistantChat(container);
+                try {
+                    const systemPrompt = `你是由 Google DeepMind 与 IVision 研发的元年云 FSSC 极速自动驾驶副驾。
+你不仅具备高超的费控自动化工具操作能力，还是一位友善、专业、精通企业差旅财务制度与 IT 业务的智能顾问。
+
+【当前系统上下文快照】：
+- 当前社员姓名：${modalState.currentEmployeeName || '当前社员'}
+- 当前外驻人员：${modalState.proxyPersonName || '无'}
+- 当前归属项目：${modalState.projectName || '未指定'}
+- 费用记录总数：${modalState.groups.length} 笔（已选 ${selectedCount} 笔，已选总额 ¥${totalAmountDecimal.toFixed(2)}）
+- 已切分出差轮次：${modalState.tripPlans.length} 轮
+- 财务政策标准：一线城市（北上广深）住宿限额 ¥800/晚，其他城市 ¥700/晚；误餐补助整天调研 ¥300/天，往返日半额 ¥150/天；市内交通预留 ¥100/天。
+
+请根据上述上下文，用专业、干练、亲切的中文回答用户的问题、提供咨询或根据用户的需求执行文字润色与建议。`;
+                    const res = await callDirectLlmText(systemPrompt, text, undefined, 45000);
+                    const duration = Date.now() - startTime;
+                    if (assistMsg.thinking) {
+                        assistMsg.thinking.status = 'done';
+                        assistMsg.thinking.durationMs = duration;
+                        assistMsg.thinking.content = '已结合费控业务上下文完成解答。';
+                        assistMsg.thinking.isExpanded = false;
+                    }
+                    if (res.success && res.text) {
+                        assistMsg.text = res.text;
+                    }
+                    else {
+                        assistMsg.text = `⚠️ 大模型回复异常：${res.error || '未能获取回复'}`;
+                    }
+                }
+                catch (err) {
+                    if (assistMsg.thinking) {
+                        assistMsg.thinking.status = 'done';
+                        assistMsg.thinking.durationMs = Date.now() - startTime;
+                    }
+                    assistMsg.text = `⚠️ 问答处理异常: ${err?.message || err}`;
+                }
+                finally {
+                    modalState.isAssistantExecuting = false;
+                    curSession.updatedAt = Date.now();
+                    saveChatSessionsToStorage(modalState.chatSessions);
+                    renderAssistantChat(container);
+                }
+            }
+            else {
+                const warnCount = modalState.groups.filter(g => g.hasWarn).length;
+                const missingCount = modalState.groups.filter(g => isGroupMissingRequired(g)).length;
+                const assistMsg = {
+                    id: `msg_${Date.now()}_a`,
+                    role: 'assistant',
+                    text: `已收到您的指令：\n\n**当前费控账目快照**：\n• 费用总笔数：**${modalState.groups.length}** 笔 (已选 **${selectedCount}** 笔，总额 ¥**${totalAmountDecimal.toFixed(2)}**)\n• 必填待补项目：**${missingCount}** 笔\n• 日期预警项目：**${warnCount}** 处\n\n您可以随时告诉我：\n1. *"智能推断必填项"* 或键入 \`/infer\` — 自动提取交通与住宿专属字段\n2. *"规划出差行程"* 或键入 \`/itinerary\` — 按排期自动切分聚类 Trip\n3. *"撰写出差报告"* — 根据出差经历自动生成各行程总结报告\n4. *"一键补全报销单"* — 在大表格中自动回填所有单据要素\n\n> 💡 *提示：建议在右上角设置中配置大模型 API Key（支持 DeepSeek / OpenAI / Gemini 等），即可开启自由连续对话与智能问答！*`,
+                    time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+                };
+                curSession.messages.push(assistMsg);
+                curSession.updatedAt = Date.now();
+                modalState.isAssistantExecuting = false;
+                saveChatSessionsToStorage(modalState.chatSessions);
+                renderAssistantChat(container);
+            }
         }
     }
     function bindEvents$1(container, doc) {
@@ -69728,6 +72493,16 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
             modalState.selectedRecordIds.clear();
             refreshTableView(container, 'CHECKBOXES');
             showToast('info', '已取消选择全部条目');
+        });
+        // 2.5 顶栏平级视图切换：【💳 费用信息明细】⟷【📋 报销单与申请单管理】
+        const navTabBtns = container.querySelectorAll('.yn-bem-tab-btn');
+        navTabBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                const targetTab = btn.dataset.navTab;
+                if (targetTab && targetTab !== modalState.activeTab) {
+                    switchMainTab(container, targetTab);
+                }
+            });
         });
         // 3. 面板展开切换：【✨ AI 助手】(右侧悬浮抽屉面板，零布局抖动)
         bindAiPanelResizer(container);
@@ -70019,46 +72794,6 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
                     modalState.selectedRecordIds.add(rid);
                     refreshTableView(container, 'ROWS');
                 }
-                return;
-            }
-            // 组表头编辑/打磨 Trip 按钮
-            const editTripBtn = target.closest('[data-trip-edit-id]');
-            if (editTripBtn && editTripBtn.dataset.tripEditId) {
-                e.stopPropagation();
-                const tripId = editTripBtn.dataset.tripEditId;
-                openEditTripModal(tripId, container);
-                return;
-            }
-            // 组表头导出出差报告草稿按钮
-            const reportTripBtn = target.closest('[data-trip-report-id]');
-            if (reportTripBtn && reportTripBtn.dataset.tripReportId) {
-                e.stopPropagation();
-                const tripId = reportTripBtn.dataset.tripReportId;
-                const trip = modalState.tripPlans.find(t => t.id === tripId);
-                if (trip) {
-                    const tripItems = modalState.groups.filter(g => g.tripId === trip.id);
-                    const reportMd = generateTripReportMarkdown(trip, tripItems);
-                    if (navigator.clipboard && navigator.clipboard.writeText) {
-                        navigator.clipboard.writeText(reportMd).then(() => {
-                            showToast('success', `✨ 已复制 Trip ${trip.tripNo} 的出差总结报告草稿到剪贴板！`);
-                        }).catch(() => {
-                            copyFallback(reportMd);
-                            showToast('success', `✨ 已复制 Trip ${trip.tripNo} 的出差总结报告草稿到剪贴板！`);
-                        });
-                    }
-                    else {
-                        copyFallback(reportMd);
-                        showToast('success', `✨ 已复制 Trip ${trip.tripNo} 的出差总结报告草稿到剪贴板！`);
-                    }
-                }
-                return;
-            }
-            // 组表头一键快捷生成出差申请单按钮
-            const createScBtn = target.closest('.yn-bem-btn-trip-create-sc');
-            if (createScBtn && createScBtn.dataset.tripId) {
-                e.stopPropagation();
-                const tripId = createScBtn.dataset.tripId;
-                openAutopilotDecisionDashboard(container, tripId);
                 return;
             }
             // 点击清空筛选按钮 (空状态)
@@ -70596,9 +73331,12 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
         openAiAssistantWithSkill: openAiAssistantWithSkill,
         openAutopilotDecisionDashboard: openAutopilotDecisionDashboard,
         openBatchEditExpenseModal: openBatchEditExpenseModal,
+        openBillManagementDashboard: openBillManagementDashboard,
         openEditTripModal: openEditTripModal,
         pruneSelectedRecordIds: pruneSelectedRecordIds,
-        saveTripPlansToStorage: saveTripPlansToStorage
+        renderBillManagementWorkspace: renderBillManagementWorkspace,
+        saveTripPlansToStorage: saveTripPlansToStorage,
+        switchMainTab: switchMainTab
     });
 
     let isObserverAttached = false;

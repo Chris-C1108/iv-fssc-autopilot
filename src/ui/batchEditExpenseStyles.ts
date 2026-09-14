@@ -2797,6 +2797,40 @@ td.yn-bem-cell-interactive {
     box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
 }
 
+.yn-bem-btn-bill-management {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    height: 28px;
+    border-radius: var(--coss-radius-sm);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    box-sizing: border-box;
+    outline: none;
+    border: 1px solid #3b82f6;
+    background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+    color: #1d4ed8;
+    box-shadow: var(--coss-shadow-xs);
+    transition: transform 100ms var(--coss-ease),
+                background-color 120ms var(--coss-ease),
+                border-color 120ms var(--coss-ease),
+                box-shadow 120ms var(--coss-ease);
+}
+.yn-bem-btn-bill-management:hover {
+    background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
+    border-color: #2563eb;
+    color: #1e40af;
+    box-shadow: var(--coss-shadow-sm);
+}
+.yn-bem-btn-bill-management:active:not(:disabled) {
+    transform: scale(0.98);
+}
+.yn-bem-btn-bill-management:focus-visible {
+    box-shadow: 0 0 0 2px var(--coss-bg-base), 0 0 0 4px var(--coss-ring);
+}
+
 /* ==========================================================================
    现代底部悬浮操作岛 (Floating Action Island - Linear/Stripe Grade)
    ========================================================================== */

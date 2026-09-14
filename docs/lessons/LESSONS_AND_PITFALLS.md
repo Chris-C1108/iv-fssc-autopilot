@@ -776,3 +776,165 @@
      - 用户点击按钮后，卡片状态流转为 `applied`（显示 `✓ 已生效应用到表格` 绿色微徽标，按钮禁用）；
      - 触发 `onApplyTripPlans(action.tripConfigs)` 回调，将排期正式注入表格、更新内存状态、持久化存储，并触发后续字段对齐。
 
+---
+
+### 42. 出差申请单 (SC) 保存失败 5 大连锁陷阱与报销单管理纯净视图重构 (v4.57.1)
+
+- **现象**：
+  - 用户在【报销单管理】(Bill Management Dashboard) 点击【💾 批量持久化已选草稿入库】时报错：`❌ 保存失败: 创建出差申请单 (Trip 1: 天津出差 (07-20 ~ 07-25)) 失败: ...`；
+  - 出差报告抽屉中含有冗余的 `✦ AI 依据行程一键撰写` 按钮，破坏纯净表格视图。
+- **5 大深层连锁根因剖析 (对齐真实 HAR)**：
+  1. **`applicantId` 缺失导致维表全灭与 `APPLICANT_ID` 传入中文字符串**：
+     - `getInvoicePoolGlobalState()` 初始化 `applicantId: ''`，未嗅探 `sessionStorage.getItem('ecs_currentUser')`；
+     - `fetchPersonnelVO` 遇到 `'当前社员'` 时，因 `applicantId` 为空且维表未命中，安全保底返回 `{ value: '当前社员' }`；
+     - 宿主系统 `APPLICANT_ID` 接收到非 UUID 的中文字符串，触发外键约束拒绝。
+  2. **`scPlan.legs` 占位符 `'出发地'` 与 `'返回地'` 穿透失败**：
+     - `clusterExpensesIntoTrips` 仅检查 `inv.stationGetOn/Off`，忽略了 `group.dynamicFields`（`flightFromCity/trainFromStation/dynFrom` 等）；
+     - 未提取到站点时直接生成 `'出发地'` 与 `'返回地'` 占位符，传入 `fetchCityVO` 查询失败，导致 `F_FROM` 传入非 UUID 汉字直接被数据库拦截。
+  3. **`DIM_CITY` 树形结构父子节点陷阱 (如“上海”)**：
+     - 查询上海时，第一层返回父节点 `S00002`（`depth=4`），真实叶子节点为 `L00509`（`depth=5`，`8da94c13de9011e9a156c7132c4fb0bc`）；
+     - 代码必须支持树状下钻，优先选择深度更大（`depth` 更深）的叶子节点，并对常见城市配置已知合法 ID 兜底，绝不返回纯汉字。
+  4. **`projectVO` 缺失导致科目与项目蝴蝶效应失败**：
+     - `handleSaveDrafts` 组装 `tripConfig` 时只传了 `projectName`，未传 `projectVO`；导致预算联动无法直接复用项目对象。
+  5. **单据主表金额字段不一致 (`SUM_AMOUNT` / `BUDGET_SUM` / `F_HJTOTA`)**：
+     - 真实 HAR 证实：`mainRow.datas.SUM_AMOUNT` 必须与 `BUDGET_SUM`、`F_HJTOTA`、`AMOUNT`、`ACCOUNT_AMOUNT` 严格保持一致。旧代码遗漏了 `SUM_AMOUNT`。
+- **终极解法**：
+  1. **主数据全面嗅探**：`getInvoicePoolGlobalState` 与 `fetchLoginUserInfo` 优先从 `ecs_currentUser` 同步当前登录社员真实 accountId；
+  2. **人员同名与代词解析**：`fetchPersonnelVO` 自动将 `'当前社员'`、`'当前员工'`、`'出差人'`、`'本人'` 识别为当前登录人，返回合法 UUID；
+  3. **城市维表与层级选择器**：`fetchCityVO` 规范化 `'出发地'`/`'返回地'` 为 `'上海'`，实现 `findBestCityNode` 深度优先算法，提供已知合法 ID 兜底库；
+  4. **全额严格平齐**：`createSingleTripApplicationApi` 在主表区与预算区同步回填 `SUM_AMOUNT`、`BUDGET_SUM` 与 `F_HJTOTA`，`savePayload.currentUserId` 刚性赋值；
+  5. **UI 纯净展现**：彻底移除报告抽屉内的 AI 按钮，出差报告撰写统一交由右侧智能副驾。
+
+---
+
+### 43. 跨模块单据 MenuId ACL 拦截、原生拦截器 eicds 签名与作用域安全切换 (v4.57.2)
+
+- **现象**：
+  - 在【费用记录】页面（或从费用记录打开的报销单管理看板中），调用 `createSingleTripApplicationApi` 创建出差申请单 (SC) 时，接口返回：`{"success": false, "message": "登录失效，请重新登录"}`；
+  - 但此时用户在界面上手动点击是正常登录状态，Token 并未失效。
+- **底层深层根因剖析**：
+  1. **跨模块 MenuId ACL 权限拦截**：
+     - 用户在【费用记录】模块，浏览器当前 URL 与 `sessionStorage.getItem("ecs_MenuId")` 均为费用记录的菜单 ID：`56dd4bb8a5bf11e8a1a1d174f439477e`；
+     - 出差申请单 (`CCSQ`, `billDefineId: '0355cf627fede1653e55bb00bc610001'`) 的法定菜单 ID 必须为：`56dcfd90a5bf11e8a1a103bb1accbe1b`；
+     - 当用费用记录的 `MenuId` 去调用出差申请单模板或保存接口（`/fssc/bill/billdata/getBillDataAndTemplateWrite` 与 `saveBillData`）时，网关根据 ACL 规则判定“费用记录菜单无权访问出差申请单”，并向前端返回欺骗性报错：“登录失效，请重新登录”。
+  2. **原生拦截器从 `sessionStorage.getItem("ecs_MenuId")` 读取并加密进 `eicds`**：
+     - 宿主原生 Axios Request 拦截器逆向源码证实：
+       ```javascript
+       var p = sessionStorage.getItem("ecs_MenuId");
+       p && (c.menuId = p);
+       var b = O(c, s); // 动态防逆向哈希 eicds 生成：menuId 是其加密载荷的一部分！
+       e.headers.eicds = b;
+       e.headers.MenuId = p;
+       ```
+     - 若自建请求缺少对应 MenuId 的合法 `eicds` 签名，或者 Header 中的 `MenuId` 与 `eicds` 内的 `menuId` 矛盾，网关均会拦截并报错“登录失效”。
+- **终极解法**：
+  1. **建立法定 MenuId 字典与自动推断机制**：
+     - 出差申请单 (`0355cf62...`) ➔ `56dcfd90a5bf11e8a1a103bb1accbe1b`；
+     - 员工报销单 (`035a50ee...` / `035cd1b4...`) ➔ `11ece08b4737d4eda79a6b404608a354`；
+     - 费用记录 ➔ `56dd4bb8a5bf11e8a1a1d174f439477e`；
+     - `inferLegalMenuId(url, data)` 根据单据特征自动推断法定 MenuId。
+  2. **`callNativeHttp` 动态作用域安全切换机制**：
+     - 在调用原生 Axios 之前，备份宿主所有可用窗口的 `sessionStorage.getItem('ecs_MenuId')`；
+     - 临时设置所有窗口的 `ecs_MenuId` 为目标单据法定 MenuId；
+     - 触发原生 Axios 发送请求，原生拦截器自动计算包含合法 MenuId 的 `eicds` 签名并在 Header 中写入合法 MenuId；
+     - 在 `finally` 块中立即刚性还原原始 `ecs_MenuId`，对宿主原本的交互无感、零副作用。
+  3. **全链路原生化升级**：
+     - 出差申请单草稿初始化 (`getBillDataAndTemplateWrite`)、科目蝴蝶效应计算 (`fieldValueChange`) 及持久化保存 (`saveBillData`) 全面升级为 `callNativeHttp` 优先 + 携带申请单法定 MenuId。
+
+
+### 44. `callNativeHttp` 必须显式注入 `appId` / `EcsToken` / `LoginToken` / `UserOrigin` Headers
+
+**时间**：2026-09-14  
+**严重级别**：🔴 P0 — 直接阻塞所有 API 写入  
+**现象**：所有通过 `callNativeHttp` 发起的请求均返回 `{"success": false, "message": "应用ID不能为空！"}`  
+**根本原因**：  
+  1. **宿主原生 Axios 拦截器只注入 `eicds` (签名) 和 `MenuId` (从 `sessionStorage.ecs_MenuId` 读取)**，不负责注入 `appId`。  
+  2. **`appId` 是宿主在应用初始化时写入 `axios.defaults.headers.common.appId = s`** (逆向自 `index_6624230474f22a822701.js`)，而非每次请求动态注入。  
+  3. **当 `callNativeHttp` 传入自定义 `headers: { MenuId, menuid }` 后**，部分 Axios 版本 (0.x) 的 merge 策略 (utils.merge) 可能导致 `common` 默认头被选择性跳过或覆盖。  
+  4. 同理，`LoginToken`、`EcsToken`、`UserOrigin` 也是宿主 `defaults.headers.common` 中设置的应用级 Header，不在拦截器内注入。  
+**解决方案**：  
+  - 在 `callNativeHttp` 构造 `reqHeaders` 时，必须执行三层嗅探注入：  
+    1. **优先层**：从 `nativeAxios.defaults.headers.common` 嗅探真实值；  
+    2. **次级层**：遍历 `candidateWins[].sessionStorage` 嗅探 `ecs_appId`；  
+    3. **兜底层**：使用硬性常量 `'e3d5e4787ff911e88b1997bee3518b4d'`（此为系统级应用常量，非业务实体，不违反 Anti-Hardcoding 铁律）。  
+**HAR 验证**：真实浏览器请求始终同时在 **Header (`appId`)** 和 **Body (`appId`)** 中携带该值。  
+**修复版本**：`v4.57.3`
+
+### 45. `createBillDataAndTemplateByExpenseIdList` 与 `saveBillData` 的 `appId` 与 `operationType` 契约陷阱
+
+**时间**：2026-09-14  
+**严重级别**：🔴 P0 — 直接导致新报销单草稿无法初始化与入库  
+**现象**：  
+  1. 批量保存生成报销单时，初始化接口返回 `{"success": false, "message": "应用ID不能为空！"}`；  
+  2. 初始化通过后，保存单据草稿返回 `{"success": false, "messageList": ["单据数据可能已被其他用户更新，请重新打开！"]}`。  
+**根本原因**：  
+  1. **Body 中缺 `appId`**：`/fssc/expenseClaim/billData/createBillDataAndTemplateByExpenseIdList` 的控制器直接校验请求体 JSON 中的 `appId`（宿主源码 `createAllBillDataByExpenseIds` 逆向契约为 `{ billDefineId, appId, scene: "WRITE", applicantId, userDefinedData: { expenseRecordIds, operationType: "ADD" }, expenseRecordIds }`）。若 Body 未传 `appId`，即使 Header 传了也会被拦截。  
+  2. **新单草稿的 `operationType` 必须保持 `"ADD"`**：初始化的草稿对象自带 `operationType: "ADD", statusEnum: "UNCOMMITTED", version: 1`。若在 `saveBillData` 中硬编码覆盖为 `operationType = 'UPDATE'`，后端乐观锁与持久化机制会认为你在更新一个已持久化单据，直接报错提示被其他用户更新。  
+**解决方案**：  
+  1. `createBillDataAndTemplateByExpenseIdListApi` 组装完整合规 payload，明确包含 `appId`、`scene: 'WRITE'` 与 `userDefinedData`；  
+  2. `saveBillDataApi` 优先保留 `billData.operationType || 'UPDATE'`，新增单据以 `"ADD"` 持久化入库。  
+**修复版本**：`v4.57.4`
+
+---
+
+### 46. 报销单 `F_CCSQD` (出差申请单关联) 的 `MACHINE_ACCOUNT` 结构契约陷阱
+
+**时间**：2026-09-14  
+**严重级别**：🔴 P1 — 导致单据保存 500 "系统执行失败！" 或申请单无法被前端组件正常解析渲染  
+**现象**：  
+  在费用报销单主表回填 `F_CCSQD` 时，若直接传申请单单号字符串（`dataType: "STEXT", value: "SC26090040"`），保存接口可能返回 500 `"系统执行失败！"`，或者即使保存成功，前端界面也无法识别并显示该申请单。  
+**底层契约逆向**：  
+  1. 宿主 webpack 模块 (`./src/platform/basicobject/component/utils.js`) 与 HAR 分析证实，`F_CCSQD` 底层不是普通文本字段，而是台账/机账引用类型 (`MACHINE_ACCOUNT`)。  
+  2. 其标准契约对象必须为：  
+     ```typescript
+     {
+       dataType: 'MACHINE_ACCOUNT',
+       dataAttribute: 'MACHINE_ACCOUNT',
+       initValueType: 'VARIABLE',
+       value: {
+         title: scBillCode, // 如 "SC26090053"
+         machineAccountId: scBillMainId, // 申请单主键 UUID，如 "048825a27a23a4f3f98b0fbef90c0000"
+         machineAccountDefineId: '3299661bb34111e8846f7b262b3e5000' // 台账定义模型 ID
+       }
+     }
+     ```  
+  3. 服务端在收到该对象后，会自动衍生 `F_CCSQD_EXT` 并存储关联元数据，前端表单控件才能正常展现为申请单的超链接 Tag。  
+**修复版本**：`v4.59.0`
+
+---
+
+### 47. `T_BILL_AREA_BGQ_DEF_001` (出差报告子表) 字段映射与 `PERSON` 类型反序列化陷阱
+
+**时间**：2026-09-14  
+**严重级别**：🟠 P2 — 导致报销单出差报告子表为空，或反序列化报错  
+**现象**：  
+  在费用报销单的报告区 (`035af6b91fdde1653e55bb00bc610000`) 回填时，字段名混乱（误用 `REPORT_CONTENT` 等虚拟名称），导致出差报告子表实际上没有任何内容。若对 `F_TXZ` (同行者) 强行赋字符串或空数组，服务端报 JSON 反序列化异常。  
+**底层契约逆向**：  
+  1. 真实模板子表 `T_BILL_AREA_BGQ_DEF_001` 的法定字段映射为：  
+     - `ROW_NUM`: 行号 (整型，如 1)  
+     - `F_CZX`: 出張先 (`STEXT`，目的地)  
+     - `F_QJFROM`: From（期間） (`DATE`，开始日期，如 `"2026-08-31 00:00"`)  
+     - `F_TOQJ`: To（期间） (`DATE`，结束日期，如 `"2026-09-02 00:00"`)  
+     - `F_YJ`: 用件 (`STEXT`，出差目的/事由概要)  
+     - `F_BG`: 報告・所見 (`MTEXT`，报告总结/所见)  
+     - `F_BGNR`: 報告内容 (`MTEXT`，详细过程及报告全文)  
+     - `F_TXZ`: 同行者 (`PERSON` 对象类型。如果同行人为文本或非人员对象，应安全省略该字段以避免 Java 反序列化报错)。  
+  2. 该子表行 `datas` 必须配置上述完整键值，方可在报销单详情的“出差报告”区展示出完整的表格记录。  
+**修复版本**：`v4.59.0`
+
+---
+
+### 48. 出差申请单多人行程 (`ITINERARY`) 动态提取与原地更新 (`operationType: 'UPDATE'`) 幂等性守则
+
+**时间**：2026-09-14  
+**严重级别**：🟡 P2 — 遗漏同行人交通票据与产生重复草稿单  
+**规约与解法**：  
+  1. **多人同行大交通行程动态提取**：  
+     在出差申请单 `T_BILL_AREA_CCS_DEF_001` (`035609b3ce5345af7f1906ec05cc0000`) 的旅程明细中，严禁仅填报登录人一人。系统必须自动扫描当次行程归集的所有发票与费用记录，动态识别所有乘机人/乘车人（通过发票备注、费用事由 `[外驻:XXX]` 等提取），为每位人员生成完整的去程与返程 Leg。  
+  2. **原地幂等更新铁律 (In-place Idempotent Update)**：  
+     若单据草稿已存在于草稿箱，**严禁**重复调用新增接口生成重复单据。必须首先调用 `getBillDataAndTemplateByBillMainId` 拉取现有单据，复用其 `billMainId`，设置 `operationType: 'UPDATE'`，更新字段后调用 `saveBillData`。  
+  3. **安全删除防丢失规约**：  
+     如确实需要删除已关联费用的报销单，必须使用宿主原生的“仅删除单据，费用退回至费用记录列表”模式（`billDeleteScene: "BILL"`），绝对禁止连带将底层费用记录直接物理删除。  
+**修复版本**：`v4.59.0`
+
+

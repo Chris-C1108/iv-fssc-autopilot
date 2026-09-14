@@ -37,6 +37,15 @@ export interface TripPlanConfirmationAction {
     appliedTime?: string;
 }
 
+export interface TravelReportConfirmationAction {
+    type: 'APPLY_TRAVEL_REPORTS';
+    reports: Array<{ tripIndex?: number; billId?: string; title: string; content: string; dest?: string }>;
+    applied?: boolean;
+    appliedTime?: string;
+}
+
+export type AssistantConfirmationAction = TripPlanConfirmationAction | TravelReportConfirmationAction;
+
 export interface ChatMessage {
     id: string;
     role: 'user' | 'assistant';
@@ -47,7 +56,7 @@ export interface ChatMessage {
     thinking?: ThinkingData;
     toolCalls?: ChatToolCall[];
     isStreaming?: boolean;
-    confirmationAction?: TripPlanConfirmationAction;
+    confirmationAction?: AssistantConfirmationAction;
 }
 
 export interface ChatSession {
@@ -81,6 +90,7 @@ interface AssistantChatPanelProps {
     onApplySkill?: (skillId: string) => void;
     onSuggestionClick?: (key: 'infer' | 'itinerary' | 'autopilot-plan' | 'dashboard') => void;
     onApplyTripPlans?: (messageId: string, action: TripPlanConfirmationAction) => void;
+    onApplyTravelReports?: (messageId: string, action: TravelReportConfirmationAction) => void;
     selectedExpenseCount: number;
     selectedExpenseAmount: number;
     attachedExpenseContextEnabled: boolean;
@@ -257,8 +267,9 @@ export const AssistantThread: React.FC<{
     onSuggestionClick?: (key: 'infer' | 'itinerary' | 'autopilot-plan' | 'dashboard') => void;
     onImagePreview?: (url: string) => void;
     onApplyTripPlans?: (messageId: string, action: TripPlanConfirmationAction) => void;
+    onApplyTravelReports?: (messageId: string, action: TravelReportConfirmationAction) => void;
     isExecuting?: boolean;
-}> = ({ messages, employeeName, onSuggestionClick, onImagePreview, onApplyTripPlans, isExecuting }) => {
+}> = ({ messages, employeeName, onSuggestionClick, onImagePreview, onApplyTripPlans, onApplyTravelReports, isExecuting }) => {
     const viewportRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
@@ -321,8 +332,8 @@ export const AssistantThread: React.FC<{
                         >
                             <span className="aui-suggestion-icon">🚀</span>
                             <div className="aui-suggestion-text">
-                                <span className="title">决策复核与极速建单 (HITL)</span>
-                                <span className="desc">全景决策看板，复核申请单 (SC) 与报销单 (BC/BJ)</span>
+                                <span className="title">报销单管理看板</span>
+                                <span className="desc">以报销单为条目，统一管理申请单 (SC) 与报销单 (BC/BJ)</span>
                             </div>
                         </div>
                     </div>
@@ -438,7 +449,7 @@ export const AssistantThread: React.FC<{
                                                     type="button"
                                                     className="aui-confirmation-btn-primary"
                                                     disabled={isExecuting}
-                                                    onClick={() => onApplyTripPlans?.(msg.id, msg.confirmationAction!)}
+                                                    onClick={() => onApplyTripPlans?.(msg.id, msg.confirmationAction as TripPlanConfirmationAction)}
                                                 >
                                                     ✓ 确认应用到表格并对齐字段 ({msg.confirmationAction.trips.length} 轮 Trip)
                                                 </button>
@@ -446,6 +457,46 @@ export const AssistantThread: React.FC<{
                                         ) : (
                                             <div className="aui-confirmation-applied-note">
                                                 <span>✓ 表格已按此排期完成时空分组</span>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+
+                                {/* HITL 出差报告一键回填卡片 (人类在回路确认回填至单据) */}
+                                {msg.confirmationAction && msg.confirmationAction.type === 'APPLY_TRAVEL_REPORTS' && (
+                                    <div className={`aui-confirmation-card ${msg.confirmationAction.applied ? 'is-applied' : ''}`}>
+                                        <div className="aui-confirmation-header">
+                                            <div className="aui-confirmation-title">
+                                                <span className="aui-confirmation-icon">{msg.confirmationAction.applied ? '✅' : '📝'}</span>
+                                                <span className="aui-confirmation-title-text">
+                                                    {msg.confirmationAction.applied ? '出差总结报告已回填至报销单' : '待确认：一键回填出差报告至报销单 (HITL)'}
+                                                </span>
+                                            </div>
+                                            <span className="aui-confirmation-badge">
+                                                {msg.confirmationAction.reports.length} 份出差报告
+                                            </span>
+                                        </div>
+                                        <div className="aui-confirmation-desc">
+                                            {msg.confirmationAction.applied ? (
+                                                <>已将 AI 撰写的 <strong>{msg.confirmationAction.reports.length}</strong> 份出差工作总结报告成功回填至对应出差单的【出差报告】字段中。{msg.confirmationAction.appliedTime ? `(回填时间: ${msg.confirmationAction.appliedTime})` : ''}</>
+                                            ) : (
+                                                <>AI 已为您深度撰写 <strong>{msg.confirmationAction.reports.length}</strong> 份专业出差报告。请复核上方报告正文，确认无误后点击下方按钮，一键同步回填写入对应出差费用报销单 (BC) 的报告字段中。</>
+                                            )}
+                                        </div>
+                                        {!msg.confirmationAction.applied ? (
+                                            <div className="aui-confirmation-actions">
+                                                <button
+                                                    type="button"
+                                                    className="aui-confirmation-btn-primary"
+                                                    disabled={isExecuting}
+                                                    onClick={() => onApplyTravelReports?.(msg.id, msg.confirmationAction as TravelReportConfirmationAction)}
+                                                >
+                                                    ✓ 确认将报告一键回填至对应报销单 ({msg.confirmationAction.reports.length} 份)
+                                                </button>
+                                            </div>
+                                        ) : (
+                                            <div className="aui-confirmation-applied-note">
+                                                <span>✓ 报销单管理看板中对应出差报告已更新就绪</span>
                                             </div>
                                         )}
                                     </div>
@@ -843,6 +894,7 @@ export const AssistantChatPanel: React.FC<AssistantChatPanelProps> = ({
     onApplySkill,
     onSuggestionClick,
     onApplyTripPlans,
+    onApplyTravelReports,
     selectedExpenseCount,
     selectedExpenseAmount,
     attachedExpenseContextEnabled,
@@ -973,6 +1025,7 @@ export const AssistantChatPanel: React.FC<AssistantChatPanelProps> = ({
                 onSuggestionClick={onSuggestionClick}
                 onImagePreview={(url) => setPreviewImageUrl(url)}
                 onApplyTripPlans={onApplyTripPlans}
+                onApplyTravelReports={onApplyTravelReports}
                 isExecuting={isExecuting}
             />
 
