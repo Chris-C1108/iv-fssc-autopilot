@@ -21,6 +21,7 @@ import {
 import { TripApplicationConfig } from '../types/state';
 import { ExpenseRecordGroup } from '../ui/batchEditExpenseModal';
 import { getGroupBillFlow } from './inferenceService';
+import { resolveTransportLabel } from './applicationService';
 
 let billIdCounter = 0;
 
@@ -721,21 +722,37 @@ export function autoFillBillPlansWithAi(
                     }
                 }
 
+                // 从关联费用记录中推测大交通工具
+                const associatedInvoiceTypes: string[] = [];
+                for (const g of associatedGroups) {
+                    if (g.expenseTypeName) associatedInvoiceTypes.push(g.expenseTypeName);
+                    if (g.newExpenseTypeName) associatedInvoiceTypes.push(g.newExpenseTypeName);
+                    if (g.invoices) {
+                        for (const inv of g.invoices) {
+                            if (inv.invoiceType) associatedInvoiceTypes.push(inv.invoiceType);
+                            if (inv.remarks) associatedInvoiceTypes.push(inv.remarks);
+                            if (inv.salesName) associatedInvoiceTypes.push(inv.salesName);
+                            if (inv.fileName) associatedInvoiceTypes.push(inv.fileName);
+                        }
+                    }
+                }
+                const inferredTransport = resolveTransportLabel(updated.scPlan?.flightOrTrain, associatedInvoiceTypes);
+
                 existingLegs = [
                     {
                         date: `${start}T09:00`,
                         fromCity: originCity,
                         toCity: dest,
-                        transport: '飞机/高铁',
-                        flightOrTrain: `去程交通 | 外驻:${updated.applicantName || '出差人'}`,
+                        transport: inferredTransport,
+                        flightOrTrain: inferredTransport ? `${inferredTransport} | 外驻:${updated.applicantName || '出差人'}` : '',
                         travelerName: updated.applicantName,
                     },
                     {
                         date: `${end}T18:00`,
                         fromCity: dest,
                         toCity: originCity,
-                        transport: '飞机/高铁',
-                        flightOrTrain: `返程交通 | 外驻:${updated.applicantName || '出差人'}`,
+                        transport: inferredTransport,
+                        flightOrTrain: inferredTransport ? `${inferredTransport} | 外驻:${updated.applicantName || '出差人'}` : '',
                         travelerName: updated.applicantName,
                     }
                 ];

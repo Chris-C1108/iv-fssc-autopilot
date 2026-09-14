@@ -328,6 +328,26 @@ async function handleExportExpenseRecords(doc: Document, btn: HTMLButtonElement)
 export function scanAndEnhanceExpenseRecordDOM(doc: Document) {
     if (!doc || !doc.body) return;
 
+    // 0. 全局独立浮动快捷入口 (Fixed 于右下角，无依赖常驻，不带角标)
+    let floatingBtn = doc.getElementById('yn-floating-batch-edit-expenses') as HTMLButtonElement;
+    if (!floatingBtn) {
+        floatingBtn = doc.createElement('button');
+        floatingBtn.type = 'button';
+        floatingBtn.id = 'yn-floating-batch-edit-expenses';
+        floatingBtn.className = 'yn-floating-batch-edit-btn';
+        floatingBtn.title = '批量修改费用与生成报销单 (支持未报销与报销中数据)';
+        floatingBtn.innerHTML = '<span>✏️ 批量修改费用</span>';
+
+        floatingBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const sel = getExpenseSelectionInfo(doc);
+            openBatchEditExpenseModal(doc, sel.selectedIds.length > 0 && !sel.isSelectAll ? sel.selectedIds : undefined);
+        });
+
+        doc.body.appendChild(floatingBtn);
+    }
+
     // 寻找操作栏容器
     const container = doc.querySelector('.platform-expenseclaim-expenseRecord-index__operate_record_btn_container--3Yccrbqk') ||
         doc.querySelector('[class*="operate_record_btn_container"]') ||

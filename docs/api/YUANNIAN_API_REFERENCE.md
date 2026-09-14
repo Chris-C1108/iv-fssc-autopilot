@@ -399,13 +399,15 @@ menuid: <MODULE_MENU_ID>                // 对应模块菜单 ID
 - **请求体**：
   ```json
   {
-    "dimObjectId": "6b8ce3199ebe11e88b72a97a1dba5a21", // 项目维表ID
+    "dimObjectId": "6b8ce3199ebe11e88b72a97a1dba5a21", // 项目维表ID；人员维表ID为 03554471926de1653e55bb00bc610001
     "searchInfo": "X2605-001", // 模糊关键词
     "isFastShow": true,
     "permDataScope": "BILL_ENTRY"
   }
   ```
-- **返回**：包含项目 `objectId`、`code`、`title` 的维表树节点。
+- **返回核心与避坑注意**：
+  - 返回对象为包含 `objectId`、`code`、`title`、`description` 的维表树节点数组；
+  - **⚠️ 核心避坑**：树节点的候选人唯一主键 UUID 存储于 `item.data.objectId` 或 `item.key` 中，`item.data.accountId` 经常为空字符串 `""`。提取 ID 必须使用 `item.data?.objectId || item.key || item.data?.accountId || item.id`。
 
 ### 3.5 【Update/Butterfly】申请单字段蝴蝶效应联动重算
 - **端点**：`POST /fssc/expenseClaim/billChangeButterflyEffect/fieldValueChange`
@@ -424,7 +426,7 @@ menuid: <MODULE_MENU_ID>                // 对应模块菜单 ID
 - **端点**：`POST /fssc/bill/billdata/saveBillData`
 - **关键数据组装契约**：
   - 旅程子表挂载位置：`billData.area.rowDatas[0].subAreaDatas["T_BILL_AREA_CCS_DEF_001"]`
-  - 日期时间规范：**严格 16 位 ISO 格式（`YYYY-MM-DDTHH:mm`，无秒）**
+  - 日期时间规范：**严格 16 位 ISO 格式（`YYYY-MM-DDTHH:mm`，默认 09:00 / 23:59）**
   - 班次与人员去重：`MU5227 | (张三)`
 - **实测返回**：`{ "success": true, "billCode": "SC26090022", "billMainId": "..." }`
 
@@ -500,20 +502,34 @@ menuid: <MODULE_MENU_ID>                // 对应模块菜单 ID
   2. **步骤 2 (项目)**：维表模糊检索对应项目编码，回写 `DIM_PROJECT`；
   3. **步骤 3 (请款)**：将 `F_SFXKHQK`（是否向客户请款）锁定为 `035a2d7ae87de1653e55bb00bc610000`（【是】）。
 
-### 4.5 【Update/Linkage】关联出差申请单与自动回写
-- **端点**：`POST /fssc/expenseClaim/billData/relationWriteBack`
+### 4.5 【Update/Linkage】关联出差申请单与台账冲销
 - **字段编码**：`F_CCSQD` (`03976cebfeec42ef00eb2e736fda0000`)
-- **回写字段对照表**：
-  - `F_CCSQD` ➔ 申请单单号 (`BILL_CODE`)
-  - `F_MDDCZX` ➔ 目的地 (`F_CZXSYD`)
-  - `DESCRIPTION` ➔ 出差事由 (`F_CZMDZD`)
-  - `START_TRIP_DATE` ➔ 出发日期 (`F_QJPERI`)
-  - `END_TRIP_DATE` ➔ 返回日期 (`F_QJPERI_01`)
-  - `F_CCLX` ➔ 出差类型 (`F_CCLX`)
+- **契约类型**：`MACHINE_ACCOUNT`（台账关联对象类型）
+- **契约结构**：
+  ```json
+  {
+    "dataType": "MACHINE_ACCOUNT",
+    "dataAttribute": "MACHINE_ACCOUNT",
+    "initValueType": "VARIABLE",
+    "value": {
+      "title": "SC26090060",
+      "machineAccountId": "<SC_BILL_MAIN_ID>",
+      "machineAccountDefineId": "3299661bb34111e8846f7b262b3e5000"
+    }
+  }
+  ```
+- **台账池可用额度机制**：宿主系统仅向已审批通过（`APPROVED`/`EFFECTIVE`）的申请单开放可用额度冲销。草稿态（`UNCOMMITTED`）的申请单在表头正确关联，但在分摊子表中的可用金额客观显示为 `-` 空，这是宿主台账额度锁定的标准合规机制。
 
-### 4.6 【Update/Report】出差工作报告 AI 结构化合成回填
-- **回填字段**：区域 `T_BILL_AREA_BGQ_DEF_001` 下的字段 **`F_BGNR`**（多行富文本）。
-- **内容规范**：大模型根据出差日程自动提炼拜访客户据点、技术交流、商务成果与跟进事项。
+### 4.6 【Update/Report】出差工作报告子表结构化回填
+- **子表编码**：`T_BILL_AREA_BGQ_DEF_001`（区域 ID：`035af6b91fdde1653e55bb00bc610000`）
+- **字段映射规范**：
+  - `F_CZX`: 出張先 (`STEXT`，目的地城市)
+  - `F_QJFROM`: From（期間） (`DATE`，精确格式如 `2026-08-31 09:00`)
+  - `F_TOQJ`: To（期间） (`DATE`，精确格式如 `2026-09-04 23:59`)
+  - `F_YJ`: 用件 (`STEXT`，出差目的概要)
+  - `F_BG`: 報告・所見 (`MTEXT`，报告总结/主要成果)
+  - `F_BGNR`: 報告内容 (`MTEXT`，详细过程及报告全文)
+  - `F_TXZ`: 同行者 (`PERSON` 对象类型，非对象时省略该字段防反序列化报错)
 
 ### 4.7 【Save/Fast】v4.3.0 极速持久化模式 (30倍性能飞跃)
 - **端点**：`POST /fssc/bill/billdata/saveBillData`

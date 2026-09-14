@@ -369,3 +369,20 @@ export interface GlobalState {
     lastInterceptedExpenseRecords?: any[];
     lastInterceptedInvoicePool?: any[];
 }
+
+export interface GenericExpenseGroup {
+    expenseAmount: number | string;
+    description?: string;
+    newDescription?: string;
+    expenseTypeName?: string;
+    newExpenseTypeName?: string;
+    businessDate?: string;
+    newBusinessDate?: string;
+    invoices?: Array<{
+        salesName?: string;
+        remarks?: string;
+        [key: string]: any;
+    }>;
+    [key: string]: any;
+}
+

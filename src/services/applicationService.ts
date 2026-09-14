@@ -15,6 +15,46 @@ export function generateUuid(): string {
 }
 
 /**
+ * 确定性大交通标签推断
+ * 优先规则：
+ * 1. 若排期表/传入参数已有具体交通/车次文本（如 MU5227 / G1234 / 飞机 / 高铁），直接使用并清洗
+ * 2. 若无显式文本，但关联发票中识别出大交通票种类型：
+ *    - 仅有飞机票 => '飞机'
+ *    - 仅有高铁/火车票 => '高铁'
+ *    - 两者皆有 => '飞机/高铁'
+ * 3. 若均无法确定，返回空字符串 ''，交由上层在 A2UI / 弹窗中提示用户确认，并在持久化写库前硬阻断
+ */
+export function resolveTransportLabel(
+    rawFromSchedule?: string,
+    invoiceCommuteTypes?: Array<'FLIGHT' | 'TRAIN' | string>
+): string {
+    if (rawFromSchedule) {
+        const clean = rawFromSchedule.trim();
+        // 如果不是无意义占位符，直接使用
+        if (clean && clean !== '未提供' && clean !== '未知' && clean !== '待定') {
+            return clean;
+        }
+    }
+
+    if (invoiceCommuteTypes && invoiceCommuteTypes.length > 0) {
+        const hasFlight = invoiceCommuteTypes.some(t => {
+            const s = (t || '').toUpperCase();
+            return s.includes('FLIGHT') || s.includes('飞机') || s.includes('航空') || s.includes('机票');
+        });
+        const hasTrain = invoiceCommuteTypes.some(t => {
+            const s = (t || '').toUpperCase();
+            return s.includes('TRAIN') || s.includes('高铁') || s.includes('火车') || s.includes('动车');
+        });
+
+        if (hasFlight && hasTrain) return '飞机/高铁';
+        if (hasFlight) return '飞机';
+        if (hasTrain) return '高铁';
+    }
+
+    return '';
+}
+
+/**
  * 动态拉取当前登录人信息（从会话与用户卡片 API 解析真实姓名、工号、邮箱）
  */
 export async function fetchLoginUserInfo(state: GlobalState): Promise<{
@@ -254,23 +294,39 @@ export async function fetchPersonnelVO(name: string, state: GlobalState): Promis
     // 1. 若用户输入代词 ("本人"、"我"、"当前社员"、"当前员工"、工号、或直接传入 state.applicantId)，直接绑定为当前登录用户
     // 2. 若用户输入姓名与登录人姓名一致，且【未携带冲突的限定符】(如纯输入 "陈浩")，绑定为当前登录用户
     // 3. 若用户输入明确携带了限定符 (如 "陈浩-ITS")，而登录人未携带该限定符，则绝对不可将其直接劫持为登录用户，必须进入维表消歧检索！
+    // 检查是否为当前登录人：
+    // 规则：
+    // 1. 若用户输入代词 ("本人"、"我"、"当前社员"、"当前员工"、工号、或直接传入 state.applicantId)，直接绑定为当前登录用户
+    // 2. 若用户输入姓名与登录人姓名一致，或与登录人基础名一致且未携带冲突限定符 (如纯输入 "陈浩")，直接判定为当前登录社员
+    // 3. 若用户输入明确携带了限定符 (如 "陈浩-ITS")，且登录人全名也包含该限定符，绑定为当前登录用户
     const loginUser = await fetchLoginUserInfo(state);
+    const loginUserName = (loginUser.userName || '').trim();
+    const loginBaseName = loginUserName
+        .replace(/（[^）]+）|\([^)]+\)/g, '')
+        .replace(/本人|代办|当前用户|当前社员|当前员工|出差人|社员/g, '')
+        .trim();
+
     const isExplicitSelf = cleanName === '本人' || cleanName === '我' || cleanName === '当前用户' || cleanName === '当前社员' || cleanName === '当前员工' || cleanName === '出差人' || cleanName === '社员' || cleanName === state.applicantId;
     const isLoginCode = Boolean(loginUser.userCode && cleanName === loginUser.userCode);
     const isLoginNameExact = Boolean(
-        loginUser.userName &&
-        (cleanName === loginUser.userName || baseName === loginUser.userName) &&
-        (!qualifier || (loginUser.userName.includes(qualifier) || (loginUser.userCode && loginUser.userCode.includes(qualifier))))
+        loginUserName &&
+        (
+            cleanName === loginUserName ||
+            baseName === loginUserName ||
+            (loginBaseName && (cleanName === loginBaseName || baseName === loginBaseName))
+        ) &&
+        (!qualifier || (loginUserName.includes(qualifier) || (loginUser.userCode && loginUser.userCode.includes(qualifier))))
     );
 
     if (isExplicitSelf || isLoginCode || isLoginNameExact) {
         const vo = {
             value: state.applicantId,
-            title: { zh_CN: loginUser.userName || '本人' }
+            title: { zh_CN: loginUserName || '本人' }
         };
         state.tripApp.personCache[cleanName] = vo;
         if (baseName && !qualifier) state.tripApp.personCache[baseName] = vo;
-        AutopilotLogger.info(`[DynamicPerson] 人员 [${cleanName}] 确认为当前登录人 (ID: ${vo.value})`);
+        if (loginBaseName) state.tripApp.personCache[loginBaseName] = vo;
+        AutopilotLogger.info(`[DynamicPerson] 人员 [${cleanName}] 确认为当前登录人 (ID: ${vo.value}, 姓名: ${vo.title.zh_CN})`);
         return vo;
     }
 
@@ -302,12 +358,26 @@ export async function fetchPersonnelVO(name: string, state: GlobalState): Promis
                 const desc = (item.data?.description || '').trim();
                 const code = (item.data?.code || item.code || '').trim();
                 const text = `${name} ${desc} ${code}`.toLowerCase();
+                // 元年维表树节点的 ID 存在于 item.data.objectId 或 item.key 中
+                const candId = item.data?.objectId || item.key || item.data?.accountId || item.id;
+                const isCandLoginUser = Boolean(candId && state.applicantId && candId === state.applicantId);
 
                 let score = 0;
 
                 // 1. 完全字符串精确匹配
                 if (name.toLowerCase() === cleanLower || desc.toLowerCase() === cleanLower) {
                     score += 100;
+                }
+
+                // 2. 当前登录社员保底与绝对优先加分
+                if (isCandLoginUser) {
+                    if (qualifier) {
+                        if (text.includes(qualLower)) {
+                            score += 500; // 命中限定符且为登录用户
+                        }
+                    } else {
+                        score += 500; // 无冲突限定符时，优先判定为当前登录社员
+                    }
                 }
 
                 if (qualifier) {
@@ -326,22 +396,19 @@ export async function fetchPersonnelVO(name: string, state: GlobalState): Promis
                     if (name.toLowerCase() === baseLower || desc.toLowerCase() === baseLower) {
                         score += 80;
                     }
-                    // 扣除带有额外后缀的同名候选 (如 "陈浩-ITS")，严防将正社员误匹配为外驻/子公司同名人员
-                    if (name.includes('-') || desc.includes('-') || name.includes('(') || desc.includes('(')) {
+                    // 扣除带有额外后缀的同名候选 (如 "陈浩-外驻")，严防将正社员误匹配为外驻/子公司同名人员 (若是当前登录人则绝不扣分)
+                    if (!isCandLoginUser && (name.includes('-') || desc.includes('-') || name.includes('(') || desc.includes('(') || name.includes('（') || desc.includes('（'))) {
                         score -= 30;
-                    }
-                    // 若有匹配登录人的 accountId，赋予额外正社员保底权重
-                    if (item.data?.accountId === state.applicantId || item.id === state.applicantId) {
-                        score += 15;
                     }
                 }
 
                 return {
                     item,
                     score,
-                    id: item.data?.accountId || item.data?.objectId || item.id,
-                    name: desc || name || cleanName,
-                    code
+                    id: candId,
+                    name: (isCandLoginUser && loginUserName) ? loginUserName : (desc || name || cleanName),
+                    code,
+                    isCandLoginUser
                 };
             });
 
@@ -359,6 +426,7 @@ export async function fetchPersonnelVO(name: string, state: GlobalState): Promis
 
             state.tripApp.personCache[cleanName] = vo;
             if (!qualifier && baseName) state.tripApp.personCache[baseName] = vo;
+            if (best.isCandLoginUser && loginBaseName) state.tripApp.personCache[loginBaseName] = vo;
             AutopilotLogger.info(
                 `[DynamicPerson] 人员消歧匹配 [${cleanName}] (基础名: ${baseName}, 限定符: ${qualifier || '无'}) ` +
                 `-> 候选总数: ${scoredCandidates.length}, 优胜匹配: [${best.name}] (得分: ${best.score}, ID: ${best.id})`
@@ -725,10 +793,10 @@ export function createDynamicTripConfig(
     let legs = input.legs;
     if (!legs || legs.length === 0) {
         const traveler = input.applicantName || '当前用户';
-        const flight = input.flightOrTrain || '飞机/高铁';
+        const flight = resolveTransportLabel(input.flightOrTrain);
         legs = [
-            { date: input.startDate, fromCity: '上海', toCity: input.destination, transport: flight, travelerName: traveler },
-            { date: input.endDate, fromCity: input.destination, toCity: '上海', transport: flight, travelerName: traveler }
+            { date: input.startDate, fromCity: '上海', toCity: input.destination, transport: flight, flightOrTrain: flight, travelerName: traveler },
+            { date: input.endDate, fromCity: input.destination, toCity: '上海', transport: flight, flightOrTrain: flight, travelerName: traveler }
         ];
     } else {
         // 确保每条 leg 均记录 travelerName
@@ -970,7 +1038,7 @@ function parseTimelineActivityTable(
         const legs: TripLeg[] = [];
         blk.forEach(r => {
             if (r.origin && r.dest) {
-                const transport = r.transport || '飞机/高铁';
+                const transport = resolveTransportLabel(r.transport);
                 const travelers = r.travelers.length > 0 ? r.travelers : (allTravelers.length > 0 ? allTravelers : ['当前用户']);
                 travelers.forEach(t => {
                     legs.push({
@@ -978,6 +1046,7 @@ function parseTimelineActivityTable(
                         fromCity: r.origin,
                         toCity: r.dest,
                         transport,
+                        flightOrTrain: transport,
                         travelerName: t
                     });
                 });
@@ -985,6 +1054,7 @@ function parseTimelineActivityTable(
         });
 
         // 针对未在显式移动行中的人员，按其在该波次中的实际最早出现日期与最后结束日期补齐往返
+        const inferredBlockTransport = resolveTransportLabel(blk.map(r => r.transport).filter(Boolean).join(' '));
         allTravelers.forEach(t => {
             const period = travelerPeriods.get(t) || { start: startDate, end: endDate };
             const hasOutbound = legs.some(l => l.travelerName === t && (isBaseCity(l.fromCity) || !isBaseCity(l.toCity)));
@@ -995,7 +1065,8 @@ function parseTimelineActivityTable(
                     date: period.start,
                     fromCity: detectedBaseCity || '出发地',
                     toCity: destination,
-                    transport: '飞机/高铁',
+                    transport: inferredBlockTransport,
+                    flightOrTrain: inferredBlockTransport,
                     travelerName: t
                 });
             }
@@ -1004,7 +1075,8 @@ function parseTimelineActivityTable(
                     date: period.end,
                     fromCity: destination,
                     toCity: detectedBaseCity || '返回地',
-                    transport: '飞机/高铁',
+                    transport: inferredBlockTransport,
+                    flightOrTrain: inferredBlockTransport,
                     travelerName: t
                 });
             }
@@ -1272,32 +1344,34 @@ export function combineTripsForMainApplicant(
                 missingTravelers.forEach(t => {
                     const sampleOut = member.legs!.find(l => l.fromCity.includes('上海') || !l.toCity.includes('上海'));
                     const sampleIn = member.legs!.find(l => l.toCity.includes('上海') || !l.fromCity.includes('上海'));
+                    const outTransport = resolveTransportLabel(sampleOut?.flightOrTrain || sampleOut?.transport);
+                    const inTransport = resolveTransportLabel(sampleIn?.flightOrTrain || sampleIn?.transport);
                     allLegs.push({
                         date: sampleOut ? sampleOut.date : member.startDate,
                         fromCity: sampleOut ? sampleOut.fromCity : '上海',
                         toCity: sampleOut ? sampleOut.toCity : destination,
-                        transport: sampleOut ? sampleOut.transport : '飞机/高铁',
-                        flightOrTrain: sampleOut?.flightOrTrain,
+                        transport: outTransport,
+                        flightOrTrain: sampleOut?.flightOrTrain || outTransport,
                         travelerName: t
                     });
                     allLegs.push({
                         date: sampleIn ? sampleIn.date : member.endDate,
                         fromCity: sampleIn ? sampleIn.fromCity : destination,
                         toCity: sampleIn ? sampleIn.toCity : '上海',
-                        transport: sampleIn ? sampleIn.transport : '飞机/高铁',
-                        flightOrTrain: sampleIn?.flightOrTrain,
+                        transport: inTransport,
+                        flightOrTrain: sampleIn?.flightOrTrain || inTransport,
                         travelerName: t
                     });
                 });
             } else {
-                const flight = member.flightOrTrain || '飞机/高铁';
+                const flight = resolveTransportLabel(member.flightOrTrain);
                 mTravelers.forEach(t => {
                     allLegs.push({
                         date: member.startDate,
                         fromCity: '上海',
                         toCity: destination,
                         transport: flight,
-                        flightOrTrain: member.flightOrTrain,
+                        flightOrTrain: flight,
                         travelerName: t
                     });
                     allLegs.push({
@@ -1305,7 +1379,7 @@ export function combineTripsForMainApplicant(
                         fromCity: destination,
                         toCity: '上海',
                         transport: flight,
-                        flightOrTrain: member.flightOrTrain,
+                        flightOrTrain: flight,
                         travelerName: t
                     });
                 });
@@ -1456,10 +1530,28 @@ export async function createSingleTripApplicationApi(
 ): Promise<{ success: boolean; billCode?: string; billMainId?: string; message?: string }> {
     try {
         // 0. 优先确保系统当前登录用户信息与 state.applicantId 100% 就绪
-        await fetchLoginUserInfo(state);
+        const loginUser = await fetchLoginUserInfo(state);
 
-        // 1. 获取出行人人员对象 (动态维表解析)
-        const applicantVO = await fetchPersonnelVO(config.applicantName, state);
+        // 1. 获取出行人人员对象 (非代办/本人单据刚性锁定当前登录社员)
+        let applicantVO: any;
+        const loginBaseName = (loginUser?.userName || '').replace(/（[^）]+）|\([^)]+\)/g, '').trim();
+        const isSelf = !config.isProxy && (
+            !config.applicantName ||
+            config.applicantName === '当前社员' ||
+            config.applicantName === '当前用户' ||
+            config.applicantName === '本人' ||
+            config.applicantName === loginUser?.userName ||
+            (loginBaseName && config.applicantName === loginBaseName)
+        );
+
+        if (isSelf && state.applicantId) {
+            applicantVO = {
+                value: state.applicantId,
+                title: { zh_CN: loginUser.userName || config.applicantName || '本人' }
+            };
+        } else {
+            applicantVO = await fetchPersonnelVO(config.applicantName, state);
+        }
 
         let billData: any;
         let isUpdate = false;
@@ -1519,13 +1611,15 @@ export async function createSingleTripApplicationApi(
         if (mainRow.datas.USERS_ID) {
             mainRow.datas.USERS_ID.value = [applicantVO];
         }
-        if (mainRow.datas.CREATOR_ID && (!mainRow.datas.CREATOR_ID.value || !mainRow.datas.CREATOR_ID.value.value)) {
+        if (mainRow.datas.CREATOR_ID) {
             mainRow.datas.CREATOR_ID.value = applicantVO;
         }
 
-        // 4. 回填主表基本信息与费用计算值 (含 Buffer，自适应创建字段，彻底免疫 undefined.value)
-        const sDate = config.startDate.includes('T') ? config.startDate : `${config.startDate}T00:00`;
-        const eDate = config.endDate.includes('T') ? config.endDate : `${config.endDate}T00:00`;
+        // 4. 回填主表基本信息与费用计算值 (精确至 hh:mm，无则 default 出发 09:00，归宅 23:59)
+        const sTime = config.startDate.includes('T') ? config.startDate.split('T')[1] : '';
+        const eTime = config.endDate.includes('T') ? config.endDate.split('T')[1] : '';
+        const sDate = (sTime && sTime !== '00:00') ? config.startDate : `${config.startDate.split('T')[0]}T09:00`;
+        const eDate = (eTime && eTime !== '00:00') ? config.endDate : `${config.endDate.split('T')[0]}T23:59`;
         ensureRowField(mainRow, 'START_TRIP_DATE', sDate, 'DATE');
         ensureRowField(mainRow, 'END_TRIP_DATE', eDate, 'DATE');
         ensureRowField(mainRow, 'F_CCLX', TRIP_CONSTANTS.cclx, 'RADIO');
@@ -1596,7 +1690,16 @@ export async function createSingleTripApplicationApi(
 
                 // 核心规约与真实 HAR 规范：FLIGHT/TRAIN ETC. 字段中不仅填写班次，最后按规范标注出行人
                 // 真实填报格式：MU5227 | (陈浩) 或 MU5227 | (外驻:成勇)
-                let flightText = (leg.flightOrTrain || leg.transport || '飞机/高铁').trim();
+                let transportBase = (leg.flightOrTrain || leg.transport || '').trim();
+                // 过滤掉历史可能的模糊占位符
+                if (transportBase === '飞机/高铁' || transportBase === '未知' || transportBase === '待定') {
+                    transportBase = resolveTransportLabel(transportBase);
+                }
+                if (!transportBase) {
+                    throw new Error(`第 ${i + 1} 航段 (${leg.date} ${leg.fromCity} -> ${leg.toCity}) 缺少明确交通工具/车次信息，已触发安全 Gate 阻断！请在行程中明确大交通（飞机/高铁/车次）。`);
+                }
+
+                let flightText = transportBase;
                 const rawTraveler = (leg.travelerName || config.applicantName || '').trim();
                 const cleanTraveler = rawTraveler.replace(/（.*）|\(.*\)/g, '').trim();
 

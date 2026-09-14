@@ -26,9 +26,18 @@ import {
     DynamicTripInput,
     ensureRowField,
     ensureRowMoneyField,
-    generateUuid
+    generateUuid,
+    resolveTransportLabel
 } from '../services/applicationService';
-import { createBillDataAndTemplateByExpenseIdListApi, saveBillDataApi, fetchBillDataAndTemplateApi } from '../services/billService';
+import {
+    createBillDataAndTemplateByExpenseIdListApi,
+    saveBillDataApi,
+    fetchBillDataAndTemplateApi,
+    changeBillFieldValueApi,
+    prepareBillSceneVO,
+    fetchUncommittedReimbursementBillsSummary,
+    generateComprehensivePersonExpenseReport
+} from '../services/billService';
 import { TRIP_CONSTANTS, BUDGET_CONSTANTS } from '../config/constants';
 import { getInvoicePoolGlobalState } from '../services/invoicePoolDomService';
 
@@ -125,6 +134,7 @@ export interface ExpenseRecordGroup {
     createDate: string;
     earliestInvoiceDate: string; // 聚合发票中的最早开票日期 (排序主键)
     hasWarn: boolean;
+    status?: string;       // 报销状态 (未报销 / 报销中 / 已报销)
     invoices: ExpenseInvoiceSubItem[];
     tripId?: string;       // 所属 Trip 唯一标识，如 'trip_1', 'trip_none'
     tripName?: string;     // 所属 Trip 名称，如 'Trip 1: 2026-07-20 ~ 07-24 · 天津市'
@@ -459,18 +469,24 @@ function groupExpenseRows(rows: ExpenseRecordExportRow[]): ExpenseRecordGroup[] 
                 createDate: r.createDate || '',
                 earliestInvoiceDate: '',
                 hasWarn: false,
+                status: r.status || '未报销',
                 invoices: [],
                 inferredFields: {},
                 dynamicFields: r.savedDynamicFields ? { ...r.savedDynamicFields } : {}
             };
             groupMap.set(r.expenseRecordId, g);
-        } else if (r.savedDynamicFields && Object.keys(r.savedDynamicFields).length > 0) {
-            g.dynamicFields = { ...r.savedDynamicFields, ...(g.dynamicFields || {}) };
-            if (!g.newStartAddress && r.savedDynamicFields.startAddress) {
-                g.newStartAddress = r.savedDynamicFields.startAddress;
+        } else {
+            if (r.status && !g.status) {
+                g.status = r.status;
             }
-            if (!g.newEndAddress && r.savedDynamicFields.endAddress) {
-                g.newEndAddress = r.savedDynamicFields.endAddress;
+            if (r.savedDynamicFields && Object.keys(r.savedDynamicFields).length > 0) {
+                g.dynamicFields = { ...r.savedDynamicFields, ...(g.dynamicFields || {}) };
+                if (!g.newStartAddress && r.savedDynamicFields.startAddress) {
+                    g.newStartAddress = r.savedDynamicFields.startAddress;
+                }
+                if (!g.newEndAddress && r.savedDynamicFields.endAddress) {
+                    g.newEndAddress = r.savedDynamicFields.endAddress;
+                }
             }
         }
 
@@ -653,12 +669,12 @@ function extractOverStandardFromHostDom(recordId: string, doc?: Document): strin
 
 /**
  * 智能嗅探当前登录社员真实姓名
+ * 优先保留完整的官方用户名称（例如 "陈浩（ITS）"），确保申请单与人员维表检索消歧 100% 精确
  */
 export function detectCurrentEmployeeName(state?: GlobalState, doc?: Document): string {
     // 1. 检查 state.currentUser
     if (state?.currentUser?.userName) {
-        const clean = state.currentUser.userName.replace(/（[^）]+）|\([^)]+\)/g, '').trim();
-        if (clean) return clean;
+        return state.currentUser.userName.trim();
     }
     // 2. 从 DOM (window.top.document) 嗅探头部用户名
     try {
@@ -667,10 +683,13 @@ export function detectCurrentEmployeeName(state?: GlobalState, doc?: Document): 
             const candidates = topDoc.querySelectorAll('.ant-dropdown-trigger, .header-user, .user-name, .user-info, [class*="user"], [class*="avatar"]');
             for (const el of Array.from(candidates)) {
                 const txt = (el.textContent || '').trim();
-                const bracketMatch = txt.match(/^([\u4e00-\u9fa5]{2,6})(?:（|\()/);
-                if (bracketMatch) return bracketMatch[1];
-                const clean = txt.replace(/（[^）]+）|\([^)]+\)/g, '').trim();
-                if (clean && clean.length >= 2 && clean.length <= 6 && /^[\u4e00-\u9fa5]+$/.test(clean) && !clean.includes('应用') && !clean.includes('登录') && !clean.includes('代办')) {
+                // 优先保留带有部门/工号括号的完整官方名（如 "陈浩（ITS）"），用于精准消歧
+                const fullMatch = txt.match(/^[\u4e00-\u9fa5]{2,6}(?:（[^）]+）|\([^\)]+\))/);
+                if (fullMatch && !txt.includes('应用') && !txt.includes('登录') && !txt.includes('代办')) {
+                    return fullMatch[0];
+                }
+                const clean = txt.trim();
+                if (clean && clean.length >= 2 && clean.length <= 15 && /^[\u4e00-\u9fa5a-zA-Z0-9（）\(\)]+$/.test(clean) && !clean.includes('应用') && !clean.includes('登录') && !clean.includes('代办')) {
                     return clean;
                 }
             }
@@ -679,22 +698,22 @@ export function detectCurrentEmployeeName(state?: GlobalState, doc?: Document): 
     // 3. 从 sessionStorage / localStorage 提取
     if (typeof sessionStorage !== 'undefined') {
         const cName = sessionStorage.getItem('console_userName');
-        if (cName) return cName.replace(/（[^）]+）|\([^)]+\)/g, '').trim();
+        if (cName) return cName.trim();
         const ecsUser = sessionStorage.getItem('ecs_currentUser');
         if (ecsUser) {
             try {
                 const u = JSON.parse(ecsUser);
-                if (u?.userName) return u.userName.replace(/（[^）]+）|\([^)]+\)/g, '').trim();
+                if (u?.userName) return u.userName.trim();
             } catch (e) {}
         }
         const sName = sessionStorage.getItem('userName') || sessionStorage.getItem('loginUserName');
-        if (sName) return sName.replace(/（[^）]+）|\([^)]+\)/g, '').trim();
+        if (sName) return sName.trim();
     }
     if (typeof localStorage !== 'undefined') {
         const cName = localStorage.getItem('console_userName');
-        if (cName) return cName.replace(/（[^）]+）|\([^)]+\)/g, '').trim();
+        if (cName) return cName.trim();
         const lName = localStorage.getItem('userName') || localStorage.getItem('loginUserName');
-        if (lName) return lName.replace(/（[^）]+）|\([^)]+\)/g, '').trim();
+        if (lName) return lName.trim();
     }
     return '';
 }
@@ -711,12 +730,16 @@ function computeFormattedDescription(
     const name = (state.proxyPersonName || '').trim();
     const project = (state.projectName || '').trim();
     const remark = (state.customRemark || '').trim();
-    const employee = (state.currentEmployeeName || detectCurrentEmployeeName()).trim();
+    const rawEmployee = (state.currentEmployeeName || detectCurrentEmployeeName()).trim();
+    // 费用说明中如果使用 ${employee}，默认使用清洗掉括号的纯名（如 "陈浩"），避免费用说明过长；同时保留 ${fullEmployee}
+    const cleanEmployee = rawEmployee.replace(/（[^）]+）|\([^)]+\)/g, '').trim();
+    const employee = cleanEmployee || rawEmployee;
 
     const tpl = state.formatTemplate;
     if (tpl && tpl.includes('${')) {
         let res = tpl
             .replace(/\${employee}/g, employee)
+            .replace(/\${fullEmployee}/g, rawEmployee)
             .replace(/\${当前社员名}/g, employee)
             .replace(/\${社员名}/g, employee)
             .replace(/\${社员}/g, employee)
@@ -936,7 +959,7 @@ export async function openBatchEditExpenseModal(doc: Document, preselectedIds?: 
             try {
                 const u = await fetchLoginUserInfo(globalState);
                 if (u?.userName) {
-                    empName = u.userName.replace(/（[^）]+）|\([^)]+\)/g, '').trim();
+                    empName = u.userName.trim();
                 }
             } catch (e) {}
         }
@@ -1278,9 +1301,10 @@ export function clusterExpensesIntoTrips(
             const tripId = `trip_${tripNo}`;
             const { days, nights } = calculateDaysAndNights(ct.startDate, ct.endDate);
             const destination = (ct.destination || '出差地').replace(/省|市/g, '');
+            const tLabel = resolveTransportLabel(ct.flightOrTrain);
             const legs: TripLeg[] = ct.legs && ct.legs.length > 0 ? ct.legs : [
-                { date: ct.startDate, fromCity: '出发地', toCity: destination, transport: ct.flightOrTrain || '飞机/高铁' },
-                { date: ct.endDate, fromCity: destination, toCity: '返回地', transport: ct.flightOrTrain || '飞机/高铁' }
+                { date: ct.startDate, fromCity: '出发地', toCity: destination, transport: tLabel, flightOrTrain: tLabel },
+                { date: ct.endDate, fromCity: destination, toCity: '返回地', transport: tLabel, flightOrTrain: tLabel }
             ];
 
             return {
@@ -3496,6 +3520,9 @@ function renderGroupRowsHtml(group: ExpenseRecordGroup): string {
                                 title="点击直接修改此笔费用的报销类型">
                             ${renderTypeTreeOptionsHtml(modalState.expenseTypeTree, group.newExpenseTypeId || group.expenseTypeId)}
                         </select>
+                        <span class="yn-bem-status-tag ${group.status === '报销中' ? 'is-reimbursing' : (group.status === '已报销' ? 'is-reimbursed' : 'is-no-reimburse')}" title="当前报销状态: ${escapeHtml(group.status || '未报销')}">
+                            ${escapeHtml(group.status || '未报销')}
+                        </span>
                         <span class="yn-bem-tag-${flow.toLowerCase()}" style="font-size:10px; padding:1px 4px; border-radius:3px; white-space:nowrap;">
                             ${flow === 'BC' ? '差旅·BC' : '经费·BJ'}
                         </span>
@@ -4377,6 +4404,24 @@ export function renderBillManagementWorkspace(container: HTMLElement) {
         const destCity = plan.destination || '目的地';
         const originCity = '上海';
 
+        // 从该 Trip 关联的所有费用记录及发票中推测大交通工具类型
+        const tripInvoiceTypes: string[] = [];
+        if (Array.isArray(expenses)) {
+            for (const exp of expenses) {
+                if (plan.expenseRecordIds.includes(exp.expenseRecordId)) {
+                    if (exp.expenseTypeName) tripInvoiceTypes.push(exp.expenseTypeName);
+                    if (exp.newExpenseTypeName) tripInvoiceTypes.push(exp.newExpenseTypeName);
+                    for (const inv of (exp.invoices || [])) {
+                        if (inv.invoiceType) tripInvoiceTypes.push(inv.invoiceType);
+                        if (inv.remarks) tripInvoiceTypes.push(inv.remarks);
+                        if (inv.salesName) tripInvoiceTypes.push(inv.salesName);
+                        if (inv.fileName) tripInvoiceTypes.push(inv.fileName);
+                    }
+                }
+            }
+        }
+        const tripTransportDefault = resolveTransportLabel(plan.scPlan?.flightOrTrain, tripInvoiceTypes);
+
         // 若原有 scPlan.legs 中已有具体航班/车次信息，按人员归类
         const existingLegs = plan.scPlan?.legs || [];
         for (const t of allTravelers) {
@@ -4387,12 +4432,13 @@ export function renderBillManagementWorkspace(container: HTMLElement) {
 
             if (tLegs.length > 0) {
                 tLegs.forEach(l => {
+                    const legTransport = resolveTransportLabel(l.flightOrTrain || l.transport, tripInvoiceTypes) || tripTransportDefault;
                     legs.push({
                         date: l.date || plan.startDate,
                         fromCity: (!l.fromCity || l.fromCity === '出发地') ? originCity : l.fromCity,
                         toCity: (!l.toCity || l.toCity === '返回地') ? destCity : l.toCity,
-                        transport: l.transport || '飞机/高铁',
-                        flightOrTrain: l.flightOrTrain || l.transport || '飞机/高铁',
+                        transport: legTransport,
+                        flightOrTrain: l.flightOrTrain || legTransport,
                         travelerName: t
                     });
                 });
@@ -4402,16 +4448,16 @@ export function renderBillManagementWorkspace(container: HTMLElement) {
                     date: plan.startDate,
                     fromCity: originCity,
                     toCity: destCity,
-                    transport: '飞机/高铁',
-                    flightOrTrain: '飞机/高铁',
+                    transport: tripTransportDefault,
+                    flightOrTrain: tripTransportDefault,
                     travelerName: t
                 });
                 legs.push({
                     date: plan.endDate,
                     fromCity: destCity,
                     toCity: originCity,
-                    transport: '飞机/高铁',
-                    flightOrTrain: '飞机/高铁',
+                    transport: tripTransportDefault,
+                    flightOrTrain: tripTransportDefault,
                     travelerName: t
                 });
             }
@@ -4427,9 +4473,103 @@ export function renderBillManagementWorkspace(container: HTMLElement) {
         return { allTravelers, companions, legs };
     };
 
+    /**
+     * 精确提取行程起止时间至 hh:mm (若无则 default 出发 09:00, 归宅 23:59)
+     */
+    const extractTripStartAndEndTime = (
+        plan: BillPlan,
+        groups?: ExpenseRecordGroup[]
+    ): { startTripDate: string; endTripDate: string } => {
+        const defaultStartTime = '09:00';
+        const defaultEndTime = '23:59';
+
+        const baseStartDate = (plan.startDate || '').split('T')[0] || '';
+        const baseEndDate = (plan.endDate || '').split('T')[0] || '';
+
+        let foundStartTime = '';
+        let foundEndTime = '';
+
+        if (Array.isArray(groups)) {
+            for (const exp of groups) {
+                if (!plan.expenseRecordIds.includes(exp.expenseRecordId)) continue;
+                const expDate = (exp.newBusinessDate || exp.businessDate || exp.earliestInvoiceDate || '').split(' ')[0];
+                const invoices = exp.invoices || [];
+
+                for (const inv of invoices) {
+                    const invTimeOn = (inv.timeGetOn || inv.departureTime || '').trim();
+                    if (invTimeOn && (invTimeOn.includes(baseStartDate) || expDate === baseStartDate)) {
+                        const m = invTimeOn.match(/(\d{1,2}:\d{2})/);
+                        if (m) {
+                            const t = m[1].padStart(5, '0');
+                            if (!foundStartTime || t < foundStartTime) foundStartTime = t;
+                        }
+                    }
+
+                    const invTimeOff = (inv.timeGetOff || '').trim();
+                    if (invTimeOff && (invTimeOff.includes(baseEndDate) || expDate === baseEndDate)) {
+                        const m = invTimeOff.match(/(\d{1,2}:\d{2})/);
+                        if (m) {
+                            const t = m[1].padStart(5, '0');
+                            if (!foundEndTime || t > foundEndTime) foundEndTime = t;
+                        }
+                    }
+                }
+
+                // 从备注中提取时间
+                const desc = exp.newDescription || exp.description || '';
+                if (expDate === baseStartDate) {
+                    const m = desc.match(/(\b[0-2]?\d:[0-5]\d\b)/);
+                    if (m) {
+                        const t = m[1].padStart(5, '0');
+                        if (!foundStartTime || t < foundStartTime) foundStartTime = t;
+                    }
+                }
+                if (expDate === baseEndDate) {
+                    const m = desc.match(/(\b[0-2]?\d:[0-5]\d\b)/);
+                    if (m) {
+                        const t = m[1].padStart(5, '0');
+                        if (!foundEndTime || t > foundEndTime) foundEndTime = t;
+                    }
+                }
+            }
+        }
+
+        // 如果 plan 本身带有具体时间且不为 00:00
+        if (plan.startDate && plan.startDate.includes('T')) {
+            const part = plan.startDate.split('T')[1];
+            if (part && part !== '00:00') foundStartTime = part.slice(0, 5);
+        }
+        if (plan.endDate && plan.endDate.includes('T')) {
+            const part = plan.endDate.split('T')[1];
+            if (part && part !== '00:00') foundEndTime = part.slice(0, 5);
+        }
+
+        const finalStartTime = foundStartTime || defaultStartTime;
+        const finalEndTime = foundEndTime || defaultEndTime;
+
+        return {
+            startTripDate: `${baseStartDate}T${finalStartTime}`,
+            endTripDate: `${baseEndDate}T${finalEndTime}`
+        };
+    };
+
     const handleSaveDrafts = async (plans: BillPlan[]) => {
         const globalState = getInvoicePoolGlobalState();
         const resultsSummary: string[] = [];
+
+        // 【硬阻断 Gate 守卫】：检查所有包含 SC 计划的 Trips，若存在未决/空大交通，刚性拦截阻止生成草稿
+        for (let pIdx = 0; pIdx < plans.length; pIdx++) {
+            const plan = plans[pIdx];
+            if (plan.type === 'BC' && plan.scPlan) {
+                const { legs } = extractTripTravelersAndLegs(plan, modalState.groups);
+                const invalidLeg = legs.find(l => !l.transport || !l.transport.trim() || l.transport.trim() === '待定' || l.transport.trim() === '未知');
+                if (invalidLeg) {
+                    const msg = `❌ 安全拦截：第 ${pIdx + 1} 个出差计划「${plan.title}」的大交通未决（${invalidLeg.date} ${invalidLeg.fromCity} ➔ ${invalidLeg.toCity}：出行人 ${invalidLeg.travelerName || '当前用户'}），缺少明确航班或车次信息！\n请先在行程或发票中明确大交通后再一键生成申请单草稿。`;
+                    showToast('error', msg, 7000);
+                    throw new Error(msg);
+                }
+            }
+        }
 
         // 预先查询当前用户未提交的出差申请单与报销单草稿，保障幂等就地更新 (Update in Place)
         let existingScDrafts: Array<{ billMainId: string; billCode: string; billName?: string }> = [];
@@ -4493,6 +4633,7 @@ export function renderBillManagementWorkspace(container: HTMLElement) {
             const plan = plans[pIdx];
             if (plan.type === 'BC') {
                 const { allTravelers, companions, legs } = extractTripTravelersAndLegs(plan, modalState.groups);
+                const { startTripDate, endTripDate } = extractTripStartAndEndTime(plan, modalState.groups);
 
                 // 1. 若包含 SC 申请单预算计划，先创建/更新出差申请单 (SC)
                 let scBillCode = plan.scPlan?.billCode || '';
@@ -4517,8 +4658,8 @@ export function renderBillManagementWorkspace(container: HTMLElement) {
                         tripNo: pIdx + 1,
                         applicantName: sc.applicantName || modalState.proxyPersonName || modalState.currentEmployeeName || '当前社员',
                         isProxy: false,
-                        startDate: sc.startDate || plan.startDate,
-                        endDate: sc.endDate || plan.endDate,
+                        startDate: startTripDate,
+                        endDate: endTripDate,
                         days: sc.days,
                         nights: sc.nights,
                         destination: destCity,
@@ -4587,8 +4728,6 @@ export function renderBillManagementWorkspace(container: HTMLElement) {
 
                     // BUG 1 修复：回填主表区 (MAIN) 必填表头字段
                     const mainRow = bcBillData.area.rowDatas[0];
-                    const sDate = plan.startDate.includes('T') ? plan.startDate : `${plan.startDate}T00:00`;
-                    const eDate = plan.endDate.includes('T') ? plan.endDate : `${plan.endDate}T00:00`;
 
                     if (scBillCode) {
                         ensureRowField(mainRow, 'F_CCSQD', {
@@ -4600,8 +4739,8 @@ export function renderBillManagementWorkspace(container: HTMLElement) {
                     ensureRowField(mainRow, 'F_CCLX', { value: '03560c40cb4de1653e55bb00bc610000', title: { zh_CN: '境内出張' } }, 'RADIO');
                     ensureRowField(mainRow, 'F_MDDCZX', plan.destination, 'STEXT');
                     ensureRowField(mainRow, 'DESCRIPTION', plan.purpose || `出差${plan.destination}业务交流及现场技术支持`, 'MTEXT');
-                    ensureRowField(mainRow, 'START_TRIP_DATE', sDate, 'DATE');
-                    ensureRowField(mainRow, 'END_TRIP_DATE', eDate, 'DATE');
+                    ensureRowField(mainRow, 'START_TRIP_DATE', startTripDate, 'DATE');
+                    ensureRowField(mainRow, 'END_TRIP_DATE', endTripDate, 'DATE');
 
                     // BUG 2 修复：回填出差报告子表区 (T_BILL_AREA_BGQ_DEF_001, 035af6b91fdde1653e55bb00bc610000)
                     const bgqAreaId = '035af6b91fdde1653e55bb00bc610000';
@@ -4632,14 +4771,128 @@ export function renderBillManagementWorkspace(container: HTMLElement) {
                     const reportContent = plan.travelReport || `出差报告: 前往${plan.destination}开展技术支持与客户业务交流。`;
                     const reportSubject = plan.purpose || `出差${plan.destination}业务交流及现场技术支持`;
                     ensureRowField(bgqRow, 'ROW_NUM', 1, 'NUMBER');
-                    ensureRowField(bgqRow, 'F_QJFROM', sDate, 'DATE');
-                    ensureRowField(bgqRow, 'F_TOQJ', eDate, 'DATE');
+                    ensureRowField(bgqRow, 'F_QJFROM', startTripDate, 'DATE');
+                    ensureRowField(bgqRow, 'F_TOQJ', endTripDate, 'DATE');
                     ensureRowField(bgqRow, 'F_CZX', plan.destination, 'STEXT');
                     ensureRowField(bgqRow, 'F_YJ', reportSubject, 'STEXT');
                     ensureRowField(bgqRow, 'F_BG', reportSubject, 'MTEXT');
                     ensureRowField(bgqRow, 'F_BGNR', reportContent, 'MTEXT');
 
+                    // 3. 触发蝴蝶效应计算费用归属与预算维度 (BUDGET_DIM / DIM_PROJECT / DIM_ACCOUNT) 并批量克隆
+                    try {
+                        let targetProjId = plan.projectId || plan.scPlan?.projectId;
+                        let targetProjTitle = plan.projectName || plan.scPlan?.projectName || modalState.projectName || '';
+
+                        // 若没有详细的项目维表 ID，动态搜索项目维表
+                        if (!targetProjId || targetProjId.length < 20 || targetProjId.startsWith('X2') || targetProjId.startsWith('PRJ')) {
+                            const query = targetProjTitle || targetProjId || 'X2607-001';
+                            const projList = await searchProjectList(query, globalState, window);
+                            if (projList && projList.length > 0) {
+                                const match = projList.find(p => p.code === targetProjId || p.name.includes(targetProjTitle)) || projList[0];
+                                targetProjId = match.id;
+                                targetProjTitle = `${match.code} ${match.name}(${match.code})`;
+                            }
+                        }
+
+                        const claimSubArea = mainRow.subAreaDatas?.[BUDGET_CONSTANTS.claimSubAreaId];
+                        const claimRows = claimSubArea?.rowDatas;
+                        if (claimRows && claimRows.length > 0 && targetProjId) {
+                            const bRow0 = claimRows[0].subAreaDatas?.[BUDGET_CONSTANTS.boAreaId]?.rowDatas?.[0];
+                            if (bRow0) {
+                                const rowId0 = bRow0.rowId || bRow0.datas?.BILL_ROW_ID?.value;
+                                if (rowId0) {
+                                    // 1) 联动科目 -> 项目预算
+                                    const sceneVO1 = prepareBillSceneVO(bcBillData);
+                                    const res1 = await changeBillFieldValueApi(
+                                        BUDGET_CONSTANTS.fields.account.fieldCode,
+                                        BUDGET_CONSTANTS.fields.account.fieldName,
+                                        BUDGET_CONSTANTS.fields.account.fieldId,
+                                        { value: BUDGET_CONSTANTS.defaultAccount.value, title: { zh_CN: BUDGET_CONSTANTS.defaultAccount.title } },
+                                        rowId0,
+                                        sceneVO1,
+                                        globalState
+                                    );
+
+                                    // 2) 联动项目 -> 目标项目
+                                    const sceneVO2 = prepareBillSceneVO(res1 || bcBillData);
+                                    const res2 = await changeBillFieldValueApi(
+                                        BUDGET_CONSTANTS.fields.project.fieldCode,
+                                        BUDGET_CONSTANTS.fields.project.fieldName,
+                                        BUDGET_CONSTANTS.fields.project.fieldId,
+                                        { value: targetProjId, title: { zh_CN: targetProjTitle } },
+                                        rowId0,
+                                        sceneVO2,
+                                        globalState
+                                    );
+
+                                    if (res2) {
+                                        bcBillData = res2;
+                                        // 3) 确保设置是否向客户请款 (F_KHFD) 并内存批量克隆首行预算维度至所有同质费用行 (30倍极速入库)
+                                        const updatedClaimRows = bcBillData.area?.rowDatas?.[0]?.subAreaDatas?.[BUDGET_CONSTANTS.claimSubAreaId]?.rowDatas;
+                                        if (updatedClaimRows && updatedClaimRows.length > 0) {
+                                            const b0 = updatedClaimRows[0].subAreaDatas?.[BUDGET_CONSTANTS.boAreaId]?.rowDatas?.[0];
+                                            if (b0 && b0.datas) {
+                                                b0.datas.F_KHFD = {
+                                                    dataType: 'DROPDOWN',
+                                                    value: {
+                                                        value: BUDGET_CONSTANTS.defaultKhfd.value,
+                                                        title: { zh_CN: '是(YES)' }
+                                                    }
+                                                };
+                                            }
+                                            const refDatas = b0?.datas;
+                                            if (refDatas) {
+                                                const CLONE_FIELDS = ['DIM_ACCOUNT', 'DIM_PROJECT', 'DIM_COST_CENTER', 'F_BM', 'F_KHFD', 'BUDGET_DIM'];
+                                                for (let i = 1; i < updatedClaimRows.length; i++) {
+                                                    const targetBRow = updatedClaimRows[i].subAreaDatas?.[BUDGET_CONSTANTS.boAreaId]?.rowDatas?.[0];
+                                                    if (targetBRow && targetBRow.datas) {
+                                                        for (const k of CLONE_FIELDS) {
+                                                            if (refDatas[k]) {
+                                                                targetBRow.datas[k] = JSON.parse(JSON.stringify(refDatas[k]));
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } catch (bfErr: any) {
+                        AutopilotLogger.warn(`[handleSaveDrafts] 蝴蝶效应回填费用归属失败: ${bfErr.message}`);
+                    }
+
+                    // 再次确保表头与出差报告子表字段（防御蝴蝶效应响应覆盖）
+                    const curMainRow = bcBillData.area.rowDatas[0];
+                    ensureRowField(curMainRow, 'START_TRIP_DATE', startTripDate, 'DATE');
+                    ensureRowField(curMainRow, 'END_TRIP_DATE', endTripDate, 'DATE');
+                    if (scBillCode) {
+                        ensureRowField(curMainRow, 'F_CCSQD', {
+                            title: scBillCode,
+                            machineAccountId: scBillMainId,
+                            machineAccountDefineId: '3299661bb34111e8846f7b262b3e5000'
+                        }, 'MACHINE_ACCOUNT');
+                    }
+                    ensureRowField(curMainRow, 'F_CCLX', { value: '03560c40cb4de1653e55bb00bc610000', title: { zh_CN: '境内出張' } }, 'RADIO');
+                    ensureRowField(curMainRow, 'F_MDDCZX', plan.destination, 'STEXT');
+                    ensureRowField(curMainRow, 'DESCRIPTION', plan.purpose || `出差${plan.destination}业务交流及现场技术支持`, 'MTEXT');
+
+                    const curBgqArea = curMainRow.subAreaDatas?.[bgqAreaId];
+                    if (curBgqArea?.rowDatas?.[0]) {
+                        const curBgqRow = curBgqArea.rowDatas[0];
+                        ensureRowField(curBgqRow, 'F_QJFROM', startTripDate, 'DATE');
+                        ensureRowField(curBgqRow, 'F_TOQJ', endTripDate, 'DATE');
+                        ensureRowField(curBgqRow, 'F_CZX', plan.destination, 'STEXT');
+                        ensureRowField(curBgqRow, 'F_YJ', reportSubject, 'STEXT');
+                        ensureRowField(curBgqRow, 'F_BG', reportSubject, 'MTEXT');
+                        ensureRowField(curBgqRow, 'F_BGNR', reportContent, 'MTEXT');
+                    }
+
                     // 保存草稿 (严格锁定 commit: false)
+                    bcBillData.operationType = bcBillMainId ? 'UPDATE' : 'ADD';
+                    bcBillData.commit = false;
+                    delete bcBillData.billButtons;
                     const savedBc = await saveBillDataApi(bcBillData, globalState);
                     const bcCode = savedBc?.billCode || bcBillData.billCode || 'BC草稿';
                     plan.billCode = bcCode;
@@ -6026,8 +6279,11 @@ async function handleAssistantSendMessage(
     // 意图 A: 出差报告撰写与总结
     const isReportIntent = lowerText.includes('出差报告') || lowerText.includes('写报告') || lowerText.includes('撰写') || lowerText.includes('总结报告') || lowerText.includes('工作总结');
 
-    // 意图 B: 报销单与申请单管理工作台一键补全
-    const isBillAutoFill = !isReportIntent && (lowerText.includes('补全') || lowerText.includes('自动填') || lowerText.includes('报销单') || lowerText.includes('申请单') || lowerText.includes('漏填') || lowerText.includes('autofill'));
+    // 通用查询/查看/整理/列表意图判定（防止与修改/补全指令冲突）
+    const isQueryIntent = /查询|查看|读取|列出|整理|统计|汇总|分析|搜索|清单|明细|每个人|谁的|金额|多少|有哪些|发票列表|账目/.test(lowerText);
+
+    // 意图 B: 报销单与申请单管理工作台一键补全（严格排除纯查询意图）
+    const isBillAutoFill = !isReportIntent && !isQueryIntent && (lowerText.includes('补全') || lowerText.includes('自动填') || lowerText.includes('一键填') || lowerText.includes('漏填') || lowerText.includes('autofill'));
 
     // 意图 C: 行程排期录入与切分 (必须排除报告诉求)
     const hasSchedule = text.length >= 20 && (text.includes('\n') || text.includes('\t') || text.includes('|') || /\d{4}[-/]\d{1,2}[-/]\d{1,2}/.test(text));
@@ -6295,76 +6551,127 @@ async function handleAssistantSendMessage(
         refreshTableView(container, 'STATS');
     } else {
         const canUseLlm = isLlmConfigured();
-        if (canUseLlm) {
-            const startTime = Date.now();
-            const assistMsg: ChatMessage = {
-                id: `msg_${Date.now()}_a`,
-                role: 'assistant',
-                text: '',
-                time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
-                thinking: {
-                    content: '正在思考并结合当前费控账目上下文为您解答...',
-                    status: 'thinking',
-                    durationMs: 0,
-                    isExpanded: true
-                }
-            };
-            curSession.messages.push(assistMsg);
-            curSession.updatedAt = Date.now();
-            saveChatSessionsToStorage(modalState.chatSessions);
-            renderAssistantChat(container);
+        const startTime = Date.now();
 
-            try {
+        // 探测是否为针对报销单草稿或人员账目的查询
+        const isBillsQuery = /报销单|申请单|草稿|未提交/.test(text);
+        const isPersonSummaryQuery = /人名|每个人|外驻|归集|代报销|报销金额|名单|\/list|清单|汇总/.test(text);
+
+        const assistMsg: ChatMessage = {
+            id: `msg_${Date.now()}_a`,
+            role: 'assistant',
+            text: '',
+            time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+            thinking: {
+                content: isBillsQuery
+                    ? '正在从系统后台拉取当前未提交报销单草稿并汇算全量费用池账目...'
+                    : '正在提取并梳理全量费用记录的人员账目与明细...',
+                status: 'thinking',
+                durationMs: 0,
+                isExpanded: true
+            }
+        };
+        curSession.messages.push(assistMsg);
+        curSession.updatedAt = Date.now();
+        saveChatSessionsToStorage(modalState.chatSessions);
+        renderAssistantChat(container);
+
+        try {
+            let contextDataMarkdown = '';
+
+            // 1. 全量待报销费用池确定性人员汇算 (解决 119 笔费用全景账目与手工记账 100% 对齐)
+            const targetGroups = selectedGroups.length > 0 ? selectedGroups : modalState.groups;
+            const personReport = generateComprehensivePersonExpenseReport(
+                targetGroups,
+                modalState.currentEmployeeName || '本部社员'
+            );
+
+            // 2. 若涉及报销单/未提交草稿，实时穿透拉取草稿单据结构 (金额已由 extractRowAmount 深度修复)
+            let uncommittedMd = '';
+            if (isBillsQuery) {
+                const globalState = getInvoicePoolGlobalState();
+                const uncommittedResult = await fetchUncommittedReimbursementBillsSummary(globalState);
+                uncommittedMd = uncommittedResult.summaryMarkdown;
+            }
+
+            // 组装双轨业务数据快照
+            if (isPersonSummaryQuery || isBillsQuery) {
+                let mergedMd = `${personReport.summaryTableMarkdown}\n\n${personReport.personListMarkdown}`;
+                if (uncommittedMd) {
+                    mergedMd += `\n\n---\n\n### 📑 三、系统后台已创建未提交报销单草稿流转状态\n> 提示：当前系统草稿箱中已生成的单据及其包含的明细行如下（未包含的费用仍停留在上述待报销费用池中）：\n\n${uncommittedMd}`;
+                }
+                contextDataMarkdown = mergedMd;
+            } else {
+                // 默认紧凑列表
+                let tableMd = `### 📋 当前费用记录明细 (共 ${targetGroups.length} 笔)\n\n`;
+                tableMd += `| 序号 | 费用类型 | 金额 | 业务日期 | 费用说明与人名 | 发票商户/备注 |\n`;
+                tableMd += `| :---: | :--- | :---: | :---: | :--- | :--- |\n`;
+                targetGroups.slice(0, 100).forEach((g, idx) => {
+                    const desc = g.newDescription || g.description || '';
+                    const inv = g.invoices[0];
+                    const invNote = inv ? `${inv.salesName || ''} ${inv.remarks || ''}`.trim() : '';
+                    tableMd += `| ${idx + 1} | ${g.newExpenseTypeName || g.expenseTypeName} | ¥${Number(g.expenseAmount).toFixed(2)} | ${g.newBusinessDate || g.businessDate} | \`${desc}\` | ${invNote || '-'} |\n`;
+                });
+                contextDataMarkdown = tableMd;
+            }
+
+            if (canUseLlm) {
                 const systemPrompt = `你是由 Google DeepMind 与 IVision 研发的元年云 FSSC 极速自动驾驶副驾。
-你不仅具备高超的费控自动化工具操作能力，还是一位友善、专业、精通企业差旅财务制度与 IT 业务的智能顾问。
+你不仅具备高超的费控自动化能力，还是一位严谨、专业、精通企业差旅财务制度的财务分析专家。
 
 【当前系统上下文快照】：
 - 当前社员姓名：${modalState.currentEmployeeName || '当前社员'}
 - 当前外驻人员：${modalState.proxyPersonName || '无'}
 - 当前归属项目：${modalState.projectName || '未指定'}
-- 费用记录总数：${modalState.groups.length} 笔（已选 ${selectedCount} 笔，已选总额 ¥${totalAmountDecimal.toFixed(2)}）
-- 已切分出差轮次：${modalState.tripPlans.length} 轮
-- 财务政策标准：一线城市（北上广深）住宿限额 ¥800/晚，其他城市 ¥700/晚；误餐补助整天调研 ¥300/天，往返日半额 ¥150/天；市内交通预留 ¥100/天。
+- 费用记录总数：${modalState.groups.length} 笔 (已选 ${selectedCount} 笔，已选总额 ¥${totalAmountDecimal.toFixed(2)})
 
-请根据上述上下文，用专业、干练、亲切的中文回答用户的问题、提供咨询或根据用户的需求执行文字润色与建议。`;
+【真实底层业务数据源】：
+${contextDataMarkdown}
 
-                const res = await callDirectLlmText(systemPrompt, text, undefined, 45000);
+【用户请求】：
+"${text}"
+
+【输出规约】：
+1. 严格基于上述【真实底层业务数据源】进行分析、归集、提取与解答，禁止编造未出现的数据；
+2. 若用户要求列出每个人名及其报销金额或费用清单（/list）：
+   - 第一部分：必须以清晰严谨的 Markdown 表格呈现【各人员报销汇总概览】（包括序号、人员姓名、人员属性/身份、费用笔数、发票张数、累计金额、占比）；
+   - 第二部分：按每位人员分别展开呈现【各人员费用明细清单 (/list)】（清晰列出序号、日期、费用类型、金额、发票张数、费用说明、发票备注）；
+   - 第三部分：若数据源中包含了【系统后台已创建未提交报销单草稿流转状态】，简要说明当前有哪些单据已在草稿箱中；
+3. 保持专业、客观、严谨，格式美观优雅。`;
+
+                const res = await callDirectLlmText(systemPrompt, text, undefined, 60000);
                 const duration = Date.now() - startTime;
                 if (assistMsg.thinking) {
                     assistMsg.thinking.status = 'done';
                     assistMsg.thinking.durationMs = duration;
-                    assistMsg.thinking.content = '已结合费控业务上下文完成解答。';
+                    assistMsg.thinking.content = '已穿透提取系统真实账目并完成列表整理。';
                     assistMsg.thinking.isExpanded = false;
                 }
                 if (res.success && res.text) {
                     assistMsg.text = res.text;
                 } else {
-                    assistMsg.text = `⚠️ 大模型回复异常：${res.error || '未能获取回复'}`;
+                    assistMsg.text = `⚠️ 大模型回复异常：${res.error || '未能获取回复'}\n\n以下为您提取的底层客观数据：\n\n${contextDataMarkdown}`;
                 }
-            } catch (err: any) {
+            } else {
+                // 离线/未配置大模型时：直接输出提取到的真实结构化表格数据
+                const duration = Date.now() - startTime;
                 if (assistMsg.thinking) {
                     assistMsg.thinking.status = 'done';
-                    assistMsg.thinking.durationMs = Date.now() - startTime;
+                    assistMsg.thinking.durationMs = duration;
+                    assistMsg.thinking.content = '已成功从后台实时穿透拉取并汇算全员账目明细。';
+                    assistMsg.thinking.isExpanded = false;
                 }
-                assistMsg.text = `⚠️ 问答处理异常: ${err?.message || err}`;
-            } finally {
-                modalState.isAssistantExecuting = false;
-                curSession.updatedAt = Date.now();
-                saveChatSessionsToStorage(modalState.chatSessions);
-                renderAssistantChat(container);
+                assistMsg.text = `已为您实时查询并整理出当前系统全员账目清单：\n\n${contextDataMarkdown}\n\n> 💡 *提示：配置大模型 API Key 后，副驾可按人名自动汇总分组与深度财务洞察。*`;
             }
-        } else {
-            const warnCount = modalState.groups.filter(g => g.hasWarn).length;
-            const missingCount = modalState.groups.filter(g => isGroupMissingRequired(g)).length;
-            const assistMsg: ChatMessage = {
-                id: `msg_${Date.now()}_a`,
-                role: 'assistant',
-                text: `已收到您的指令：\n\n**当前费控账目快照**：\n• 费用总笔数：**${modalState.groups.length}** 笔 (已选 **${selectedCount}** 笔，总额 ¥**${totalAmountDecimal.toFixed(2)}**)\n• 必填待补项目：**${missingCount}** 笔\n• 日期预警项目：**${warnCount}** 处\n\n您可以随时告诉我：\n1. *"智能推断必填项"* 或键入 \`/infer\` — 自动提取交通与住宿专属字段\n2. *"规划出差行程"* 或键入 \`/itinerary\` — 按排期自动切分聚类 Trip\n3. *"撰写出差报告"* — 根据出差经历自动生成各行程总结报告\n4. *"一键补全报销单"* — 在大表格中自动回填所有单据要素\n\n> 💡 *提示：建议在右上角设置中配置大模型 API Key（支持 DeepSeek / OpenAI / Gemini 等），即可开启自由连续对话与智能问答！*`,
-                time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-            };
-            curSession.messages.push(assistMsg);
-            curSession.updatedAt = Date.now();
+        } catch (err: any) {
+            if (assistMsg.thinking) {
+                assistMsg.thinking.status = 'done';
+                assistMsg.thinking.durationMs = Date.now() - startTime;
+            }
+            assistMsg.text = `⚠️ 查询单据明细发生异常: ${err?.message || err}`;
+        } finally {
             modalState.isAssistantExecuting = false;
+            curSession.updatedAt = Date.now();
             saveChatSessionsToStorage(modalState.chatSessions);
             renderAssistantChat(container);
         }
@@ -6415,7 +6722,7 @@ function bindEvents(container: HTMLElement, doc: Document) {
             if (group.invoices.length === 0) {
                 exportRows.push({
                     expenseRecordId: group.expenseRecordId,
-                    status: '未报销',
+                    status: group.status || '未报销',
                     expenseTypeId: effectiveTypeId,
                     expenseTypeName: effectiveTypeName,
                     expenseAmount: group.expenseAmount,
@@ -6449,7 +6756,7 @@ function bindEvents(container: HTMLElement, doc: Document) {
                 group.invoices.forEach(inv => {
                     exportRows.push({
                         expenseRecordId: group.expenseRecordId,
-                        status: '未报销',
+                        status: group.status || '未报销',
                         expenseTypeId: effectiveTypeId,
                         expenseTypeName: effectiveTypeName,
                         expenseAmount: group.expenseAmount,

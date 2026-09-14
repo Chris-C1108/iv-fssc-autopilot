@@ -52,6 +52,7 @@ export interface SCPlan {
 
     // 旅程 (ITINERARY) 子表格
     legs: TripLeg[];
+    flightOrTrain?: string;          // 大交通工具/车次/航班（汇总或单据级别）
 
     // 予算 (BUDGET ESTIMATION) 4 项费用 + 1 项合计
     airfareBudget: number;           // 航空運賃（交通費）(AIRFARE ETC)

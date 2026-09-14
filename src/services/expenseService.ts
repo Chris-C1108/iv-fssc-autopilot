@@ -581,7 +581,12 @@ export async function getInvoiceDetailByDataIdApi(dataId: string, state: GlobalS
     return res.data;
 }
 
-export async function queryExpenseRecordListApi(state: GlobalState, win?: Window | null, forceRefresh: boolean = true) {
+export async function queryExpenseRecordListApi(
+    state: GlobalState,
+    win?: Window | null,
+    forceRefresh: boolean = true,
+    statusList: string[] = ['NO_REIMBURSE', 'REIMBURSING']
+) {
     // 只有在非强制刷新模式下，才允许复用最近拦截到的记录
     if (!forceRefresh && state.lastInterceptedExpenseRecords && state.lastInterceptedExpenseRecords.length > 0) {
         AutopilotLogger.info(`[ExpenseService] 复用最近拦截到的宿主费用记录 (${state.lastInterceptedExpenseRecords.length} 条)`);
@@ -590,10 +595,10 @@ export async function queryExpenseRecordListApi(state: GlobalState, win?: Window
 
     const applicantId = state.currentUser?.userId || state.applicantId;
 
-    // 1. 标准分页结构请求 (大分页 200 条)
+    // 1. 标准分页结构请求 (大分页 200 条，默认覆盖未报销与报销中)
     const standardPayload: any = {
         pageOrderParam: { pageNum: 1, pageSize: 200 },
-        status: ['NO_REIMBURSE'],
+        status: statusList && statusList.length > 0 ? [...statusList] : ['NO_REIMBURSE', 'REIMBURSING'],
         requestDate: null,
         sortOrder: 'DESC',
         sortColumnCode: 'CREATE_DATE'
@@ -2059,13 +2064,14 @@ export async function fetchExpenseRecordsWithInvoiceDetails(
     state: GlobalState,
     targetRecordIds?: string[],
     onProgress?: (current: number, total: number) => void,
-    win?: Window | null
+    win?: Window | null,
+    statusList: string[] = ['NO_REIMBURSE', 'REIMBURSING']
 ): Promise<ExpenseRecordExportRow[]> {
     // 强制清除旧拦截缓存，保障穿透拉取最新全量数据
     state.lastInterceptedExpenseRecords = null;
 
-    // 1. 获取费用记录列表 (Network-First)
-    const allRecords = await queryExpenseRecordListApi(state, win, true);
+    // 1. 获取费用记录列表 (Network-First，默认查询未报销与报销中)
+    const allRecords = await queryExpenseRecordListApi(state, win, true, statusList);
     let targetRecords = allRecords;
     if (targetRecordIds && targetRecordIds.length > 0) {
         const idSet = new Set(targetRecordIds);
