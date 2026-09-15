@@ -7153,7 +7153,8 @@ ${contextDataMarkdown}
    - 第三部分：若数据源中包含了【系统后台已创建未提交报销单草稿流转状态】，简要说明当前有哪些单据已在草稿箱中；
 3. 保持专业、客观、严谨，格式美观优雅。`;
 
-                const res = await callDirectLlmText(systemPrompt, text, undefined, 60000);
+                // 放宽超时至 240 秒 (4 分钟)，为深度推理模型与大批量账目分析提供充裕的思考与生成时间
+                const res = await callDirectLlmText(systemPrompt, text, undefined, 240000);
                 const duration = Date.now() - startTime;
                 if (assistMsg.thinking) {
                     assistMsg.thinking.status = 'done';

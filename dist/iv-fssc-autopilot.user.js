@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVision FSSC Autopilot (元年云费控极速自动驾驶副驾)
 // @namespace    https://github.com/Chris-C1108/iv-fssc-autopilot
-// @version      4.66.1
+// @version      4.67.0
 // @description  元年云报销全流程超级副驾：①【发票夹 & 费用记录】全量OCR数据穿透补全(乘车时间/里程100%恢复)、自动识别通信费、自由切换分类、早晚行程智能推断、拖拽多附件；②【经费报销单页】丰富多维菜单Item(科目/项目/成本中心/向客户请款)、自动聚合备注TAG(如X2605-001)、智能检索匹配项目、蝴蝶效应引擎链式联动、一键自动持久化保存(saveBillData)并自动刷新单据视图；③【极速模式】首行蝴蝶+内存克隆+单次入库(30倍提速)。
 // @author       Chris-C1108
 // @match        https://ync37.yuanian.com/*
@@ -56860,7 +56860,7 @@ td.has-save-error {
         color: #525252 !important;
     }
 `;
-    function injectStyles() {
+    function injectStyles$1() {
         let styleEl = document.getElementById('yn-injected-styles');
         if (!styleEl) {
             styleEl = document.createElement('style');
@@ -68865,10 +68865,1167 @@ JSON 输出格式：
         });
     }
 
+    // shadcn/ui components available in Claude artifacts:
+    // Badge, Button, Card, Checkbox, Input, Label, Progress, RadioGroup,
+    // Select, Separator, Skeleton, Switch, Tabs, Textarea
+    // Halaska Kit provides styled versions of all the above.
+    // ═══════════════════════════════════════════════════════════════
+    //  HALASKA KIT v1.0: UX patterns & components for AI products
+    //  shadcn/ui foundations · Geist · Lucide 1px
+    //  AI interface patterns · Animated selections · Trading-agent theme
+    // ═══════════════════════════════════════════════════════════════
+    // ─── GLOBAL STYLES (injected once) ────────────────────────────
+    const GLOBAL_STYLES = `
+  @media (max-width: 719px) { html, body { overflow-x: hidden; } }
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap');
+
+@keyframes halaska-blink { 0%,100% { opacity:1 } 50% { opacity:0 } }
+@keyframes halaska-spin { to { transform: rotate(360deg) } }
+@keyframes halaska-shimmer { 0% { background-position: 200% 0 } 100% { background-position: -200% 0 } }
+@keyframes halaska-fade-in { from { opacity: 0 } to { opacity: 1 } }
+@keyframes halaska-scale-in { from { opacity: 0; transform: scale(0.95) } to { opacity: 1; transform: scale(1) } }
+
+@keyframes halaska-check-draw {
+  0% { stroke-dashoffset: 14; }
+  100% { stroke-dashoffset: 0; }
+}
+
+@keyframes halaska-radio-dot-in {
+  0% { transform: scale(0); }
+  45% { transform: scale(1.45); }
+  70% { transform: scale(0.9); }
+  100% { transform: scale(1); }
+}
+@keyframes halaska-radio-dot-out {
+  0% { transform: scale(1); }
+  100% { transform: scale(0); }
+}
+@keyframes halaska-radio-ring-in {
+  0% { border-color: var(--ring-idle); }
+  100% { border-color: var(--ring-active); }
+}
+
+@keyframes halaska-rolodex-out {
+  0% { transform: translateY(0); opacity: 1; }
+  100% { transform: translateY(-40%); opacity: 0; }
+}
+@keyframes halaska-rolodex-in {
+  0% { transform: translateY(40%); opacity: 0; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+@keyframes halaska-blur-out {
+  0% { filter: blur(0); opacity: 1; transform: translateY(0); }
+  100% { filter: blur(3px); opacity: 0; transform: translateY(-30%); }
+}
+@keyframes halaska-blur-in {
+  0% { filter: blur(3px); opacity: 0; transform: translateY(30%); }
+  100% { filter: blur(0); opacity: 1; transform: translateY(0); }
+}
+@keyframes halaska-dropdown-expand {
+  0% { opacity: 0; transform: scaleY(0.6) translateY(-4px); }
+  100% { opacity: 1; transform: scaleY(1) translateY(0); }
+}
+
+@keyframes halaska-thinking-dot {
+  0%, 80%, 100% { transform: scale(0.55); opacity: 0.35; }
+  40% { transform: scale(1); opacity: 1; }
+}
+@keyframes halaska-thinking-pulse {
+  0% { transform: scale(0.4); opacity: 0.9; }
+  40% { opacity: 0.5; }
+  100% { transform: scale(3.4); opacity: 0; }
+}
+@keyframes halaska-live-pulse {
+  0% { transform: scale(0.5); opacity: 0.7; }
+  70% { opacity: 0.2; }
+  100% { transform: scale(2.4); opacity: 0; }
+}
+@keyframes halaska-star-burst {
+  0% { transform: scale(1); opacity: 0.9; }
+  60% { opacity: 0.4; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+@keyframes halaska-bar-bounce {
+  0% { transform: scaleY(1); }
+  40% { transform: scaleY(1.08); }
+  70% { transform: scaleY(0.97); }
+  100% { transform: scaleY(1); }
+}
+@keyframes halaska-tab-fade {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes halaska-step-in {
+  0% { opacity: 0; transform: translateY(6px); filter: blur(2px); }
+  100% { opacity: 1; transform: translateY(0); filter: blur(0); }
+}
+
+/* Orb: compact agent-activity indicators. One shared keyframe per family;
+   per-dot negative delays turn identical animations into wavefronts,
+   comets, and orbits. */
+@keyframes halaska-orb-swell {
+  0%, 60%, 100% { transform: scale(0.4); opacity: 0.25; }
+  25% { transform: scale(1); opacity: 1; }
+}
+@keyframes halaska-orb-globe {
+  0%    { transform: translate(9px, 0) scale(1); opacity: 0.9; }
+  12.5% { transform: translate(6.4px, 3.2px) scale(0.95); opacity: 0.75; }
+  25%   { transform: translate(0, 4.5px) scale(0.85); opacity: 0.55; }
+  37.5% { transform: translate(-6.4px, 3.2px) scale(0.76); opacity: 0.4; }
+  50%   { transform: translate(-9px, 0) scale(0.7); opacity: 0.3; }
+  62.5% { transform: translate(-6.4px, -3.2px) scale(0.76); opacity: 0.4; }
+  75%   { transform: translate(0, -4.5px) scale(0.85); opacity: 0.55; }
+  87.5% { transform: translate(6.4px, -3.2px) scale(0.95); opacity: 0.75; }
+  100%  { transform: translate(9px, 0) scale(1); opacity: 0.9; }
+}
+@keyframes halaska-orb-spark {
+  0%, 100% { transform: rotate(0deg) scale(1); opacity: 0.9; }
+  50% { transform: rotate(90deg) scale(0.7); opacity: 0.5; }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-halaska-orb] span { animation: none !important; opacity: 0.6 !important; transform: none !important; }
+}
+
+/* Keyboard focus is always visible. Components set outline:none inline for
+   pointer users; :focus-visible restores a ring for keyboard users only. */
+button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
+  outline: 2px solid #3b82f6 !important;
+  outline-offset: 2px !important;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px; height: 14px; border-radius: 7px;
+  background: #1a1a1a; border: none; cursor: pointer;
+}
+
+textarea::-webkit-resizer {
+  display: none;
+}
+`;
+    let stylesInjected = false;
+    function injectStyles() {
+        if (stylesInjected)
+            return;
+        stylesInjected = true;
+        const el = document.createElement("style");
+        el.textContent = GLOBAL_STYLES;
+        document.head.appendChild(el);
+    }
+    // Fonts + keyframes inject as soon as the module loads (SSR-safe guard), so
+    // individually imported components animate and render in Geist without the
+    // showcase page ever mounting.
+    if (typeof document !== "undefined")
+        injectStyles();
+    // ─── 1. TOKENS ─────────────────────────────────────────────────
+    const tokens = {
+        space: { xs: 4, sm: 8, md: 16, lg: 32, xl: 40, xxl: 80, xxxl: 160, xxxxl: 240 },
+        radius: { sm: 8, md: 16, lg: 24, pill: 999 },
+        type: {
+            xxs: { fontSize: 9, lineHeight: 1.3 },
+            xs: { fontSize: 10, lineHeight: 1.45 },
+            sm: { fontSize: 12, lineHeight: 1.55, letterSpacing: "0.01em" },
+            base: { fontSize: 13, lineHeight: 1.6, letterSpacing: "0.01em" },
+            md: { fontSize: 14, lineHeight: 1.6, letterSpacing: "0.005em" },
+            lg: { fontSize: 16, lineHeight: 1.5 },
+            xl: { fontSize: 20, lineHeight: 1.35 },
+            xxl: { fontSize: 24, lineHeight: 1.3 },
+            xxxl: { fontSize: 32, lineHeight: 1.2 },
+            display: { fontSize: 40, lineHeight: 1.15 },
+        },
+        font: {
+            // CSS variables so the whole kit can switch typeface at runtime (setKitFont)
+            sans: "var(--halaska-sans, 'Geist'), -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+            mono: "var(--halaska-mono, 'Geist Mono'), 'SF Mono', 'Fira Code', monospace",
+        },
+        weight: { regular: 400, medium: 500, semibold: 600, bold: 700 },
+        light: {
+            bg: "#fafafa",
+            bgElevated: "#ffffff",
+            bgSubtle: "#f3f3f3",
+            bgMuted: "#eeeeee",
+            bgHover: "#e8e8e8",
+            bgInput: "#f0f0f0",
+            border: "#e5e5e5",
+            borderSubtle: "#eeeeee",
+            borderInput: "rgba(0,0,0,0.06)",
+            borderFocus: "#444444",
+            text: "#3d3d3d",
+            textSecondary: "#888888",
+            textTertiary: "#aaaaaa",
+            textMuted: "#cccccc",
+            textInverse: "#ffffff",
+            shadow: "rgba(0,0,0,0.04)",
+            shadowMd: "rgba(0,0,0,0.06)",
+            shadowLg: "rgba(0,0,0,0.1)",
+            accent: "#3b82f6",
+            accentHover: "#2563eb",
+            accentBg: "#eff6ff",
+            accentText: "#3b82f6",
+            success: "#22c55e",
+            successHover: "#16a34a",
+            successBg: "#f0fdf4",
+            warning: "#f59e0b",
+            warningHover: "#d97706",
+            warningBg: "#fffbeb",
+            danger: "#ef4444",
+            dangerHover: "#dc2626",
+            dangerBg: "#fef2f2",
+        },
+        dark: {
+            bg: "#1a1a1a",
+            bgElevated: "#2a2a2a",
+            bgSubtle: "#222222",
+            bgMuted: "#333333",
+            bgHover: "#3d3d3d",
+            bgInput: "#252525",
+            border: "#3a3a3a",
+            borderSubtle: "#2f2f2f",
+            borderInput: "rgba(255,255,255,0.06)",
+            borderFocus: "#cccccc",
+            text: "#d8d8d8",
+            textSecondary: "#999999",
+            textTertiary: "#6a6a6a",
+            textMuted: "#4a4a4a",
+            textInverse: "#1a1a1a",
+            shadow: "rgba(0,0,0,0.2)",
+            shadowMd: "rgba(0,0,0,0.3)",
+            shadowLg: "rgba(0,0,0,0.4)",
+            accent: "#60a5fa",
+            accentHover: "#3b82f6",
+            accentBg: "rgba(96,165,250,0.12)",
+            accentText: "#60a5fa",
+            success: "#4ade80",
+            successHover: "#22c55e",
+            successBg: "rgba(74,222,128,0.1)",
+            warning: "#fbbf24",
+            warningHover: "#f59e0b",
+            warningBg: "rgba(251,191,36,0.1)",
+            danger: "#f87171",
+            dangerHover: "#ef4444",
+            dangerBg: "rgba(248,113,113,0.1)",
+        },
+    };
+    // Durations (Material Design 3 aligned) and easings, exposed as CSS variables
+    // so the whole kit can switch motion mode at runtime (setKitMotion).
+    const motion = {
+        fast: "var(--halaska-t-fast, 0.15s)", // micro-interactions, state changes
+        normal: "var(--halaska-t-normal, 0.25s)", // most UI transitions
+        smooth: "var(--halaska-t-smooth, 0.35s)", // expanding panels, color transitions
+        spring: "var(--halaska-t-spring, 0.4s)", // bouncy elements (radio, segmented)
+        easeInOut: "var(--halaska-e-inout, cubic-bezier(0.4, 0, 0.2, 1))", // standard, on-screen movement
+        easeOut: "var(--halaska-e-out, cubic-bezier(0.0, 0, 0.2, 1))", // deceleration, entering elements
+        emphasized: "var(--halaska-e-emph, cubic-bezier(0.2, 0, 0, 1))", // dramatic deceleration
+        springCurve: "var(--halaska-e-spring, cubic-bezier(0.34, 1.56, 0.64, 1))", // Apple-style overshoot
+    };
+    const ThemeContext = reactExports.createContext("light");
+    function ThemeProvider({ theme = "light", children }) {
+        return jsxRuntimeExports.jsx(ThemeContext.Provider, { value: theme, children: children });
+    }
+    function useThemeContext() { return reactExports.useContext(ThemeContext); }
+    // Accent color context: allows live accent swapping
+    const AccentContext = reactExports.createContext(null);
+    function useAccent() { return reactExports.useContext(AccentContext); }
+    function p(theme) {
+        const base = theme === "dark" ? tokens.dark : tokens.light;
+        return base;
+    }
+    // Hook that returns palette with accent overrides applied
+    function usePal(themeProp) {
+        const ctxTheme = useThemeContext();
+        const theme = themeProp || ctxTheme;
+        const accent = useAccent();
+        const base = p(theme);
+        if (!accent || accent === base.accent)
+            return base;
+        // Generate variants from the accent hex
+        const hex = accent;
+        const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+        const hR = Math.max(0, r - 30), hG = Math.max(0, g - 30), hB = Math.max(0, b - 30);
+        const hoverHex = `#${hR.toString(16).padStart(2, '0')}${hG.toString(16).padStart(2, '0')}${hB.toString(16).padStart(2, '0')}`;
+        const bgAlpha = theme === "dark" ? 0.12 : 0.08;
+        return {
+            ...base,
+            accent: hex,
+            accentText: hex,
+            accentHover: hoverHex,
+            accentBg: `rgba(${r},${g},${b},${bgAlpha})`,
+        };
+    }
+    const interactiveBase = {
+        fontFamily: tokens.font.sans,
+        cursor: "pointer",
+        border: "none",
+        outline: "none",
+        transition: `all ${motion.normal} ${motion.easeInOut}`,
+    };
+    // ─── AVATAR COLORS ────────────────────────────────────────────
+    // Deterministic palette from name hash: soft, muted tones
+    const AVATAR_COLORS = [
+        { bg: "#fee2e2", text: "#b91c1c" }, // red
+        { bg: "#fef3c7", text: "#92400e" }, // amber
+        { bg: "#d1fae5", text: "#065f46" }, // emerald
+        { bg: "#dbeafe", text: "#1e40af" }, // blue
+        { bg: "#ede9fe", text: "#5b21b6" }, // violet
+        { bg: "#fce7f3", text: "#9d174d" }, // pink
+        { bg: "#e0f2fe", text: "#075985" }, // sky
+        { bg: "#fef9c3", text: "#854d0e" }, // yellow
+        { bg: "#f0fdf4", text: "#166534" }, // green
+        { bg: "#f5f3ff", text: "#6d28d9" }, // purple
+    ];
+    function getAvatarColor(name) {
+        let hash = 0;
+        for (let i = 0; i < (name || "").length; i++) {
+            hash = name.charCodeAt(i) + ((hash << 5) - hash);
+        }
+        return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+    }
+    // ─── 2. TYPOGRAPHY ────────────────────────────────────────────
+    function Text({ children, size = "base", weight = "regular", color, mono, muted, secondary, align, truncate, theme: tp, style: sp, as: C = "span", }) {
+        const ctx = useThemeContext();
+        const theme = tp || ctx;
+        const pal = usePal(theme);
+        let c = pal.text;
+        if (color)
+            c = color;
+        else if (muted)
+            c = pal.textMuted;
+        else if (secondary)
+            c = pal.textSecondary;
+        return (jsxRuntimeExports.jsx(C, { style: {
+                ...tokens.type[size], fontWeight: tokens.weight[weight],
+                fontFamily: mono ? tokens.font.mono : tokens.font.sans,
+                color: c, textAlign: align, transition: `color ${motion.smooth} ${motion.easeInOut}`,
+                ...(truncate && { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }),
+                ...sp,
+            }, children: children }));
+    }
+    function Caption({ children, theme: tp, style: sp }) {
+        const ctx = useThemeContext();
+        const theme = tp || ctx;
+        const pal = usePal(theme);
+        return jsxRuntimeExports.jsx("span", { style: { ...tokens.type.sm, color: pal.textTertiary, fontFamily: tokens.font.sans, transition: `color ${motion.smooth} ${motion.easeInOut}`, ...sp }, children: children });
+    }
+    // ─── 3. BUTTONS (inner bottom stroke on hover) ───────────────
+    function Button({ children, variant = "primary", size = "md", icon, iconRight, disabled, loading, fullWidth, onClick, theme: tp, style: sp, }) {
+        const ctx = useThemeContext();
+        const theme = tp || ctx;
+        const pal = usePal(theme);
+        const [hover, setHover] = reactExports.useState(false);
+        const [pressed, setPressed] = reactExports.useState(false);
+        const sizes = {
+            sm: { padding: `${8 - 1}px ${12}px`, ...tokens.type.sm, height: 30 },
+            md: { padding: `${8}px ${16}px`, ...tokens.type.base, height: 36 },
+            lg: { padding: `${12}px ${24}px`, ...tokens.type.md, height: 42 },
+            xl: { padding: `${16}px ${32}px`, ...tokens.type.lg, height: 48 },
+        };
+        // Inner shadow color: darker tint of the button's own background
+        const shadowColors = {
+            primary: "inset 0 -2px 0 0 rgba(0,0,0,0.35)",
+            secondary: "inset 0 -2px 0 0 rgba(0,0,0,0.05)",
+            outline: "inset 0 -2px 0 0 rgba(0,0,0,0.08)",
+            ghost: "inset 0 -2px 0 0 rgba(0,0,0,0.06)",
+            accent: "inset 0 -2px 0 0 rgba(0,0,0,0.3)",
+            danger: "inset 0 -2px 0 0 rgba(0,0,0,0.3)",
+        };
+        // Brightness lift per variant
+        const brightnessMap = {
+            primary: 1.15,
+            secondary: 1.04,
+            outline: 1.12,
+            ghost: 1.12,
+            accent: 1.06,
+            danger: 1.06,
+        };
+        const variants = {
+            primary: {
+                background: disabled ? pal.bgMuted : pal.text,
+                color: disabled ? pal.textMuted : pal.textInverse,
+            },
+            secondary: {
+                background: disabled ? "transparent" : pal.bgMuted,
+                color: disabled ? pal.textMuted : pal.text,
+            },
+            outline: {
+                background: disabled ? "transparent" : "transparent",
+                color: disabled ? pal.textMuted : pal.text,
+                border: `1.5px solid ${disabled ? pal.borderSubtle : pal.borderInput}`,
+            },
+            ghost: {
+                background: disabled ? "transparent" : "transparent",
+                color: disabled ? pal.textMuted : pal.textSecondary,
+            },
+            accent: {
+                background: disabled ? pal.bgMuted : pal.accent,
+                color: disabled ? pal.textMuted : "#ffffff",
+            },
+            danger: {
+                background: disabled ? pal.bgMuted : pal.danger,
+                color: disabled ? pal.textMuted : "#ffffff",
+            },
+        };
+        const s = sizes[size];
+        const v = variants[variant] || variants.primary;
+        const isHover = hover && !disabled && !loading;
+        const shadow = shadowColors[variant] || shadowColors.primary;
+        const brightness = brightnessMap[variant] || 1.12;
+        return (jsxRuntimeExports.jsxs("button", { onClick: disabled || loading ? undefined : onClick, onMouseEnter: () => setHover(true), onMouseLeave: () => { setHover(false); setPressed(false); }, onMouseDown: () => setPressed(true), onMouseUp: () => setPressed(false), disabled: disabled, style: {
+                ...interactiveBase, ...s, border: "none", ...v,
+                fontWeight: tokens.weight.medium, borderRadius: tokens.radius.md,
+                display: "inline-flex", alignItems: "center", justifyContent: "center",
+                gap: 8, width: fullWidth ? "100%" : "auto",
+                transform: pressed && !disabled ? "scale(0.97)" : "scale(1)",
+                opacity: loading ? 0.7 : 1, pointerEvents: disabled || loading ? "none" : "auto",
+                letterSpacing: "-0.01em",
+                boxShadow: isHover ? shadow : "none",
+                filter: isHover ? `brightness(${brightness})` : "brightness(1)",
+                transition: `all ${motion.normal} ${motion.easeInOut}, box-shadow ${motion.fast} ${motion.easeOut}, filter ${motion.fast} ${motion.easeOut}`,
+                ...sp,
+            }, children: [loading && jsxRuntimeExports.jsx(Spinner, { size: s.fontSize, color: v.color }), !loading && icon && jsxRuntimeExports.jsx("span", { style: { fontSize: s.fontSize + 2, lineHeight: 1, display: "flex" }, children: icon }), jsxRuntimeExports.jsx("span", { style: { fontFamily: tokens.font.sans, fontWeight: tokens.weight.medium }, children: children }), iconRight && jsxRuntimeExports.jsx("span", { style: { fontSize: s.fontSize + 2, lineHeight: 1, display: "flex" }, children: iconRight })] }));
+    }
+    function IconButton({ icon, size = 36, variant = "ghost", onClick, theme: tp, label: ariaLabel, style: sp }) {
+        const ctx = useThemeContext();
+        const theme = tp || ctx;
+        const pal = usePal(theme);
+        const [hover, setHover] = reactExports.useState(false);
+        const bgMap = {
+            ghost: hover ? pal.bgSubtle : "transparent",
+            secondary: hover ? pal.bgHover : pal.bgMuted,
+            outline: hover ? pal.bgSubtle : "transparent",
+        };
+        return (jsxRuntimeExports.jsx("button", { onClick: onClick, onMouseEnter: () => setHover(true), onMouseLeave: () => setHover(false), "aria-label": ariaLabel, style: {
+                ...interactiveBase, width: size, height: size, borderRadius: tokens.radius.md,
+                background: bgMap[variant] || bgMap.ghost, color: pal.textSecondary,
+                display: "flex", alignItems: "center", justifyContent: "center", fontSize: size * 0.45,
+                transform: hover ? "scale(1.12)" : "scale(1)",
+                ...sp,
+            }, children: icon }));
+    }
+    // ─── 6. LAYOUT & CARDS ────────────────────────────────────────
+    function Card({ children, theme: tp, padding, hover, onClick, style: sp }) {
+        const ctx = useThemeContext();
+        const theme = tp || ctx;
+        const pal = usePal(theme);
+        const [hovered, setHovered] = reactExports.useState(false);
+        return (jsxRuntimeExports.jsx("div", { onClick: onClick, onMouseEnter: () => setHovered(true), onMouseLeave: () => setHovered(false), style: {
+                background: theme === "dark" ? "rgba(42,42,42,0.7)" : "rgba(255,255,255,0.8)",
+                backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)",
+                border: `1px solid ${theme === "dark" ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.04)"}`,
+                borderRadius: tokens.radius.lg, padding: padding ?? 24,
+                boxShadow: hovered && hover ? `0 4px 16px ${pal.shadowMd}` : `0 1px 4px ${pal.shadow}`,
+                transition: `all ${motion.normal} ${motion.easeInOut}`, fontFamily: tokens.font.sans,
+                cursor: onClick ? "pointer" : "default", ...sp,
+            }, children: children }));
+    }
+    function Divider({ theme: tp, spacing }) {
+        const ctx = useThemeContext();
+        const theme = tp || ctx;
+        const pal = usePal(theme);
+        return jsxRuntimeExports.jsx("div", { style: { height: 1, background: pal.borderSubtle, margin: `${spacing ?? 16}px 0`, transition: `background ${motion.smooth} ${motion.easeInOut}` } });
+    }
+    function Stack({ children, gap = "md", direction = "column", align, justify, wrap, style: sp }) {
+        return (jsxRuntimeExports.jsx("div", { style: {
+                display: "flex", flexDirection: direction === "row" ? "row" : "column",
+                gap: tokens.space[gap] ?? gap, alignItems: align, justifyContent: justify,
+                flexWrap: wrap ? "wrap" : undefined, ...sp,
+            }, children: children }));
+    }
+    // ─── 7. FEEDBACK & STATUS ─────────────────────────────────────
+    function Badge({ children, variant = "default", theme: tp, style: sp }) {
+        const ctx = useThemeContext();
+        const theme = tp || ctx;
+        const pal = usePal(theme);
+        const v = {
+            default: { bg: pal.bgMuted, color: pal.textSecondary },
+            accent: { bg: pal.accentBg, color: pal.accentText },
+            success: { bg: pal.successBg, color: pal.success },
+            warning: { bg: pal.warningBg, color: pal.warning },
+            danger: { bg: pal.dangerBg, color: pal.danger },
+        }[variant] || { bg: pal.bgMuted, color: pal.textSecondary };
+        return (jsxRuntimeExports.jsx("span", { style: {
+                display: "inline-flex", alignItems: "center", gap: 4,
+                ...tokens.type.xs, fontWeight: tokens.weight.medium, color: v.color, background: v.bg,
+                padding: `3px ${8}px`, borderRadius: tokens.radius.sm,
+                letterSpacing: 0.3, textTransform: "uppercase", fontFamily: tokens.font.sans,
+                transition: `all ${motion.smooth} ${motion.easeInOut}`, ...sp,
+            }, children: children }));
+    }
+    function Tag({ children, color, removable, onRemove, theme: tp }) {
+        const ctx = useThemeContext();
+        const theme = tp || ctx;
+        const pal = usePal(theme);
+        return (jsxRuntimeExports.jsxs("span", { style: {
+                display: "inline-flex", alignItems: "center", gap: 5,
+                ...tokens.type.sm, fontWeight: tokens.weight.medium, color: pal.text,
+                background: pal.bgSubtle, padding: `${4}px ${12}px`,
+                borderRadius: tokens.radius.pill, fontFamily: tokens.font.sans, transition: `all ${motion.smooth} ${motion.easeInOut}`,
+            }, children: [color && jsxRuntimeExports.jsx("span", { style: { width: 7, height: 7, borderRadius: "50%", background: color, flexShrink: 0 } }), children, removable && (jsxRuntimeExports.jsx("button", { onClick: onRemove, style: { ...interactiveBase, background: "transparent", color: pal.textMuted, fontSize: 12, padding: 0, marginLeft: 2, display: "flex" }, children: "\u00D7" }))] }));
+    }
+    function Spinner({ size = 16, color }) {
+        return (jsxRuntimeExports.jsx("svg", { width: size, height: size, viewBox: "0 0 16 16", style: { animation: "halaska-spin 0.8s linear infinite" }, children: jsxRuntimeExports.jsx("circle", { cx: "8", cy: "8", r: "6", fill: "none", stroke: color || "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeDasharray: "28", strokeDashoffset: "8", opacity: "0.8" }) }));
+    }
+    // ─── 8. DATA DISPLAY (colored avatars, no strokes) ────────────
+    function Avatar({ name, src, size = 32, theme: tp }) {
+        useThemeContext();
+        const colors = getAvatarColor(name);
+        const initials = name ? name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase() : "?";
+        return (jsxRuntimeExports.jsx("div", { style: {
+                width: size, height: size, borderRadius: size / 2,
+                background: src ? "transparent" : colors.bg,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                overflow: "hidden", flexShrink: 0, transition: `all ${motion.smooth} ${motion.easeInOut}`,
+            }, children: src ? (jsxRuntimeExports.jsx("img", { src: src, alt: name, style: { width: "100%", height: "100%", objectFit: "cover" } })) : (jsxRuntimeExports.jsx("span", { style: {
+                    fontFamily: tokens.font.sans, fontWeight: tokens.weight.semibold,
+                    color: colors.text, fontSize: size * 0.36, letterSpacing: "-0.02em",
+                }, children: initials })) }));
+    }
+    // ─── Orb: compact agent-activity indicators ──────────────────
+    // Discrete monochrome glyphs that signal what the agent is doing without
+    // blocking the thread. Five variants keyed to agent tasks; geometry lives
+    // on a 24px stage scaled to `size`. Renders bare or as a status pill.
+    const ORB_STAGE = 24;
+    const ORB_TASKS = {
+        pulse: "Thinking",
+        orbit: "Searching",
+        sweep: "Writing",
+        globe: "Planning",
+        spark: "Waiting",
+    };
+    const ORB_LATTICE = (() => {
+        const cells = [];
+        for (let y = 0; y < 3; y++)
+            for (let x = 0; x < 3; x++)
+                cells.push({ x, y });
+        return cells;
+    })();
+    const ORB_RING = Array.from({ length: 8 }, (_, i) => i);
+    function Orb({ variant = "pulse", size = 20, label, pill, color, theme: tp, style: sp }) {
+        const ctx = useThemeContext();
+        const theme = tp || ctx;
+        const pal = usePal(theme);
+        const text = label || `${ORB_TASKS[variant] || "Working"}…`;
+        let cells = null;
+        if (variant === "pulse" || variant === "sweep") {
+            // 3×3 lattice: radial wavefront (pulse) or left-to-right band (sweep).
+            cells = ORB_LATTICE.map(({ x, y }) => {
+                const delay = variant === "pulse" ? Math.hypot(x - 1, y - 1) * 260 : x * 220;
+                return (jsxRuntimeExports.jsx("span", { style: {
+                        position: "absolute", left: x * 8 + 2, top: y * 8 + 2, width: 4, height: 4,
+                        borderRadius: 2, background: "currentColor", opacity: 0.25, transform: "scale(0.4)",
+                        animation: `halaska-orb-swell 1.6s ${motion.easeInOut} ${Math.round(delay)}ms infinite`,
+                    } }, `${x}${y}`));
+            });
+        }
+        else if (variant === "orbit") {
+            // Ring of 8: negative delays turn one swell into a comet chase.
+            cells = ORB_RING.map(i => {
+                const a = (i / 8) * Math.PI * 2;
+                return (jsxRuntimeExports.jsx("span", { style: {
+                        position: "absolute", width: 3.5, height: 3.5, borderRadius: 2,
+                        left: 12 + Math.cos(a) * 9 - 1.75, top: 12 + Math.sin(a) * 9 - 1.75,
+                        background: "currentColor", opacity: 0.2, transform: "scale(0.5)",
+                        animation: `halaska-orb-swell 1.4s ${motion.easeInOut} ${-(i / 8) * 1.4}s infinite`,
+                    } }, i));
+            });
+        }
+        else if (variant === "globe") {
+            // Dots share one elliptical track, spaced by negative delay: reads as
+            // a flattened globe spinning, with scale + opacity as the depth cue.
+            cells = ORB_RING.map(i => (jsxRuntimeExports.jsx("span", { style: {
+                    position: "absolute", left: 12 - 1.75, top: 12 - 1.75,
+                    width: 3.5, height: 3.5, borderRadius: 2, background: "currentColor",
+                    animation: `halaska-orb-globe 3.2s linear ${-(i / 8) * 3.2}s infinite`,
+                } }, i)));
+        }
+        else if (variant === "spark") {
+            // The kit's ✦ glyph, breathing: with a soft echo bursting outward.
+            cells = (jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [jsxRuntimeExports.jsx("span", { style: {
+                            position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center",
+                            fontSize: 15, lineHeight: 1, animation: `halaska-orb-spark 2.4s ${motion.easeInOut} infinite`,
+                        }, children: "\u2726" }), jsxRuntimeExports.jsx("span", { style: {
+                            position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center",
+                            fontSize: 15, lineHeight: 1, opacity: 0, animation: "halaska-star-burst 2.4s ease-out infinite",
+                        }, children: "\u2726" })] }));
+        }
+        const glyph = (jsxRuntimeExports.jsx("span", { "data-halaska-orb": "", role: pill ? undefined : "img", "aria-label": pill ? undefined : text, "aria-hidden": pill ? true : undefined, style: {
+                position: "relative", display: "inline-block", width: size, height: size, flexShrink: 0,
+                color: color || pal.textSecondary,
+                transition: `color ${motion.smooth} ${motion.easeInOut}`,
+                ...(pill ? undefined : sp),
+            }, children: jsxRuntimeExports.jsx("span", { style: {
+                    position: "absolute", left: 0, top: 0, width: ORB_STAGE, height: ORB_STAGE,
+                    transform: `scale(${size / ORB_STAGE})`, transformOrigin: "top left",
+                }, children: cells }) }));
+        if (!pill)
+            return glyph;
+        return (jsxRuntimeExports.jsxs("span", { style: {
+                display: "inline-flex", alignItems: "center", gap: 7,
+                height: 30, padding: "0 12px 0 6px", borderRadius: tokens.radius.pill,
+                background: pal.bgElevated,
+                boxShadow: `0 0 0 1px ${pal.borderSubtle}, 0 1px 2px ${pal.shadow}`,
+                fontFamily: tokens.font.sans,
+                transition: `background ${motion.smooth} ${motion.easeInOut}, box-shadow ${motion.smooth} ${motion.easeInOut}`,
+                ...sp,
+            }, children: [glyph, jsxRuntimeExports.jsx("span", { style: {
+                        ...tokens.type.sm, color: pal.textSecondary, whiteSpace: "nowrap",
+                        transition: `color ${motion.smooth} ${motion.easeInOut}`,
+                    }, children: text })] }));
+    }
+    // ─── Fluid Motion (Fluid Functionalism-inspired) ─────────────
+    function ThinkingIndicator({ label = "Thinking", size = "md", theme: tp }) {
+        const ctx = useThemeContext();
+        const theme = tp || ctx;
+        const pal = usePal(theme);
+        const dot = size === "sm" ? 4 : 6;
+        return (jsxRuntimeExports.jsxs("div", { style: { display: "inline-flex", alignItems: "center", gap: 10, fontFamily: tokens.font.sans }, children: [label && jsxRuntimeExports.jsx("span", { style: { ...tokens.type.sm, color: pal.textSecondary, letterSpacing: "0.01em", transition: `color ${motion.smooth} ${motion.easeInOut}` }, children: label }), jsxRuntimeExports.jsx("span", { style: { display: "inline-flex", gap: 4, alignItems: "center", height: dot * 1.8 }, children: [0, 1, 2].map(i => (jsxRuntimeExports.jsx("span", { style: {
+                            width: dot, height: dot, borderRadius: dot, background: pal.text, display: "inline-block",
+                            animation: `halaska-thinking-dot 1.2s ${motion.easeInOut} ${i * 0.15}s infinite both`,
+                            transition: `background ${motion.smooth} ${motion.easeInOut}`,
+                        } }, i))) })] }));
+    }
+    function StatusBadge$1({ status = "default", children, pulse, theme: tp }) {
+        const ctx = useThemeContext();
+        const theme = tp || ctx;
+        const pal = usePal(theme);
+        const colorMap = {
+            default: pal.textSecondary,
+            online: pal.success,
+            offline: pal.textTertiary,
+            pending: pal.warning,
+            error: pal.danger,
+            accent: pal.accent,
+        };
+        const color = colorMap[status] || colorMap.default;
+        return (jsxRuntimeExports.jsxs("span", { style: {
+                display: "inline-flex", alignItems: "center", gap: 6,
+                padding: "3px 10px", borderRadius: tokens.radius.pill,
+                background: pal.bgSubtle, ...tokens.type.xs, fontWeight: tokens.weight.medium,
+                color: pal.text, fontFamily: tokens.font.sans,
+                letterSpacing: 0.3, textTransform: "uppercase",
+                transition: `all ${motion.smooth} ${motion.easeInOut}`,
+            }, children: [jsxRuntimeExports.jsx("span", { style: { position: "relative", width: 6, height: 6, borderRadius: 3, background: color, flexShrink: 0, transition: `background ${motion.smooth} ${motion.easeInOut}` }, children: pulse && jsxRuntimeExports.jsx("span", { style: { position: "absolute", inset: 0, borderRadius: 3, background: color, animation: `halaska-live-pulse 1.4s ${motion.easeOut} infinite` } }) }), children] }));
+    }
+    // ─── Extended (Form / Nav / Data Viz) ────────────────────────
+    function Chip({ children, selected, onToggle, onRemove, icon, theme: tp }) {
+        const ctx = useThemeContext();
+        const theme = tp || ctx;
+        const pal = usePal(theme);
+        const [hover, setHover] = reactExports.useState(false);
+        return (jsxRuntimeExports.jsxs("button", { onClick: onToggle, onMouseEnter: () => setHover(true), onMouseLeave: () => setHover(false), style: {
+                ...interactiveBase, display: "inline-flex", alignItems: "center", gap: 6,
+                padding: "4px 10px", borderRadius: tokens.radius.pill,
+                background: selected ? pal.accentBg : hover ? pal.bgMuted : pal.bgSubtle,
+                color: selected ? pal.accent : pal.text,
+                border: `1px solid ${selected ? pal.accent + "55" : "transparent"}`,
+                ...tokens.type.xs, fontWeight: tokens.weight.medium, fontFamily: tokens.font.sans,
+                letterSpacing: "0.01em",
+                transition: `all ${motion.normal} ${motion.easeInOut}`,
+            }, children: [icon && jsxRuntimeExports.jsx("span", { style: { display: "inline-flex" }, children: icon }), children, onRemove && (jsxRuntimeExports.jsx("span", { role: "button", onClick: (e) => { e.stopPropagation(); onRemove(); }, style: { marginLeft: 2, color: pal.textTertiary, fontSize: 12, lineHeight: 1, cursor: "pointer" }, children: "\u00D7" }))] }));
+    }
+    function AlertBanner({ title, description, variant = "default", theme: tp }) {
+        const ctx = useThemeContext();
+        const theme = tp || ctx;
+        const pal = usePal(theme);
+        const styles = {
+            default: { bg: pal.bgSubtle, border: pal.border, icon: "ℹ", color: pal.text },
+            success: { bg: pal.successBg, border: pal.success, icon: "✓", color: pal.success },
+            warning: { bg: pal.warningBg, border: pal.warning, icon: "⚠", color: pal.warning },
+            danger: { bg: pal.dangerBg, border: pal.danger, icon: "✕", color: pal.danger },
+        }[variant] || { bg: pal.bgSubtle, border: pal.border, icon: "ℹ", color: pal.text };
+        return (jsxRuntimeExports.jsxs("div", { style: {
+                display: "flex", gap: 12, padding: "12px 16px", borderRadius: tokens.radius.md,
+                background: styles.bg, border: `1px solid ${styles.border}`,
+                transition: `all ${motion.smooth} ${motion.easeInOut}`,
+            }, children: [jsxRuntimeExports.jsx("span", { style: { fontSize: 14, color: styles.color, flexShrink: 0, marginTop: 1 }, children: styles.icon }), jsxRuntimeExports.jsxs("div", { children: [title && jsxRuntimeExports.jsx("div", { style: { ...tokens.type.sm, fontWeight: tokens.weight.semibold, color: pal.text, fontFamily: tokens.font.sans, transition: `color ${motion.smooth} ${motion.easeInOut}` }, children: title }), description && jsxRuntimeExports.jsx("div", { style: { ...tokens.type.sm, color: pal.textSecondary, marginTop: 2, lineHeight: 1.5, fontFamily: tokens.font.sans, transition: `color ${motion.smooth} ${motion.easeInOut}` }, children: description })] })] }));
+    }
+    // Registry for the UX Patterns section: organised by the agent lifecycle:
+    // converse → trust → control (consent · visibility · accountability) →
+    // output → ambient. Numbering is derived from position, so inserting a
+    // pattern renumbers everything after it automatically. Components are
+    // referenced by name (function declarations hoist).
+    const PATTERN_GROUPS = [
+        {
+            id: "grp-conversation",
+            title: "Conversation core",
+            blurb: "The baseline chat surface. Every AI product ships these, so the play here is craft, not coverage.",
+            patterns: [
+                { id: "pat-prompt-input", title: "Prompt input", desc: "The composer: attachments, model pill, and a stop-while-streaming state.", component: "PromptInputPattern", height: 380 },
+                { id: "pat-message", title: "Message thread", desc: "User and assistant turns with hover actions and response branches.", component: "MessageThreadPattern", height: 420 },
+                { id: "pat-streaming", title: "Streaming answer", desc: "Streamed reply with inline sources and follow-ups.", component: "StreamingAnswerPattern", replay: true, height: 580 },
+                { id: "pat-chat", title: "Agent chat", desc: "Chat panel with reasoning chips and a composer.", component: "AgentChatPattern", replay: true, height: 640 },
+                { id: "pat-code", title: "Code block", desc: "Agent-written code streaming in line by line with syntax tint.", component: "CodeBlockPattern", replay: true, height: 460 },
+                { id: "pat-model-context", title: "Model & context", desc: "Model picker with capability badges and a live context-window meter.", component: "ModelContextPattern", height: 480 },
+            ],
+        },
+        {
+            id: "grp-trust",
+            title: "Trust & transparency",
+            blurb: "Why the user should believe the output: reasoning made visible, sources attached, confidence stated honestly.",
+            patterns: [
+                { id: "pat-thinking", title: "Thinking", desc: "Expandable reasoning trace while the agent works.", component: "ThinkingTracePattern", replay: true, height: 460 },
+                { id: "pat-citations", title: "Inline citations", desc: "Numbered source chips with an anchored popover pager.", component: "CitationsPattern", height: 480 },
+                { id: "pat-context", title: "Context sources", desc: "Retrieved knowledge chunks with their sources.", component: "ContextSourcesPattern", height: 500 },
+                { id: "pat-confidence", title: "Confidence states", desc: "One claim rendered at three confidence levels. Low is a designed state.", component: "ConfidencePattern", height: 520 },
+                { id: "pat-recommendation", title: "Recommendation", desc: "Agent suggestion with confidence and clear actions.", component: "RecommendationPattern", replay: true, height: 580 },
+                { id: "pat-feedback", title: "Feedback capture", desc: "Thumbs with a structured follow-up on negative.", component: "FeedbackPattern", height: 480 },
+            ],
+        },
+        {
+            id: "grp-control",
+            title: "Agentic control",
+            blurb: "The delegation lifecycle: consent before the agent acts, visibility while it works, accountability after. Intervention points that don't look like errors.",
+            patterns: [
+                { id: "pat-plan", title: "Plan preview", desc: "The agent states its plan in plain language. Proceed, edit, or take over.", component: "PlanPreviewPattern", replay: true, height: 540 },
+                { id: "pat-approval", title: "Approval card", desc: "Human-in-the-loop question before the agent acts.", component: "ApprovalCardPattern", replay: true, height: 540 },
+                { id: "pat-autonomy", title: "Autonomy levels", desc: "Per-task dial for how much the agent may do, observe through autonomous.", component: "AutonomyPattern", height: 620 },
+                { id: "pat-permissions", title: "Permission scope", desc: "Tools, data, and limits the agent can touch, summarised in plain language.", component: "PermissionScopePattern", height: 740 },
+                { id: "pat-queue", title: "Task queue", desc: "What the agent will work through. Reorder, remove, watch it clear.", component: "QueuePattern", replay: true, height: 560 },
+                { id: "pat-status", title: "Agent status", desc: "Live status pill with rolling phases, a stop control, and a mid-run redirect.", component: "AgentStatusPattern", replay: true, height: 340 },
+                { id: "pat-tools", title: "Tool calls", desc: "Edits, commands, and reads as a compact activity feed.", component: "ToolStreamPattern", replay: true, height: 600 },
+                { id: "pat-tasks", title: "Task rows", desc: "Live agent task status: running, failed, completed.", component: "AgentTasksPattern", replay: true, height: 600 },
+                { id: "pat-handoff", title: "Handoff", desc: "The agent escalates to a human with prepared context. Calm, not a failure.", component: "HandoffPattern", replay: true, height: 480 },
+                { id: "pat-receipt", title: "Action receipt", desc: "Evidence of what changed, under whose authority, with a time-limited undo.", component: "ActionReceiptPattern", replay: true, height: 500 },
+                { id: "pat-checkpoints", title: "Checkpoints", desc: "Named restore points. Confirm inline and roll back with re-verification.", component: "CheckpointPattern", replay: true, height: 460 },
+                { id: "pat-audit", title: "Audit log", desc: "The filterable record of agent actions, with inline receipts.", component: "AuditLogPattern", height: 620 },
+                { id: "pat-error-repair", title: "Error repair", desc: "The structured mistake: acknowledge, show the fix, offer recourse.", component: "ErrorRepairPattern", replay: true, height: 500 },
+            ],
+        },
+        {
+            id: "grp-output",
+            title: "Output & generative UI",
+            blurb: "Where responses stop being text: proposed edits, structured objects, artifacts, and charts.",
+            patterns: [
+                { id: "pat-artifact", title: "Artifact", desc: "Generated content in a versioned container with preview and raw views.", component: "ArtifactPattern", height: 540 },
+                { id: "pat-diff-view", title: "Diff view", desc: "Proposed code edits side by side with per-hunk accept and reject.", component: "DiffViewPattern", replay: true, height: 560 },
+                { id: "pat-diff", title: "Diff table", desc: "AI-proposed edits sweeping through tabular data.", component: "DiffTablePattern", replay: true, height: 540 },
+                { id: "pat-structured", title: "Structured data", desc: "Schema output rendered as a readable card, raw JSON one toggle away.", component: "StructuredDataPattern", height: 520 },
+                { id: "pat-insights", title: "Insight cards", desc: "Paged agent insights with live charts.", component: "InsightCardsPattern", height: 620 },
+                { id: "pat-comparison", title: "Comparison", desc: "Two models stream the same prompt side by side. Pick a winner.", component: "ComparisonPattern", replay: true, height: 500 },
+            ],
+        },
+        {
+            id: "grp-ambient",
+            title: "Ambient & beyond chat",
+            blurb: "The agent outside the thread: boards, nudges, digests, and inline assists that don't make you scroll a transcript to reconstruct state.",
+            patterns: [
+                { id: "pat-taskboard", title: "Taskboard", desc: "The board is primary, chat is secondary. Work moves when decisions are needed.", component: "TaskboardPattern", replay: true, height: 440 },
+                { id: "pat-inline-assist", title: "Inline assist", desc: "Ghost-text completions. Accept, dismiss, and watch the agent adapt.", component: "InlineAssistPattern", replay: true, height: 380 },
+                { id: "pat-nudge", title: "Nudge", desc: "A proactive, non-blocking suggestion with a real escape hatch.", component: "NudgePattern", replay: true, height: 320 },
+                { id: "pat-digest", title: "Digest", desc: "While-you-were-away summary with rationale and receipts per action.", component: "DigestPattern", height: 560 },
+                { id: "pat-notifications", title: "Notification center", desc: "The classic panel: agent events with severity, read state, and actions.", component: "NotificationCenterPattern", height: 560 },
+                { id: "pat-search", title: "Command search", desc: "Command palette with live filtering and an empty state.", component: "CommandSearchPattern", height: 540 },
+                { id: "pat-agent-setup", title: "Agent setup", desc: "Full multi-step setup flow with live preview.", component: "AgentSetupPattern", height: 760, align: "top" },
+            ],
+        },
+    ];
+    // Flat list with derived continuous numbering (01, 02, …) across groups.
+    const UX_PATTERNS = PATTERN_GROUPS.flatMap(g => g.patterns);
+    UX_PATTERNS.forEach((p, i) => { p.n = String(i + 1).padStart(2, "0"); });
+    // The two UX paradigms the pattern groups sit under. Agentic control
+    // spans both: consent and accountability matter wherever the agent acts.
+    const UX_PARADIGMS = [
+        {
+            id: "chat", title: "Chat",
+            body: "The thread is the product. You talk to the agent; it thinks, answers, asks, and acts in the flow of the conversation.",
+            groups: ["grp-conversation", "grp-trust", "grp-control"],
+            example: "ChatParadigmExample",
+        },
+        {
+            id: "canvas", title: "Canvas",
+            body: "The agent works on something outside the thread: a document, a board, a diff, a screen. Chat becomes the secondary channel.",
+            groups: ["grp-output", "grp-ambient", "grp-control"],
+            example: "CanvasParadigmExample",
+        },
+    ];
+    // ─── UX PATTERNS · AI interface patterns ─────────────────────
+    // Recreated from scratch for AI-native products: reasoning traces,
+    // streamed answers, approvals, tool activity, live tasks, grounding,
+    // proposed edits, command search, insights, and agent chat.
+    function AgentGlyph({ size = 24, theme }) {
+        const pal = usePal(theme);
+        return (jsxRuntimeExports.jsx("div", { style: {
+                width: size, height: size, borderRadius: size / 2, flexShrink: 0,
+                background: `linear-gradient(135deg, ${pal.accent}, ${pal.accentHover})`,
+                color: "#fff", display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: Math.round(size * 0.46),
+                transition: `all ${motion.smooth} ${motion.easeInOut}`,
+            }, children: "\u2726" }));
+    }
+    // 03 · Approval card: the agent asks before acting
+    const APPROVAL_OPTIONS = [
+        { id: "scale", title: "Reply now with a workaround", sub: "Unblocks Acme today, fix ships later" },
+        { id: "now", title: "Wait for the fix to ship", sub: "Priya's patch lands Thursday" },
+        { id: "wait", title: "Escalate to Priya", sub: "Loops engineering in on the thread" },
+    ];
+    const APPROVAL_APPROVED_TEXT = (option) => `Approved · ${option.title.toLowerCase()}`;
+    const APPROVAL_SKIPPED_TEXT = "Skipped · nothing was changed";
     /**
-     * 1. ThinkingAccordion: 思考链手风琴折叠组件 (assistant-ui 标准范式)
+     * ApprovalCardPattern: the agent pauses and asks the user to pick a path before acting.
+     * @prop theme {"light"|"dark"} Palette override (defaults to ThemeContext)
+     * @prop eyebrow {string} Small caption beside the agent glyph (default: "Needs your call")
+     * @prop badgeLabel {string} Status badge text while paused (default: "Paused")
+     * @prop question {string} The question the agent is asking (default: "How should I reply to Acme's outage complaint?")
+     * @prop options {{ id: string, title: string, sub?: string }[]} Radio-row choices (default: APPROVAL_OPTIONS)
+     * @prop approveLabel {string} Primary button label (default: "Approve")
+     * @prop skipLabel {string} Ghost button label (default: "Skip")
+     * @prop approvedText {string | ((option) => string)} Headline of the approved state; a function receives the chosen option (default: `Approved · ${option.title}`)
+     * @prop skippedText {string} Headline of the skipped state (default: "Skipped · nothing was changed")
+     * @prop onSelect {(option) => void} Fires when a radio row is picked
+     * @prop onApprove {(option) => void} Fires when Approve is clicked, with the chosen option
+     * @prop onSkip {() => void} Fires when Skip is clicked
      */
-    const ThinkingAccordion = ({ thinking, onToggle }) => {
+    function ApprovalCardPattern({ theme, eyebrow = "Needs your call", badgeLabel = "Paused", question = "How should I reply to Acme's outage complaint?", options = APPROVAL_OPTIONS, approveLabel = "Approve", skipLabel = "Skip", approvedText = APPROVAL_APPROVED_TEXT, skippedText = APPROVAL_SKIPPED_TEXT, onSelect, onApprove, onSkip, }) {
+        const pal = usePal(theme);
+        const [choice, setChoice] = reactExports.useState(null);
+        const [resolved, setResolved] = reactExports.useState(null); // null | "approved" | "skipped"
+        const chosen = options.find(o => o.id === choice);
+        const resolveText = (t, o) => (typeof t === "function" ? t(o) : t);
+        const select = (o) => { setChoice(o.id); onSelect?.(o); };
+        const approve = () => { if (!chosen)
+            return; setResolved("approved"); onApprove?.(chosen); };
+        const skip = () => { setResolved("skipped"); onSkip?.(); };
+        if (resolved === "approved") {
+            return (jsxRuntimeExports.jsx("div", { style: { width: 420, maxWidth: "100%", animation: `halaska-scale-in 0.3s ${motion.easeOut} both` }, children: jsxRuntimeExports.jsx(Card, { theme: theme, padding: 20, children: jsxRuntimeExports.jsxs(Stack, { direction: "row", gap: 12, align: "center", children: [jsxRuntimeExports.jsx("span", { style: {
+                                    width: 28, height: 28, borderRadius: 14, background: pal.successBg,
+                                    display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+                                }, children: jsxRuntimeExports.jsx("svg", { viewBox: "0 0 12 12", width: "12", height: "12", fill: "none", stroke: pal.success, strokeWidth: "1.5", strokeLinecap: "round", strokeLinejoin: "round", children: jsxRuntimeExports.jsx("polyline", { points: "2,6 5,9 10,3", style: { strokeDasharray: 14, strokeDashoffset: 14, animation: `halaska-check-draw 0.3s ${motion.easeOut} 0.1s forwards` } }) }) }), jsxRuntimeExports.jsxs("div", { style: { flex: 1 }, children: [jsxRuntimeExports.jsx(Text, { size: "base", weight: "semibold", theme: theme, style: { display: "block" }, children: resolveText(approvedText, chosen) }), jsxRuntimeExports.jsx(Text, { size: "sm", secondary: true, theme: theme, children: "The agent picked up where it left off." })] }), jsxRuntimeExports.jsx(StatusBadge$1, { theme: theme, status: "online", pulse: true, children: "Resumed" })] }) }) }));
+        }
+        if (resolved === "skipped") {
+            return (jsxRuntimeExports.jsx("div", { style: { width: 420, maxWidth: "100%", animation: `halaska-scale-in 0.3s ${motion.easeOut} both` }, children: jsxRuntimeExports.jsx(Card, { theme: theme, padding: 20, children: jsxRuntimeExports.jsxs(Stack, { direction: "row", gap: 12, align: "center", children: [jsxRuntimeExports.jsx("span", { style: {
+                                    width: 28, height: 28, borderRadius: 14, background: pal.bgSubtle,
+                                    display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+                                }, children: jsxRuntimeExports.jsx("svg", { viewBox: "0 0 12 12", width: "12", height: "12", fill: "none", stroke: pal.textSecondary, strokeWidth: "1.5", strokeLinecap: "round", strokeLinejoin: "round", children: jsxRuntimeExports.jsx("line", { x1: "3", y1: "6", x2: "9", y2: "6", style: { strokeDasharray: 6, strokeDashoffset: 6, animation: `halaska-check-draw 0.3s ${motion.easeOut} 0.1s forwards` } }) }) }), jsxRuntimeExports.jsxs("div", { style: { flex: 1 }, children: [jsxRuntimeExports.jsx(Text, { size: "base", weight: "semibold", theme: theme, style: { display: "block" }, children: resolveText(skippedText, chosen) }), jsxRuntimeExports.jsx(Text, { size: "sm", secondary: true, theme: theme, children: "The agent is holding until you decide." })] }), jsxRuntimeExports.jsx(StatusBadge$1, { theme: theme, status: "default", children: "On hold" })] }) }) }));
+        }
+        return (jsxRuntimeExports.jsx("div", { style: { width: 420, maxWidth: "100%" }, children: jsxRuntimeExports.jsx(Card, { theme: theme, padding: 20, children: jsxRuntimeExports.jsxs(Stack, { gap: 16, children: [jsxRuntimeExports.jsxs(Stack, { direction: "row", gap: 10, align: "center", children: [jsxRuntimeExports.jsx(AgentGlyph, { size: 24, theme: theme }), jsxRuntimeExports.jsx("div", { style: { flex: 1 }, children: jsxRuntimeExports.jsx(Caption, { theme: theme, children: eyebrow }) }), jsxRuntimeExports.jsx(StatusBadge$1, { theme: theme, status: "pending", children: badgeLabel })] }), jsxRuntimeExports.jsx(Text, { size: "md", weight: "semibold", theme: theme, children: question }), jsxRuntimeExports.jsx(Stack, { gap: 8, children: options.map(o => {
+                                const active = choice === o.id;
+                                return (jsxRuntimeExports.jsxs("button", { onClick: () => select(o), style: {
+                                        ...interactiveBase, display: "flex", alignItems: "center", gap: 12,
+                                        width: "100%", padding: "12px 14px", textAlign: "left",
+                                        borderRadius: tokens.radius.md,
+                                        background: active ? pal.accentBg : pal.bgSubtle,
+                                        boxShadow: active ? `inset 0 0 0 1.5px ${pal.accent}` : `inset 0 0 0 1px ${pal.borderSubtle}`,
+                                    }, children: [jsxRuntimeExports.jsx("span", { style: {
+                                                width: 14, height: 14, borderRadius: 7, flexShrink: 0,
+                                                border: active ? "none" : `1.5px solid ${pal.border}`,
+                                                background: active ? pal.accent : "transparent",
+                                                display: "flex", alignItems: "center", justifyContent: "center",
+                                                transition: `all ${motion.spring} ${motion.springCurve}`,
+                                            }, children: active && jsxRuntimeExports.jsx("span", { style: { width: 5, height: 5, borderRadius: 3, background: "#fff", animation: `halaska-radio-dot-in 0.35s ${motion.springCurve} both` } }) }), jsxRuntimeExports.jsxs("div", { style: { flex: 1, minWidth: 0 }, children: [jsxRuntimeExports.jsx(Text, { size: "base", weight: "medium", theme: theme, style: { display: "block" }, children: o.title }), o.sub && jsxRuntimeExports.jsx(Text, { size: "sm", theme: theme, style: { color: pal.textTertiary }, children: o.sub })] })] }, o.id));
+                            }) }), jsxRuntimeExports.jsxs(Stack, { direction: "row", gap: 8, justify: "flex-end", children: [jsxRuntimeExports.jsx(Button, { theme: theme, variant: "ghost", size: "sm", onClick: skip, children: skipLabel }), jsxRuntimeExports.jsx(Button, { theme: theme, variant: "accent", size: "sm", disabled: !choice, onClick: approve, children: approveLabel })] })] }) }) }));
+    }
+    // 10 · Insight cards: paged insights with a live chart
+    [
+        {
+            text: jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: ["Usage at ", jsxRuntimeExports.jsx("strong", { children: "Acme" }), " is falling fastest: down 6.2% this week, with $2,410 of MRR at risk."] }),
+            stats: [{ label: "Acme", pct: "−6.2%", usd: "−$2,410", neg: true }, { label: "Brightline", pct: "−1.8%", usd: "−$540", neg: true }],
+            data: [42, 44, 41, 39, 40, 36, 34, 33, 30, 31, 28, 26],
+        },
+        {
+            text: jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: ["Seat growth at ", jsxRuntimeExports.jsx("strong", { children: "Lumen Labs" }), " is accelerating: ", jsxRuntimeExports.jsx("strong", { children: "+9.4%" }), " this week, worth $3,120 in new MRR."] }),
+            stats: [{ label: "Lumen Labs", pct: "+9.4%", usd: "+$3,120" }, { label: "Fjord Health", pct: "+4.1%", usd: "+$610" }],
+            data: [20, 22, 21, 25, 24, 28, 30, 29, 33, 36, 38, 42],
+        },
+        {
+            text: jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: ["Refunds and credits cost ", jsxRuntimeExports.jsx("strong", { children: "0.8%" }), " of MRR last week, almost all of it outage credits."] }),
+            stats: [{ label: "Outage credits", pct: "−0.6%", usd: "−$890", neg: true }, { label: "Goodwill refunds", pct: "−0.2%", usd: "−$260", neg: true }],
+            data: [30, 28, 31, 27, 29, 25, 27, 24, 26, 23, 25, 22],
+        },
+    ];
+    // ─── UX PATTERNS · Agentic control: consent (new) ─────────
+    // ─── AGENTIC CONTROL · pre-action consent ─────────────────────
+    // Intervention points that must not look like errors: the agent
+    // states its plan, exposes its autonomy dial, scopes its
+    // permissions, and shows its queue: all on calm, neutral surfaces.
+    // · Plan preview: the agent states its plan in plain language before acting
+    const PLANPREV_STEPS = [
+        "Close 14 stale tickets older than 30 days",
+        "Reply to the 6 open Acme threads with the outage workaround",
+        "Issue a $180 credit to Acme for the outage",
+        "Open a Linear issue for the calendar sync bug",
+    ];
+    function PlanPrevCheckMark({ pal }) {
+        return (jsxRuntimeExports.jsx("svg", { viewBox: "0 0 12 12", width: "11", height: "11", fill: "none", stroke: pal.success, strokeWidth: "1.5", strokeLinecap: "round", strokeLinejoin: "round", children: jsxRuntimeExports.jsx("polyline", { points: "2,6 5,9 10,3", style: { strokeDasharray: 14, strokeDashoffset: 14, animation: `halaska-check-draw 0.3s ${motion.easeOut} 0.05s forwards` } }) }));
+    }
+    function PlanPrevStepRow({ index, displayNum, label, checked, editing, removed, onToggleRemove, theme }) {
+        const pal = usePal(theme);
+        const [hover, setHover] = reactExports.useState(false);
+        const [xHover, setXHover] = reactExports.useState(false);
+        return (jsxRuntimeExports.jsxs("div", { onMouseEnter: () => setHover(true), onMouseLeave: () => setHover(false), style: {
+                display: "flex", alignItems: "center", gap: 12, padding: "8px 10px",
+                borderRadius: tokens.radius.md,
+                background: hover && editing ? pal.bgSubtle : "transparent",
+                opacity: removed ? 0.55 : 1,
+                animation: `halaska-step-in 0.4s ${motion.emphasized} both`,
+                animationDelay: `${index * 0.07}s`,
+                transition: `background ${motion.normal} ${motion.easeInOut}, opacity ${motion.smooth} ${motion.easeInOut}`,
+            }, children: [jsxRuntimeExports.jsx("span", { style: {
+                        width: 22, height: 22, borderRadius: 11, flexShrink: 0,
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        background: checked ? pal.successBg : pal.bgSubtle,
+                        color: pal.textSecondary, ...tokens.type.xs, fontFamily: tokens.font.mono,
+                        fontVariantNumeric: "tabular-nums",
+                        transition: `all ${motion.smooth} ${motion.easeInOut}`,
+                    }, children: checked ? jsxRuntimeExports.jsx(PlanPrevCheckMark, { pal: pal }) : removed ? "·" : displayNum }), jsxRuntimeExports.jsx(Text, { size: "base", theme: theme, style: {
+                        flex: 1, minWidth: 0,
+                        color: removed ? pal.textMuted : checked ? pal.textSecondary : pal.text,
+                        textDecoration: removed ? "line-through" : "none",
+                        transition: `color ${motion.smooth} ${motion.easeInOut}`,
+                    }, children: label }), editing && (jsxRuntimeExports.jsx("button", { onClick: onToggleRemove, onMouseEnter: () => setXHover(true), onMouseLeave: () => setXHover(false), "aria-label": removed ? "Restore step" : "Remove step", style: {
+                        ...interactiveBase, width: 22, height: 22, borderRadius: tokens.radius.sm,
+                        display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+                        background: xHover ? pal.bgMuted : "transparent",
+                        color: xHover ? pal.text : pal.textTertiary,
+                        ...tokens.type.sm, padding: 0,
+                        animation: `halaska-scale-in 0.2s ${motion.easeOut} both`,
+                    }, children: removed ? "↺" : "×" }))] }));
+    }
+    /**
+     * PlanPreviewPattern: the agent states its plan before acting.
+     * @prop title {string} Card headline (default: "Alpha wants to clear the support backlog")
+     * @prop subtitle {string} Line under the headline while reviewing (default: "Nothing runs until you say so.")
+     * @prop steps {string[]} Plain-language steps, shown numbered; copied into state on mount so edits never mutate the prop
+     * @prop badgeLabel {string} Status badge text in the review/edit phases (default: "Proposed")
+     * @prop proceedLabel {string} Primary action label (default: "Proceed")
+     * @prop editLabel {string} Secondary action label (default: "Edit plan")
+     * @prop handoffLabel {string} Ghost action label that hands the plan back to the user (default: "I'll do it myself")
+     * @prop lockLabel {string} Label of the button that locks an edited plan (default: "Lock plan")
+     * @prop doneText {string | (count: number) => string} Footer text once every step has run; default renders "Done · N actions taken · view receipt"
+     * @prop handoffText {string} Line shown after the user takes the plan over (default: "Plan handed off. Alpha is standing by.")
+     * @prop stepDelayMs {number} Interval between steps checking off while executing (default: 700)
+     * @prop onProceed {(steps: string[]) => void} Fires when Proceed is clicked, with the kept (possibly edited) steps
+     * @prop onComplete {(steps: string[]) => void} Fires when the last kept step checks off
+     * @prop onEdit {(steps: string[]) => void} Fires when the plan is locked after editing, with the kept steps
+     * @prop onHandoff {() => void} Fires when the user chooses to do it themselves
+     */
+    function PlanPreviewPattern({ theme, title = "Alpha wants to clear the support backlog", subtitle = "Nothing runs until you say so.", steps = PLANPREV_STEPS, badgeLabel = "Proposed", proceedLabel = "Proceed", editLabel = "Edit plan", handoffLabel = "I'll do it myself", lockLabel = "Lock plan", doneText, handoffText = "Plan handed off. Alpha is standing by.", stepDelayMs = 700, onProceed, onComplete, onEdit, onHandoff, }) {
+        const pal = usePal(theme);
+        const [items] = reactExports.useState(() => steps.slice()); // prop-derived list, captured on mount
+        const [phase, setPhase] = reactExports.useState("review"); // review | edit | running | done | handoff
+        const [removed, setRemoved] = reactExports.useState([]);
+        const [checkedCount, setCheckedCount] = reactExports.useState(0);
+        // Latest callbacks live in a ref so the run effect never re-arms on identity change
+        const onCompleteRef = reactExports.useRef(onComplete);
+        onCompleteRef.current = onComplete;
+        const activeIdx = items.map((_, i) => i).filter(i => !removed.includes(i));
+        const activeSteps = activeIdx.map(i => items[i]);
+        // Check the steps off one by one, then land on the receipt footer
+        reactExports.useEffect(() => {
+            if (phase !== "running")
+                return;
+            const kept = items.filter((_, i) => !removed.includes(i));
+            const total = kept.length;
+            let n = 0;
+            let finish;
+            const iv = setInterval(() => {
+                n += 1;
+                setCheckedCount(n);
+                if (n >= total) {
+                    clearInterval(iv);
+                    onCompleteRef.current?.(kept);
+                    finish = setTimeout(() => setPhase("done"), 800);
+                }
+            }, stepDelayMs);
+            return () => { clearInterval(iv); clearTimeout(finish); };
+        }, [phase, removed, items, stepDelayMs]);
+        if (phase === "handoff") {
+            return (jsxRuntimeExports.jsx("div", { style: { width: 440, maxWidth: "100%", fontFamily: tokens.font.sans, animation: `halaska-scale-in 0.3s ${motion.easeOut} both` }, children: jsxRuntimeExports.jsxs(Stack, { direction: "row", gap: 10, align: "center", style: { padding: "12px 4px" }, children: [jsxRuntimeExports.jsx(AgentGlyph, { size: 20, theme: theme }), jsxRuntimeExports.jsx(Text, { size: "sm", secondary: true, theme: theme, style: { flex: 1 }, children: handoffText }), jsxRuntimeExports.jsx(StatusBadge$1, { theme: theme, status: "default", children: "Standing by" })] }) }));
+        }
+        const resolvedDoneText = typeof doneText === "function" ? doneText(activeIdx.length) : doneText;
+        return (jsxRuntimeExports.jsx("div", { style: { width: 440, maxWidth: "100%", fontFamily: tokens.font.sans }, children: jsxRuntimeExports.jsx(Card, { theme: theme, padding: 20, children: jsxRuntimeExports.jsxs(Stack, { gap: 16, children: [jsxRuntimeExports.jsxs(Stack, { direction: "row", gap: 10, align: "center", children: [jsxRuntimeExports.jsx(AgentGlyph, { size: 24, theme: theme }), jsxRuntimeExports.jsx("div", { style: { flex: 1 }, children: jsxRuntimeExports.jsx(Caption, { theme: theme, children: phase === "edit" ? "Editing plan" : "Plan preview" }) }), jsxRuntimeExports.jsx(StatusBadge$1, { theme: theme, status: phase === "running" ? "accent" : phase === "done" ? "online" : "default", pulse: phase === "running", children: phase === "running" ? "Executing" : phase === "done" ? "Done" : badgeLabel })] }), jsxRuntimeExports.jsxs("div", { children: [jsxRuntimeExports.jsx(Text, { size: "md", weight: "semibold", theme: theme, style: { display: "block" }, children: title }), jsxRuntimeExports.jsx(Text, { size: "sm", theme: theme, style: { color: pal.textTertiary }, children: phase === "edit" ? "Tap × to drop a step. Nothing runs until you lock it." : subtitle })] }), jsxRuntimeExports.jsx(Stack, { gap: 2, children: items.map((label, i) => {
+                                const isRemoved = removed.includes(i);
+                                const pos = activeIdx.indexOf(i);
+                                return (jsxRuntimeExports.jsx(PlanPrevStepRow, { index: i, displayNum: pos + 1, label: label, checked: !isRemoved && pos > -1 && pos < checkedCount, editing: phase === "edit", removed: isRemoved, onToggleRemove: () => setRemoved(r => r.includes(i) ? r.filter(x => x !== i) : [...r, i]), theme: theme }, i));
+                            }) }), phase === "review" && (jsxRuntimeExports.jsxs(Stack, { direction: "row", gap: 8, justify: "flex-end", children: [jsxRuntimeExports.jsx(Button, { theme: theme, variant: "ghost", size: "sm", onClick: () => { onHandoff?.(); setPhase("handoff"); }, children: handoffLabel }), jsxRuntimeExports.jsx(Button, { theme: theme, variant: "secondary", size: "sm", onClick: () => setPhase("edit"), children: editLabel }), jsxRuntimeExports.jsx(Button, { theme: theme, variant: "accent", size: "sm", disabled: activeIdx.length === 0, onClick: () => { onProceed?.(activeSteps); setPhase("running"); }, children: proceedLabel })] })), phase === "edit" && (jsxRuntimeExports.jsxs(Stack, { direction: "row", gap: 8, justify: "flex-end", align: "center", children: [jsxRuntimeExports.jsxs(Caption, { theme: theme, children: [activeIdx.length, " of ", items.length, " steps kept"] }), jsxRuntimeExports.jsx(Button, { theme: theme, variant: "accent", size: "sm", onClick: () => { onEdit?.(activeSteps); setPhase("review"); }, children: lockLabel })] })), phase === "running" && (jsxRuntimeExports.jsxs(Stack, { direction: "row", gap: 10, align: "center", style: { minHeight: 30 }, children: [jsxRuntimeExports.jsx(ThinkingIndicator, { label: "", size: "sm", theme: theme }), jsxRuntimeExports.jsxs(Text, { size: "sm", secondary: true, theme: theme, children: ["Executing \u00B7 ", checkedCount, " of ", activeIdx.length] })] })), phase === "done" && (jsxRuntimeExports.jsxs(Stack, { direction: "row", gap: 10, align: "center", style: { minHeight: 30, animation: `halaska-step-in 0.4s ${motion.emphasized} both` }, children: [jsxRuntimeExports.jsx("span", { style: {
+                                        width: 22, height: 22, borderRadius: 11, background: pal.successBg, flexShrink: 0,
+                                        display: "flex", alignItems: "center", justifyContent: "center",
+                                        transition: `background ${motion.smooth} ${motion.easeInOut}`,
+                                    }, children: jsxRuntimeExports.jsx(PlanPrevCheckMark, { pal: pal }) }), jsxRuntimeExports.jsx(Text, { size: "sm", theme: theme, style: { color: pal.textSecondary }, children: resolvedDoneText != null
+                                        ? resolvedDoneText
+                                        : jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: ["Done \u00B7 ", activeIdx.length, " actions taken \u00B7 ", jsxRuntimeExports.jsx("span", { style: { color: pal.accentText, cursor: "pointer" }, children: "view receipt" })] }) })] }))] }) }) }));
+    }
+    // Default resolved line keeps the refund amount in mono; pass a plain string to override.
+    jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: ["Done \u00B7 refunded ", jsxRuntimeExports.jsx("span", { style: { fontFamily: tokens.font.mono }, children: "$3,900" }), " to Acme"] });
+    // · Action receipt: evidence of what changed, with a time-limited undo
+    const RECEIPT_UNDO_SECONDS = 10;
+    const RECEIPT_META = [
+        { label: "What", value: "Issued a $180 credit to Acme" },
+        { label: "Where", value: "Stripe · Acme" },
+        { label: "Authority", value: "Within your $500 refund cap, no approval needed" },
+    ];
+    const RECEIPT_META_REVERSED = [
+        { label: "What", value: "Reversed the $180 credit to Acme" },
+        { label: "Where", value: "Stripe · Acme" },
+        { label: "Net", value: "−$180 · Acme's balance fully restored" },
+    ];
+    function ReceiptMetaRow({ label, value, theme }) {
+        const pal = usePal(theme);
+        return (jsxRuntimeExports.jsxs("div", { style: { display: "flex", gap: 12, alignItems: "baseline" }, children: [jsxRuntimeExports.jsx("span", { style: {
+                        ...tokens.type.xs, fontFamily: tokens.font.mono, color: pal.textTertiary,
+                        textTransform: "uppercase", letterSpacing: 0.5, width: 66, flexShrink: 0,
+                        transition: `color ${motion.smooth} ${motion.easeInOut}`,
+                    }, children: label }), jsxRuntimeExports.jsx("span", { style: {
+                        ...tokens.type.sm, fontFamily: tokens.font.mono, color: pal.textSecondary,
+                        transition: `color ${motion.smooth} ${motion.easeInOut}`,
+                    }, children: value })] }));
+    }
+    function ReceiptBeforeAfter({ before, after, delta, deltaColor, unit, decimals = 0, label = "Acme credit", theme }) {
+        const pal = usePal(theme);
+        return (jsxRuntimeExports.jsxs("div", { style: {
+                display: "flex", alignItems: "center", gap: 10, padding: "10px 14px",
+                borderRadius: tokens.radius.md, background: pal.bgSubtle,
+                transition: `background ${motion.smooth} ${motion.easeInOut}`,
+            }, children: [jsxRuntimeExports.jsx("span", { style: { ...tokens.type.xs, color: pal.textTertiary, textTransform: "uppercase", letterSpacing: 0.5, fontFamily: tokens.font.sans, transition: `color ${motion.smooth} ${motion.easeInOut}` }, children: label }), jsxRuntimeExports.jsx("span", { style: { ...tokens.type.sm, fontFamily: tokens.font.mono, color: pal.textTertiary, fontVariantNumeric: "tabular-nums", transition: `color ${motion.smooth} ${motion.easeInOut}` }, children: before.toFixed(decimals) }), jsxRuntimeExports.jsx("span", { style: { ...tokens.type.sm, color: pal.textMuted, transition: `color ${motion.smooth} ${motion.easeInOut}` }, children: "\u2192" }), jsxRuntimeExports.jsxs("span", { style: { ...tokens.type.sm, fontFamily: tokens.font.mono, fontWeight: tokens.weight.semibold, color: pal.text, fontVariantNumeric: "tabular-nums", transition: `color ${motion.smooth} ${motion.easeInOut}` }, children: [after.toFixed(decimals), unit ? ` ${unit}` : ""] }), jsxRuntimeExports.jsx("span", { style: {
+                        ...tokens.type.xs, fontFamily: tokens.font.mono, fontWeight: tokens.weight.medium,
+                        color: deltaColor, marginLeft: "auto", fontVariantNumeric: "tabular-nums",
+                        transition: `color ${motion.smooth} ${motion.easeInOut}`,
+                    }, children: delta })] }));
+    }
+    /**
+     * ActionReceiptPattern: evidence of what the agent changed, with a time-limited undo.
+     * @prop title {string} Headline while the action stands (default: "Credit issued")
+     * @prop reversedTitle {string} Headline after undo (default: "Reversed")
+     * @prop timestamp {string} Mono timestamp shown top-right (default: "14:32:07 UTC")
+     * @prop reversedTimestamp {string} Timestamp shown after undo (default: "14:32:19 UTC")
+     * @prop meta {{ label: string, value: string }[]} What / Where / Authority rows (default: RECEIPT_META)
+     * @prop reversedMeta {{ label: string, value: string }[]} Rows shown after undo (default: RECEIPT_META_REVERSED)
+     * @prop before {number} Credit balance before the action (default: 0)
+     * @prop after {number} Credit balance after the action; counts up on mount (default: 180)
+     * @prop unit {string} Unit suffix on the strip and delta (default: "USD")
+     * @prop decimals {number} Decimal places for before/after/delta (default: 0)
+     * @prop stripLabel {string} Label at the left of the before → after strip (default: "Acme credit")
+     * @prop undoSeconds {number} Length of the undo window; drives the ring and countdown (default: 10)
+     * @prop undoLabel {string} Undo button text (default: "Undo")
+     * @prop expiredLabel {string} Caption once the window closes (default: "Undo window closed")
+     * @prop reversedLabel {string} Caption after undo (default: "Reversal logged · nothing else was affected")
+     * @prop auditLabel {string} Audit link text in the expired and reversed states (default: "View in audit log")
+     * @prop autoplay {boolean} Run the countdown + count-up on mount; false renders the expired state with no timers (default: true)
+     * @prop onUndo {() => void} Fires when the user clicks Undo inside the window
+     * @prop onExpire {() => void} Fires when the undo window closes untouched
+     * @prop onAudit {() => void} Fires when the user clicks the audit link
+     */
+    function ActionReceiptPattern({ theme, title = "Credit issued", reversedTitle = "Reversed", timestamp = "14:32:07 UTC", reversedTimestamp = "14:32:19 UTC", meta = RECEIPT_META, reversedMeta = RECEIPT_META_REVERSED, before = 0, after = 180, unit = "USD", decimals = 0, stripLabel = "Acme credit", undoSeconds = RECEIPT_UNDO_SECONDS, undoLabel = "Undo", expiredLabel = "Undo window closed", reversedLabel = "Reversal logged · nothing else was affected", auditLabel = "View in audit log", autoplay = true, onUndo, onExpire, onAudit, }) {
+        const pal = usePal(theme);
+        const [phase, setPhase] = reactExports.useState(autoplay ? "active" : "expired"); // active | expired | reversed
+        const [secondsLeft, setSecondsLeft] = reactExports.useState(autoplay ? undoSeconds : 0);
+        const [afterVal, setAfterVal] = reactExports.useState(autoplay ? before : after);
+        const [undoHover, setUndoHover] = reactExports.useState(false);
+        const [linkHover, setLinkHover] = reactExports.useState(false);
+        const undoneRef = reactExports.useRef(false);
+        const onExpireRef = reactExports.useRef(onExpire);
+        onExpireRef.current = onExpire;
+        // Countdown: ticks the undo window down, then quietly closes it
+        reactExports.useEffect(() => {
+            if (!autoplay)
+                return;
+            const t0 = Date.now();
+            const iv = setInterval(() => {
+                if (undoneRef.current) {
+                    clearInterval(iv);
+                    return;
+                }
+                const left = Math.max(0, undoSeconds - (Date.now() - t0) / 1000);
+                setSecondsLeft(left);
+                if (left <= 0) {
+                    clearInterval(iv);
+                    setPhase("expired");
+                    onExpireRef.current?.();
+                }
+            }, 100);
+            return () => clearInterval(iv);
+        }, [autoplay, undoSeconds]);
+        // Count-up: the "after" number settles into place on mount
+        reactExports.useEffect(() => {
+            if (!autoplay) {
+                setAfterVal(after);
+                return;
+            }
+            let iv;
+            const start = setTimeout(() => {
+                const t0 = Date.now();
+                const dur = 900;
+                iv = setInterval(() => {
+                    const t = Math.min(1, (Date.now() - t0) / dur);
+                    const eased = 1 - Math.pow(1 - t, 3);
+                    setAfterVal(before + (after - before) * eased);
+                    if (t >= 1)
+                        clearInterval(iv);
+                }, 30);
+            }, 350);
+            return () => { clearTimeout(start); clearInterval(iv); };
+        }, [autoplay, before, after]);
+        const handleUndo = () => {
+            if (phase !== "active")
+                return;
+            undoneRef.current = true;
+            setPhase("reversed");
+            onUndo?.();
+        };
+        // Signed delta string for the balance strip: "+180 USD" / "−180 USD"
+        const receiptDelta = (from, to) => {
+            const diff = to - from;
+            return `${diff < 0 ? "−" : "+"}${Math.abs(diff).toFixed(decimals)}${unit ? ` ${unit}` : ""}`;
+        };
+        const reversed = phase === "reversed";
+        const ringC = 2 * Math.PI * 5.5;
+        const timeLabel = `0:${String(Math.ceil(secondsLeft)).padStart(2, "0")}`;
+        return (jsxRuntimeExports.jsx("div", { style: { width: 440, maxWidth: "100%", fontFamily: tokens.font.sans }, children: jsxRuntimeExports.jsx(Card, { theme: theme, padding: 20, children: jsxRuntimeExports.jsxs(Stack, { gap: 16, children: [jsxRuntimeExports.jsxs("div", { style: { display: "flex", alignItems: "center", gap: 10, animation: `halaska-step-in 0.4s ${motion.emphasized} both` }, children: [jsxRuntimeExports.jsx("span", { style: { position: "relative", width: 8, height: 8, borderRadius: 4, background: reversed ? pal.textTertiary : pal.success, flexShrink: 0, transition: `background ${motion.smooth} ${motion.easeInOut}` }, children: !reversed && phase === "active" && (jsxRuntimeExports.jsx("span", { style: { position: "absolute", inset: 0, borderRadius: 4, background: pal.success, animation: `halaska-live-pulse 1.4s ${motion.easeOut} infinite` } })) }), jsxRuntimeExports.jsx(Text, { size: "base", weight: "semibold", theme: theme, children: reversed ? reversedTitle : title }), jsxRuntimeExports.jsx("span", { style: { ...tokens.type.xs, fontFamily: tokens.font.mono, color: pal.textTertiary, marginLeft: "auto", fontVariantNumeric: "tabular-nums", transition: `color ${motion.smooth} ${motion.easeInOut}` }, children: reversed ? reversedTimestamp : timestamp })] }, phase === "reversed" ? "rev" : "fwd"), jsxRuntimeExports.jsx(Stack, { gap: 8, children: (reversed ? reversedMeta : meta).map((r, i) => (jsxRuntimeExports.jsx("div", { style: { animation: `halaska-step-in 0.35s ${motion.emphasized} ${i * 0.06}s both` }, children: jsxRuntimeExports.jsx(ReceiptMetaRow, { label: r.label, value: r.value, theme: theme }) }, `${reversed ? "r" : "f"}-${r.label}`))) }), reversed ? (jsxRuntimeExports.jsx("div", { style: { animation: `halaska-step-in 0.4s ${motion.emphasized} 0.15s both` }, children: jsxRuntimeExports.jsx(ReceiptBeforeAfter, { before: after, after: before, delta: receiptDelta(after, before), deltaColor: pal.textSecondary, unit: unit, decimals: decimals, label: stripLabel, theme: theme }) })) : (jsxRuntimeExports.jsx(ReceiptBeforeAfter, { before: before, after: afterVal, delta: receiptDelta(before, after), deltaColor: pal.success, unit: unit, decimals: decimals, label: stripLabel, theme: theme })), jsxRuntimeExports.jsx(Divider, { theme: theme, spacing: 0 }), phase === "active" && (jsxRuntimeExports.jsxs("div", { style: { display: "flex", alignItems: "center", gap: 12 }, children: [jsxRuntimeExports.jsxs("button", { onClick: handleUndo, onMouseEnter: () => setUndoHover(true), onMouseLeave: () => setUndoHover(false), style: {
+                                        ...interactiveBase, display: "inline-flex", alignItems: "center", gap: 8,
+                                        padding: "7px 14px", borderRadius: tokens.radius.md,
+                                        background: pal.bgMuted, color: pal.text,
+                                        ...tokens.type.sm, fontWeight: tokens.weight.medium,
+                                        filter: undoHover ? "brightness(1.06)" : "brightness(1)",
+                                        boxShadow: undoHover ? "inset 0 -2px 0 0 rgba(0,0,0,0.05)" : "none",
+                                    }, children: [jsxRuntimeExports.jsxs("svg", { width: "14", height: "14", viewBox: "0 0 14 14", style: { flexShrink: 0 }, children: [jsxRuntimeExports.jsx("circle", { cx: "7", cy: "7", r: "5.5", fill: "none", stroke: pal.borderSubtle, strokeWidth: "1.5" }), jsxRuntimeExports.jsx("circle", { cx: "7", cy: "7", r: "5.5", fill: "none", stroke: pal.text, strokeWidth: "1.5", strokeLinecap: "round", strokeDasharray: ringC, strokeDashoffset: ringC * (1 - secondsLeft / undoSeconds), transform: "rotate(-90 7 7)", style: { transition: "stroke-dashoffset 0.1s linear" } })] }), undoLabel, jsxRuntimeExports.jsx("span", { style: { fontFamily: tokens.font.mono, ...tokens.type.xs, color: pal.textSecondary, fontVariantNumeric: "tabular-nums" }, children: timeLabel })] }), jsxRuntimeExports.jsxs(Caption, { theme: theme, children: ["Reversible for ", undoSeconds, " seconds"] })] })), phase === "expired" && (jsxRuntimeExports.jsxs("div", { style: { display: "flex", alignItems: "center", gap: 12, animation: `halaska-fade-in 0.35s ${motion.easeOut} both` }, children: [jsxRuntimeExports.jsx("button", { onClick: () => onAudit?.(), onMouseEnter: () => setLinkHover(true), onMouseLeave: () => setLinkHover(false), style: {
+                                        ...interactiveBase, background: "transparent", padding: "4px 0",
+                                        ...tokens.type.sm, fontWeight: tokens.weight.medium,
+                                        color: linkHover ? pal.text : pal.textSecondary,
+                                        textDecoration: "underline", textUnderlineOffset: 3,
+                                        textDecorationColor: linkHover ? pal.textSecondary : pal.borderSubtle,
+                                    }, children: auditLabel }), jsxRuntimeExports.jsx(Caption, { theme: theme, children: expiredLabel })] })), phase === "reversed" && (jsxRuntimeExports.jsxs("div", { style: { display: "flex", alignItems: "center", gap: 12, animation: `halaska-step-in 0.4s ${motion.emphasized} 0.25s both` }, children: [jsxRuntimeExports.jsx("button", { onClick: () => onAudit?.(), onMouseEnter: () => setLinkHover(true), onMouseLeave: () => setLinkHover(false), style: {
+                                        ...interactiveBase, background: "transparent", padding: "4px 0",
+                                        ...tokens.type.sm, fontWeight: tokens.weight.medium,
+                                        color: linkHover ? pal.text : pal.textSecondary,
+                                        textDecoration: "underline", textUnderlineOffset: 3,
+                                        textDecorationColor: linkHover ? pal.textSecondary : pal.borderSubtle,
+                                    }, children: auditLabel }), jsxRuntimeExports.jsx(Caption, { theme: theme, children: reversedLabel })] }))] }) }) }));
+    }
+    // ─── ACTION BAR ──────────────────────────────────────────────
+    // User-facing UI categories. Each category is a scroll target whose section
+    // wraps the demos that belong to it.
+    const COMPONENT_CATEGORIES = [
+        { id: "cat-foundations", label: "Foundations", demos: ["DemoTypography", "DemoMotion", "DemoButtons"] },
+        { id: "cat-inputs", label: "Inputs & Selectors", demos: ["DemoFormInputs", "DemoTogglesSelections", "DemoFormExtras", "DemoInputsExtended"] },
+        { id: "cat-navigation", label: "Navigation & Menus", demos: ["DemoNavigation"] },
+        { id: "cat-overlays", label: "Overlays", demos: ["DemoOverlays"] },
+        { id: "cat-feedback", label: "Feedback & Status", demos: ["DemoFeedbackStatus", "DemoAlerts"] },
+        { id: "cat-data", label: "Data Display", demos: ["DemoDataDisplay", "DemoTable"] },
+        { id: "cat-ai", label: "AI Elements", demos: ["DemoAIElements"] },
+        { id: "cat-dev", label: "Dev Surfaces", demos: ["DemoDevSurfaces"] },
+    ];
+    // ─── BOOKMARK RAIL ───────────────────────────────────────────
+    // Fixed left-edge section index: one thin horizontal line per section that
+    // grows as the viewport approaches it: a camera-lens / timeline feel.
+    // Replaces the old action-bar dropdowns for UX Patterns and UI Components.
+    const RAIL_ROWS = [
+        { type: "label", text: "Paradigms" },
+        ...UX_PARADIGMS.map(p => ({ type: "tick", id: `paradigm-${p.id}`, label: p.title })),
+        { type: "label", text: "Patterns" },
+        ...PATTERN_GROUPS.map(g => ({ type: "tick", id: g.id, label: g.title })),
+        { type: "label", text: "Components" },
+        ...COMPONENT_CATEGORIES.map(c => ({ type: "tick", id: c.id, label: c.label })),
+    ];
+    RAIL_ROWS.filter(r => r.type === "tick");
+
+    // ─── Header Icons ────────────────────────────────────────────────
+    const NewChatIcon = () => (jsxRuntimeExports.jsx("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", width: "16", height: "16", fill: "none", children: jsxRuntimeExports.jsxs("g", { fill: "transparent", stroke: "currentColor", strokeLinejoin: "round", strokeWidth: "2", children: [jsxRuntimeExports.jsx("path", { d: "M11 4H7.2c-1.12 0-1.68 0-2.108.218-.376.192-.682.498-.874.874C4 5.52 4 6.08 4 7.2v9.6c0 1.12 0 1.68.218 2.108.192.376.498.682.874.874C5.52 20 6.08 20 7.2 20h9.6c1.12 0 1.68 0 2.108-.218.376-.192.682-.498.874-.874C20 18.48 20 17.92 20 16.8V13", strokeLinecap: "round" }), jsxRuntimeExports.jsx("path", { d: "M9 15v-2.586c0-.265.105-.52.293-.707l8.043-8.043c.78-.78 2.047-.78 2.828 0l.172.172c.78.78.78 2.047 0 2.828l-8.043 8.043c-.188.188-.442.293-.707.293H9z", strokeLinecap: "square" })] }) }));
+    const HistoryIcon = () => (jsxRuntimeExports.jsx("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", width: "16", height: "16", fill: "currentColor", children: jsxRuntimeExports.jsx("path", { d: "M12 4C9.25 4 6.83 5.39 5.38 7.5H8v2H2v-6h2V6c1.82-2.43 4.73-4 8-4 5.52 0 10 4.48 10 10s-4.48 10-10 10c-4.76 0-8.74-3.33-9.75-7.78l1.95-.44C5.01 17.34 8.19 20 12 20c4.42 0 8-3.58 8-8s-3.58-8-8-8zm-1 4h2v3.59l3.21 3.2-1.42 1.42-3.79-3.8V8z" }) }));
+    const SettingsIcon = () => (jsxRuntimeExports.jsx("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", width: "16", height: "16", fill: "currentColor", children: jsxRuntimeExports.jsx("path", { d: "M10.54 1.75h2.92l1.57 2.36c.11.17.32.25.53.21l2.53-.59 2.17 2.17-.58 2.54c-.05.2.04.41.21.53l2.36 1.57v2.92l-2.36 1.57c-.17.12-.26.33-.21.53l.58 2.54-2.17 2.17-2.53-.59c-.21-.04-.42.04-.53.21l-1.57 2.36h-2.92l-1.58-2.36c-.11-.17-.32-.25-.52-.21l-2.54.59-2.17-2.17.58-2.54c.05-.2-.03-.41-.21-.53l-2.35-1.57v-2.92L4.1 8.97c.18-.12.26-.33.21-.53L3.73 5.9 5.9 3.73l2.54.59c.2.04.41-.04.52-.21l1.58-2.36zm1.07 2l-.98 1.47C10.05 6.08 9 6.5 7.99 6.27l-1.46-.34-.6.6.33 1.46c.24 1.01-.18 2.07-1.05 2.64l-1.46.98v.78l1.46.98c.87.57 1.29 1.63 1.05 2.64l-.33 1.46.6.6 1.46-.34c1.01-.23 2.06.19 2.64 1.05l.98 1.47h.78l.97-1.47c.58-.86 1.63-1.28 2.65-1.05l1.45.34.61-.6-.34-1.46c-.23-1.01.18-2.07 1.05-2.64l1.47-.98v-.78l-1.47-.98c-.87-.57-1.28-1.63-1.05-2.64l.34-1.46-.61-.6-1.45.34c-1.02.23-2.07-.19-2.65-1.05l-.97-1.47h-.78zM12 10.5c-.83 0-1.5.67-1.5 1.5s.67 1.5 1.5 1.5c.82 0 1.5-.67 1.5-1.5s-.68-1.5-1.5-1.5zM8.5 12c0-1.93 1.56-3.5 3.5-3.5 1.93 0 3.5 1.57 3.5 3.5s-1.57 3.5-3.5 3.5c-1.94 0-3.5-1.57-3.5-3.5z" }) }));
+    const CloseIcon = () => (jsxRuntimeExports.jsx("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", width: "16", height: "16", fill: "currentColor", children: jsxRuntimeExports.jsx("path", { d: "M10.59 12L4.54 5.96l1.42-1.42L12 10.59l6.04-6.05 1.42 1.42L13.41 12l6.05 6.04-1.42 1.42L12 13.41l-6.04 6.05-1.42-1.42L10.59 12z" }) }));
+    /**
+     * 1. ThinkingSection: Halaska Kit 深度思考呈现组件
+     */
+    const ThinkingSection = ({ thinking, onToggle }) => {
+        usePal('light');
         const [localExpanded, setLocalExpanded] = reactExports.useState(thinking.isExpanded ?? false);
         const isExpanded = thinking.isExpanded !== undefined ? thinking.isExpanded : localExpanded;
         const handleToggle = () => {
@@ -68881,12 +70038,64 @@ JSON 输出格式：
         };
         const isThinking = thinking.status === 'thinking';
         const durationSec = thinking.durationMs ? (thinking.durationMs / 1000).toFixed(1) : null;
-        return (jsxRuntimeExports.jsxs("div", { className: `aui-thinking-accordion ${isExpanded ? 'is-expanded' : ''}`, children: [jsxRuntimeExports.jsxs("div", { className: "aui-thinking-header", onClick: handleToggle, children: [jsxRuntimeExports.jsxs("div", { className: "aui-thinking-title-wrap", children: [jsxRuntimeExports.jsx("span", { className: `aui-thinking-sparkle ${isThinking ? 'is-pulsing' : ''}`, children: isThinking ? '✦' : '🧠' }), jsxRuntimeExports.jsx("span", { children: isThinking ? 'AI 正在深度思考规划...' : '已完成深度思考' }), durationSec && !isThinking && (jsxRuntimeExports.jsxs("span", { className: "aui-thinking-duration", children: ["\u8017\u65F6 ", durationSec, "s"] }))] }), jsxRuntimeExports.jsx("div", { style: { display: 'flex', alignItems: 'center', gap: '6px' }, children: jsxRuntimeExports.jsx("span", { className: `aui-thinking-chevron ${isExpanded ? 'is-expanded' : ''}`, children: "\u25BE" }) })] }), isExpanded && (jsxRuntimeExports.jsx("div", { className: "aui-thinking-body", children: thinking.content || '思考过程正在流式生成中...' }))] }));
+        if (isThinking) {
+            return (jsxRuntimeExports.jsxs(Card, { padding: 10, style: {
+                    border: '1px solid #bfdbfe',
+                    background: 'linear-gradient(135deg, #f0f7ff 0%, #ffffff 100%)',
+                    borderRadius: tokens.radius.md,
+                    boxShadow: '0 2px 6px rgba(37, 99, 235, 0.06)'
+                }, children: [jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: '8px' }, children: [jsxRuntimeExports.jsx(Orb, { variant: "pulse", size: 16, color: "#2563eb" }), jsxRuntimeExports.jsx(ThinkingIndicator, { label: "AI \u6B63\u5728\u6DF1\u5EA6\u601D\u8003\u89C4\u5212...", size: "sm" })] }), thinking.content && (jsxRuntimeExports.jsx("div", { style: {
+                            marginTop: '8px',
+                            padding: '8px 10px',
+                            background: '#ffffff',
+                            borderRadius: tokens.radius.sm,
+                            border: '1px solid #e2e8f0',
+                            fontSize: '11px',
+                            lineHeight: 1.5,
+                            color: '#64748b',
+                            fontFamily: tokens.font.mono,
+                            whiteSpace: 'pre-wrap',
+                            maxHeight: '180px',
+                            overflowY: 'auto'
+                        }, children: thinking.content }))] }));
+        }
+        return (jsxRuntimeExports.jsxs(Card, { padding: 8, style: {
+                border: '1px solid #e2e8f0',
+                background: isExpanded ? '#fafafa' : '#ffffff',
+                borderRadius: tokens.radius.md,
+                transition: `all ${motion.fast} ${motion.easeInOut}`
+            }, children: [jsxRuntimeExports.jsxs("div", { onClick: handleToggle, style: {
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        cursor: 'pointer',
+                        userSelect: 'none',
+                        padding: '2px 4px'
+                    }, children: [jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: '8px' }, children: [jsxRuntimeExports.jsx(AgentGlyph, { size: 18 }), jsxRuntimeExports.jsx("span", { style: { fontSize: '12px', fontWeight: 500, color: '#334155' }, children: "\u5DF2\u5B8C\u6210\u6DF1\u5EA6\u601D\u8003" }), durationSec && (jsxRuntimeExports.jsxs(Badge, { variant: "secondary", style: { fontSize: '10.5px', height: '18px', padding: '0 6px' }, children: ["\u8017\u65F6 ", durationSec, "s"] }))] }), jsxRuntimeExports.jsx("span", { style: {
+                                fontSize: '11px',
+                                color: '#94a3b8',
+                                transform: isExpanded ? 'rotate(180deg)' : 'none',
+                                transition: `transform ${motion.fast} ${motion.easeOut}`
+                            }, children: "\u25BE" })] }), isExpanded && (jsxRuntimeExports.jsx("div", { style: {
+                        marginTop: '8px',
+                        padding: '8px 10px',
+                        borderTop: '1px solid #e2e8f0',
+                        fontSize: '11px',
+                        lineHeight: 1.5,
+                        color: '#475569',
+                        fontFamily: tokens.font.mono,
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        maxHeight: '220px',
+                        overflowY: 'auto',
+                        background: '#ffffff',
+                        borderRadius: tokens.radius.sm
+                    }, children: thinking.content || '思考过程已归档' }))] }));
     };
     /**
-     * 2. ToolCallCard: 结构化工具调用卡片 (assistant-ui 标准组件)
+     * 2. ToolCallSection: Halaska Kit 结构化工具调用卡片
      */
-    const ToolCallCard = ({ toolCall, onToggle }) => {
+    const ToolCallSection = ({ toolCall, onToggle }) => {
         const [localExpanded, setLocalExpanded] = reactExports.useState(toolCall.isExpanded ?? false);
         const isExpanded = toolCall.isExpanded !== undefined ? toolCall.isExpanded : localExpanded;
         const handleToggle = () => {
@@ -68897,20 +70106,59 @@ JSON 输出格式：
                 setLocalExpanded(!isExpanded);
             }
         };
-        return (jsxRuntimeExports.jsxs("div", { className: "aui-tool-card", children: [jsxRuntimeExports.jsxs("div", { className: "aui-tool-card-header", onClick: handleToggle, children: [jsxRuntimeExports.jsxs("div", { className: "aui-tool-card-title-wrap", children: [jsxRuntimeExports.jsx("span", { children: toolCall.icon || '⚙️' }), jsxRuntimeExports.jsx("span", { children: toolCall.title || toolCall.name })] }), jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: '8px' }, children: [jsxRuntimeExports.jsxs("span", { className: `aui-tool-status-badge ${toolCall.status}`, children: [toolCall.status === 'running' && (jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [jsxRuntimeExports.jsx("span", { className: "aui-tool-spinner" }), jsxRuntimeExports.jsx("span", { children: "\u6267\u884C\u4E2D" })] })), toolCall.status === 'done' && (jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [jsxRuntimeExports.jsx("span", { children: "\u2713" }), jsxRuntimeExports.jsx("span", { children: "\u5B8C\u6210" })] })), toolCall.status === 'error' && (jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [jsxRuntimeExports.jsx("span", { children: "\u2715" }), jsxRuntimeExports.jsx("span", { children: "\u5F02\u5E38" })] }))] }), jsxRuntimeExports.jsx("span", { className: `aui-thinking-chevron ${isExpanded ? 'is-expanded' : ''}`, children: "\u25BE" })] })] }), toolCall.progress && toolCall.status === 'running' && (jsxRuntimeExports.jsxs("div", { className: "aui-tool-progress-text", children: [jsxRuntimeExports.jsx("span", { className: "aui-tool-spinner" }), jsxRuntimeExports.jsx("span", { children: toolCall.progress })] })), isExpanded && (jsxRuntimeExports.jsxs("div", { className: "aui-tool-details", children: [toolCall.input && (jsxRuntimeExports.jsxs("div", { children: [jsxRuntimeExports.jsx("div", { style: { fontSize: '10px', color: '#64748b', marginBottom: '2px', fontWeight: 600 }, children: "\u8F93\u5165\u53C2\u6570 (Inputs):" }), jsxRuntimeExports.jsx("div", { className: "aui-tool-code-block", children: typeof toolCall.input === 'string' ? toolCall.input : JSON.stringify(toolCall.input, null, 2) })] })), toolCall.output && (jsxRuntimeExports.jsxs("div", { style: { marginTop: '4px' }, children: [jsxRuntimeExports.jsx("div", { style: { fontSize: '10px', color: '#64748b', marginBottom: '2px', fontWeight: 600 }, children: "\u8FD4\u56DE\u7ED3\u679C (Outputs):" }), jsxRuntimeExports.jsx("div", { className: "aui-tool-code-block", children: typeof toolCall.output === 'string' ? toolCall.output : JSON.stringify(toolCall.output, null, 2) })] }))] }))] }));
+        return (jsxRuntimeExports.jsxs(Card, { padding: 8, style: {
+                border: '1px solid #e2e8f0',
+                borderRadius: tokens.radius.md,
+                background: '#ffffff',
+                boxShadow: '0 1px 3px rgba(0, 0, 0, 0.02)'
+            }, children: [jsxRuntimeExports.jsxs("div", { onClick: handleToggle, style: {
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        cursor: 'pointer',
+                        userSelect: 'none',
+                        padding: '2px 4px'
+                    }, children: [jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: '8px' }, children: [jsxRuntimeExports.jsx("span", { style: { fontSize: '13px' }, children: toolCall.icon || '⚙️' }), jsxRuntimeExports.jsx("span", { style: { fontSize: '12px', fontWeight: 500, color: '#1e293b' }, children: toolCall.title || toolCall.name })] }), jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: '8px' }, children: [toolCall.status === 'running' && (jsxRuntimeExports.jsx(StatusBadge$1, { status: "accent", pulse: true, children: "\u6267\u884C\u4E2D" })), toolCall.status === 'done' && (jsxRuntimeExports.jsx(StatusBadge$1, { status: "online", children: "\u2713 \u5B8C\u6210" })), toolCall.status === 'error' && (jsxRuntimeExports.jsx(StatusBadge$1, { status: "danger", children: "\u2715 \u5F02\u5E38" })), jsxRuntimeExports.jsx("span", { style: {
+                                        fontSize: '11px',
+                                        color: '#94a3b8',
+                                        transform: isExpanded ? 'rotate(180deg)' : 'none',
+                                        transition: `transform ${motion.fast} ${motion.easeOut}`
+                                    }, children: "\u25BE" })] })] }), toolCall.progress && toolCall.status === 'running' && (jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: '6px', marginTop: '6px', fontSize: '11px', color: '#2563eb' }, children: [jsxRuntimeExports.jsx(Spinner, { size: 12, color: "#2563eb" }), jsxRuntimeExports.jsx("span", { children: toolCall.progress })] })), isExpanded && (jsxRuntimeExports.jsxs("div", { style: { marginTop: '8px', paddingTop: '8px', borderTop: '1px solid #f1f5f9' }, children: [toolCall.input && (jsxRuntimeExports.jsxs("div", { children: [jsxRuntimeExports.jsx("div", { style: { fontSize: '10px', color: '#64748b', marginBottom: '2px', fontWeight: 600 }, children: "\u8F93\u5165\u53C2\u6570 (Inputs):" }), jsxRuntimeExports.jsx("div", { style: {
+                                        fontSize: '10.5px',
+                                        fontFamily: tokens.font.mono,
+                                        background: '#f8fafc',
+                                        padding: '6px 8px',
+                                        borderRadius: tokens.radius.sm,
+                                        border: '1px solid #e2e8f0',
+                                        color: '#334155',
+                                        whiteSpace: 'pre-wrap',
+                                        maxHeight: '140px',
+                                        overflowY: 'auto'
+                                    }, children: typeof toolCall.input === 'string' ? toolCall.input : JSON.stringify(toolCall.input, null, 2) })] })), toolCall.output && (jsxRuntimeExports.jsxs("div", { style: { marginTop: '6px' }, children: [jsxRuntimeExports.jsx("div", { style: { fontSize: '10px', color: '#64748b', marginBottom: '2px', fontWeight: 600 }, children: "\u8FD4\u56DE\u7ED3\u679C (Outputs):" }), jsxRuntimeExports.jsx("div", { style: {
+                                        fontSize: '10.5px',
+                                        fontFamily: tokens.font.mono,
+                                        background: '#f8fafc',
+                                        padding: '6px 8px',
+                                        borderRadius: tokens.radius.sm,
+                                        border: '1px solid #e2e8f0',
+                                        color: '#334155',
+                                        whiteSpace: 'pre-wrap',
+                                        maxHeight: '140px',
+                                        overflowY: 'auto'
+                                    }, children: typeof toolCall.output === 'string' ? toolCall.output : JSON.stringify(toolCall.output, null, 2) })] }))] }))] }));
     };
     /**
-     * 3. MarkdownContent: 真正渲染 Markdown 表格、加粗、行内代码与排期的富文本渲染器
+     * 3. MarkdownContent: 富文本与流式呈现组件
      */
     const MarkdownContent = ({ content, isStreaming = false }) => {
         if (!content)
             return null;
-        return (jsxRuntimeExports.jsx("div", { className: "aui-markdown", children: jsxRuntimeExports.jsx(Hr, { content: content, final: !isStreaming, typewriter: isStreaming, fade: isStreaming, smoothStreaming: isStreaming ? 'auto' : false, batchRendering: isStreaming, deferNodesUntilVisible: false, viewportPriority: false, maxLiveNodes: 0, customHtmlTags: ['think', 'thinking'] }) }));
+        return (jsxRuntimeExports.jsx("div", { className: "aui-markdown", style: { fontFamily: tokens.font.sans }, children: jsxRuntimeExports.jsx(Hr, { content: content, final: !isStreaming, typewriter: isStreaming, fade: isStreaming, smoothStreaming: isStreaming ? 'auto' : false, batchRendering: isStreaming, deferNodesUntilVisible: false, viewportPriority: false, maxLiveNodes: 0, customHtmlTags: ['think', 'thinking'] }) }));
     };
     /**
-     * 4. AssistantThread: 对话流与空白欢迎态组件
+     * 4. AssistantThread: 对话流视口与 Halaska Kit 空白态
      */
-    const AssistantThread = ({ messages, employeeName, onSuggestionClick, onImagePreview, onApplyTripPlans, onApplyTravelReports, isExecuting }) => {
+    const AssistantThread = ({ messages, employeeName, selectedModel = 'gemini-3.8-flash', onSuggestionClick, onImagePreview, onApplyTripPlans, onApplyTravelReports, isExecuting }) => {
         const viewportRef = reactExports.useRef(null);
         reactExports.useEffect(() => {
             if (viewportRef.current) {
@@ -68919,22 +70167,76 @@ JSON 输出格式：
         }, [messages]);
         const shortName = employeeName ? employeeName.slice(0, 2) : '社员';
         if (messages.length === 0) {
-            return (jsxRuntimeExports.jsx("div", { className: "aui-thread-viewport", ref: viewportRef, children: jsxRuntimeExports.jsxs("div", { className: "aui-empty-state", children: [jsxRuntimeExports.jsx("div", { className: "aui-sparkle-logo", children: jsxRuntimeExports.jsx("span", { className: "sparkle-char", children: "\u2726" }) }), jsxRuntimeExports.jsxs("div", { className: "aui-empty-title", children: ["Ask away, ", shortName, "!"] }), jsxRuntimeExports.jsx("div", { className: "aui-empty-subtitle", children: "\u5143\u5E74\u4E91\u8D39\u63A7\u6781\u901F\u81EA\u52A8\u9A7E\u9A76\u526F\u9A7E\u5DF2\u5C31\u7EEA\u3002\u652F\u6301\u7C98\u8D34\u6392\u671F\u3001\u667A\u80FD\u5BF9\u8D26\u3001\u63D0\u53D6\u53D1\u7968\u4E13\u5C5E\u5FC5\u586B\u9879\u4E0E\u4E00\u952E\u6781\u901F\u5EFA\u5355\u3002" }), jsxRuntimeExports.jsxs("div", { className: "aui-suggestions-grid", children: [jsxRuntimeExports.jsxs("div", { className: "aui-suggestion-card", onClick: () => onSuggestionClick?.('infer'), children: [jsxRuntimeExports.jsx("span", { className: "aui-suggestion-icon", children: "\uD83D\uDD2E" }), jsxRuntimeExports.jsxs("div", { className: "aui-suggestion-text", children: [jsxRuntimeExports.jsx("span", { className: "title", children: "\u667A\u80FD\u63A8\u65AD\u5DF2\u9009\u8D39\u7528\u5FC5\u586B\u9879" }), jsxRuntimeExports.jsx("span", { className: "desc", children: "\u57FA\u4E8E\u53D1\u7968 OCR \u4E0E\u7968\u636E\u94FE\u81EA\u52A8\u63A8\u5BFC\u4EA4\u901A\u4E0E\u4F4F\u5BBF\u5B57\u6BB5" })] })] }), jsxRuntimeExports.jsxs("div", { className: "aui-suggestion-card", onClick: () => onSuggestionClick?.('itinerary'), children: [jsxRuntimeExports.jsx("span", { className: "aui-suggestion-icon", children: "\uD83D\uDCCB" }), jsxRuntimeExports.jsxs("div", { className: "aui-suggestion-text", children: [jsxRuntimeExports.jsx("span", { className: "title", children: "\u7C98\u8D34\u6392\u671F\u89C4\u5212 Trip \u884C\u7A0B" }), jsxRuntimeExports.jsx("span", { className: "desc", children: "\u7C98\u8D34\u65E5\u7A0B\u8868\u683C\u6216\u5907\u5FD8\uFF0C\u7531\u5927\u6A21\u578B\u6DF1\u5EA6\u63A8\u7406\u89C4\u5212 Trip \u533A\u95F4" })] })] }), jsxRuntimeExports.jsxs("div", { className: "aui-suggestion-card", onClick: () => onSuggestionClick?.('autopilot-plan'), children: [jsxRuntimeExports.jsx("span", { className: "aui-suggestion-icon", children: "\u2728" }), jsxRuntimeExports.jsxs("div", { className: "aui-suggestion-text", children: [jsxRuntimeExports.jsx("span", { className: "title", children: "\u5168\u6D41\u7A0B\u667A\u80FD\u89C4\u5212 (\u884C\u7A0B\u4E0E\u65E5\u5E38)" }), jsxRuntimeExports.jsx("span", { className: "desc", children: "\u4E00\u952E\u805A\u7C7B\u51FA\u5DEE\u5F80\u8FD4 Trip \u4E0E\u65E5\u5E38\u529E\u516C\u8D39\u7528" })] })] }), jsxRuntimeExports.jsxs("div", { className: "aui-suggestion-card", onClick: () => onSuggestionClick?.('dashboard'), children: [jsxRuntimeExports.jsx("span", { className: "aui-suggestion-icon", children: "\uD83D\uDE80" }), jsxRuntimeExports.jsxs("div", { className: "aui-suggestion-text", children: [jsxRuntimeExports.jsx("span", { className: "title", children: "\u62A5\u9500\u5355\u7BA1\u7406\u770B\u677F" }), jsxRuntimeExports.jsx("span", { className: "desc", children: "\u4EE5\u62A5\u9500\u5355\u4E3A\u6761\u76EE\uFF0C\u7EDF\u4E00\u7BA1\u7406\u7533\u8BF7\u5355 (SC) \u4E0E\u62A5\u9500\u5355 (BC/BJ)" })] })] })] })] }) }));
+            return (jsxRuntimeExports.jsx("div", { className: "aui-thread-viewport", ref: viewportRef, style: { background: '#fafafa' }, children: jsxRuntimeExports.jsxs("div", { style: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', margin: 'auto 0', padding: '28px 12px', textAlign: 'center' }, children: [jsxRuntimeExports.jsx(Orb, { variant: "pulse", size: 44, color: "#2563eb" }), jsxRuntimeExports.jsxs("div", { style: { marginTop: '16px', fontSize: '18px', fontWeight: 600, color: '#0f172a', letterSpacing: '-0.02em' }, children: ["Ask away, ", shortName, "!"] }), jsxRuntimeExports.jsx("div", { style: { marginTop: '6px', fontSize: '12px', color: '#64748b', maxWidth: '340px', lineHeight: 1.5 }, children: "\u5143\u5E74\u4E91\u8D39\u63A7\u6781\u901F\u81EA\u52A8\u9A7E\u9A76\u526F\u9A7E\u5DF2\u5C31\u7EEA\u3002\u652F\u6301\u7C98\u8D34\u6392\u671F\u3001\u667A\u80FD\u5BF9\u8D26\u3001\u63D0\u53D6\u53D1\u7968\u5FC5\u586B\u9879\u4E0E\u4E00\u952E\u6781\u901F\u5EFA\u5355\u3002" }), jsxRuntimeExports.jsxs("div", { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', width: '100%', marginTop: '24px' }, children: [jsxRuntimeExports.jsxs(Card, { hover: true, padding: 12, onClick: () => onSuggestionClick?.('infer'), style: { cursor: 'pointer', textAlign: 'left', border: '1px solid #e2e8f0', borderRadius: tokens.radius.lg, background: '#ffffff' }, children: [jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }, children: [jsxRuntimeExports.jsx("span", { style: { fontSize: '16px' }, children: "\uD83D\uDD2E" }), jsxRuntimeExports.jsx("span", { style: { fontSize: '12px', fontWeight: 600, color: '#1e293b' }, children: "\u667A\u80FD\u63A8\u65AD\u5DF2\u9009\u8D39\u7528" })] }), jsxRuntimeExports.jsx("div", { style: { fontSize: '11px', color: '#64748b', lineHeight: 1.4 }, children: "\u57FA\u4E8E\u53D1\u7968 OCR \u81EA\u52A8\u63A8\u5BFC\u4EA4\u901A\u4F4F\u5BBF\u5FC5\u586B\u9879" })] }), jsxRuntimeExports.jsxs(Card, { hover: true, padding: 12, onClick: () => onSuggestionClick?.('itinerary'), style: { cursor: 'pointer', textAlign: 'left', border: '1px solid #e2e8f0', borderRadius: tokens.radius.lg, background: '#ffffff' }, children: [jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }, children: [jsxRuntimeExports.jsx("span", { style: { fontSize: '16px' }, children: "\uD83D\uDCCB" }), jsxRuntimeExports.jsx("span", { style: { fontSize: '12px', fontWeight: 600, color: '#1e293b' }, children: "\u7C98\u8D34\u6392\u671F\u89C4\u5212 Trip" })] }), jsxRuntimeExports.jsx("div", { style: { fontSize: '11px', color: '#64748b', lineHeight: 1.4 }, children: "\u7C98\u8D34\u65E5\u7A0B\u8868\u683C\uFF0C\u6DF1\u5EA6\u63A8\u7406\u5F80\u8FD4\u95ED\u73AF" })] }), jsxRuntimeExports.jsxs(Card, { hover: true, padding: 12, onClick: () => onSuggestionClick?.('autopilot-plan'), style: { cursor: 'pointer', textAlign: 'left', border: '1px solid #e2e8f0', borderRadius: tokens.radius.lg, background: '#ffffff' }, children: [jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }, children: [jsxRuntimeExports.jsx("span", { style: { fontSize: '16px' }, children: "\u2728" }), jsxRuntimeExports.jsx("span", { style: { fontSize: '12px', fontWeight: 600, color: '#1e293b' }, children: "\u5168\u6D41\u7A0B\u667A\u80FD\u89C4\u5212" })] }), jsxRuntimeExports.jsx("div", { style: { fontSize: '11px', color: '#64748b', lineHeight: 1.4 }, children: "\u4E00\u952E\u805A\u7C7B\u51FA\u5DEE\u5F80\u8FD4\u4E0E\u65E5\u5E38\u529E\u516C\u8D39\u7528" })] }), jsxRuntimeExports.jsxs(Card, { hover: true, padding: 12, onClick: () => onSuggestionClick?.('dashboard'), style: { cursor: 'pointer', textAlign: 'left', border: '1px solid #e2e8f0', borderRadius: tokens.radius.lg, background: '#ffffff' }, children: [jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }, children: [jsxRuntimeExports.jsx("span", { style: { fontSize: '16px' }, children: "\uD83D\uDE80" }), jsxRuntimeExports.jsx("span", { style: { fontSize: '12px', fontWeight: 600, color: '#1e293b' }, children: "\u62A5\u9500\u5355\u7BA1\u7406\u770B\u677F" })] }), jsxRuntimeExports.jsx("div", { style: { fontSize: '11px', color: '#64748b', lineHeight: 1.4 }, children: "\u7EDF\u4E00\u7BA1\u7406\u7533\u8BF7\u5355 (SC) \u4E0E\u62A5\u9500\u5355 (BC/BJ)" })] })] })] }) }));
         }
-        return (jsxRuntimeExports.jsx("div", { className: "aui-thread-viewport", ref: viewportRef, children: messages.map((msg) => {
+        return (jsxRuntimeExports.jsx("div", { className: "aui-thread-viewport", ref: viewportRef, style: { background: '#fafafa', padding: '16px', display: 'flex', flexDirection: 'column', gap: '16px' }, children: messages.map((msg) => {
                 const isUser = msg.role === 'user';
                 const timeStr = msg.time || new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-                return (jsxRuntimeExports.jsxs("div", { className: `aui-message-row ${isUser ? 'user' : 'assistant'}`, children: [jsxRuntimeExports.jsx("div", { className: "aui-message-meta", children: isUser ? (jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [jsxRuntimeExports.jsx("span", { children: timeStr }), jsxRuntimeExports.jsx("span", { children: "\u793E\u5458" })] })) : (jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [jsxRuntimeExports.jsx("span", { style: { color: '#2563eb', fontWeight: 600 }, children: "\u2726 AI \u667A\u80FD\u526F\u9A7E" }), jsxRuntimeExports.jsx("span", { className: "badge-model", children: "gemini-3.8-flash" }), jsxRuntimeExports.jsx("span", { children: timeStr })] })) }), isUser && msg.expenseContext && (jsxRuntimeExports.jsx("div", { className: "aui-bubble-context-chip", children: jsxRuntimeExports.jsxs("span", { children: ["\uD83D\uDCCE \u5173\u8054\u8D39\u7528: ", jsxRuntimeExports.jsx("strong", { children: msg.expenseContext.count }), " \u7B14 (\u00A5", Number(msg.expenseContext.totalAmount || 0).toFixed(2), ")"] }) })), msg.attachments && msg.attachments.length > 0 && (jsxRuntimeExports.jsx("div", { className: "aui-attachments-row", children: msg.attachments.map((att) => (jsxRuntimeExports.jsxs("div", { className: "aui-attachment-pill", style: { cursor: att.type === 'image' && att.dataUrl ? 'pointer' : 'default' }, onClick: () => {
+                return (jsxRuntimeExports.jsxs("div", { style: { display: 'flex', flexDirection: 'column', gap: '4px', width: '100%' }, children: [jsxRuntimeExports.jsx("div", { style: { display: 'flex', alignItems: 'center', gap: '6px', justifyContent: isUser ? 'flex-end' : 'flex-start', padding: '0 4px' }, children: isUser ? (jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [jsxRuntimeExports.jsx("span", { style: { fontSize: '11px', color: '#94a3b8' }, children: timeStr }), jsxRuntimeExports.jsx(Avatar, { name: employeeName || '社员', size: 20 })] })) : (jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [jsxRuntimeExports.jsx(AgentGlyph, { size: 18 }), jsxRuntimeExports.jsx("span", { style: { fontSize: '12px', fontWeight: 600, color: '#2563eb' }, children: "AI \u667A\u80FD\u526F\u9A7E" }), jsxRuntimeExports.jsx(Badge, { variant: "outline", style: { fontSize: '10px', height: '18px', padding: '0 6px' }, children: selectedModel }), jsxRuntimeExports.jsx("span", { style: { fontSize: '11px', color: '#94a3b8' }, children: timeStr })] })) }), isUser && msg.expenseContext && (jsxRuntimeExports.jsx("div", { style: { alignSelf: 'flex-end', marginBottom: '2px' }, children: jsxRuntimeExports.jsxs(Chip, { selected: true, style: { background: '#e0f2fe', borderColor: '#bae6fd', color: '#0369a1', fontSize: '11px' }, children: ["\uD83D\uDCCE \u5173\u8054\u8D39\u7528: ", msg.expenseContext.count, " \u7B14 (\u00A5", Number(msg.expenseContext.totalAmount || 0).toFixed(2), ")"] }) })), msg.attachments && msg.attachments.length > 0 && (jsxRuntimeExports.jsx("div", { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', justifyContent: isUser ? 'flex-end' : 'flex-start' }, children: msg.attachments.map((att) => (jsxRuntimeExports.jsxs("div", { style: {
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '5px',
+                                    padding: '3px 8px',
+                                    background: '#ffffff',
+                                    border: '1px solid #e2e8f0',
+                                    borderRadius: tokens.radius.sm,
+                                    fontSize: '11px',
+                                    color: '#334155',
+                                    cursor: att.type === 'image' && att.dataUrl ? 'pointer' : 'default'
+                                }, onClick: () => {
                                     if (att.type === 'image' && att.dataUrl && onImagePreview) {
                                         onImagePreview(att.dataUrl);
                                     }
-                                }, title: att.name, children: [jsxRuntimeExports.jsx("span", { children: att.type === 'image' ? '🖼️' : '📄' }), jsxRuntimeExports.jsx("span", { style: { maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: att.name })] }, att.id))) })), isUser ? (jsxRuntimeExports.jsx("div", { className: "aui-bubble-user", children: msg.text })) : (jsxRuntimeExports.jsxs("div", { className: "aui-bubble-assistant", children: [msg.thinking && (jsxRuntimeExports.jsx(ThinkingAccordion, { thinking: msg.thinking })), msg.toolCalls && msg.toolCalls.length > 0 && (jsxRuntimeExports.jsx("div", { style: { display: 'flex', flexDirection: 'column', gap: '6px' }, children: msg.toolCalls.map((tool) => (jsxRuntimeExports.jsx(ToolCallCard, { toolCall: tool }, tool.id))) })), msg.text && (jsxRuntimeExports.jsx(MarkdownContent, { content: msg.text, isStreaming: msg.isStreaming })), msg.confirmationAction && msg.confirmationAction.type === 'APPLY_TRIP_PLANS' && (jsxRuntimeExports.jsxs("div", { className: `aui-confirmation-card ${msg.confirmationAction.applied ? 'is-applied' : ''}`, children: [jsxRuntimeExports.jsxs("div", { className: "aui-confirmation-header", children: [jsxRuntimeExports.jsxs("div", { className: "aui-confirmation-title", children: [jsxRuntimeExports.jsx("span", { className: "aui-confirmation-icon", children: msg.confirmationAction.applied ? '✅' : '📋' }), jsxRuntimeExports.jsx("span", { className: "aui-confirmation-title-text", children: msg.confirmationAction.applied ? '出差排期规划已生效' : '待确认：应用出差排期至表格 (HITL)' })] }), jsxRuntimeExports.jsxs("span", { className: "aui-confirmation-badge", children: [msg.confirmationAction.trips.length, " \u8F6E Trip"] })] }), jsxRuntimeExports.jsx("div", { className: "aui-confirmation-desc", children: msg.confirmationAction.applied ? (jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: ["\u5DF2\u5C06 AI \u89C4\u5212\u7684 ", jsxRuntimeExports.jsx("strong", { children: msg.confirmationAction.trips.length }), " \u8F6E\u51FA\u5DEE\u5F80\u8FD4 Trip \u5E94\u7528\u81F3\u8D39\u7528\u660E\u7EC6\u8868\u3002", msg.confirmationAction.appliedTime ? `(确认时间: ${msg.confirmationAction.appliedTime})` : ''] })) : (jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: ["AI \u5DF2\u5B8C\u6210\u6392\u671F\u6DF1\u5EA6\u8BA4\u77E5\u89E3\u6790\u5E76\u8BC6\u522B ", jsxRuntimeExports.jsx("strong", { children: msg.confirmationAction.trips.length }), " \u8F6E\u5F80\u8FD4\u95ED\u73AF\u3002\u8BF7\u590D\u6838\u4E0A\u65B9\u6392\u671F\u63A8\u65AD\u8868\u683C\uFF0C\u786E\u8BA4\u65E0\u8BEF\u540E\u70B9\u51FB\u4E0B\u65B9\u6309\u94AE\u5E94\u7528\u5230\u5F53\u524D\u8868\u683C\u5E76\u81EA\u52A8\u5BF9\u9F50\u53D1\u7968\u5FC5\u586B\u9879\u3002"] })) }), !msg.confirmationAction.applied ? (jsxRuntimeExports.jsx("div", { className: "aui-confirmation-actions", children: jsxRuntimeExports.jsxs("button", { type: "button", className: "aui-confirmation-btn-primary", disabled: isExecuting, onClick: () => onApplyTripPlans?.(msg.id, msg.confirmationAction), children: ["\u2713 \u786E\u8BA4\u5E94\u7528\u5230\u8868\u683C\u5E76\u5BF9\u9F50\u5B57\u6BB5 (", msg.confirmationAction.trips.length, " \u8F6E Trip)"] }) })) : (jsxRuntimeExports.jsx("div", { className: "aui-confirmation-applied-note", children: jsxRuntimeExports.jsx("span", { children: "\u2713 \u8868\u683C\u5DF2\u6309\u6B64\u6392\u671F\u5B8C\u6210\u65F6\u7A7A\u5206\u7EC4" }) }))] })), msg.confirmationAction && msg.confirmationAction.type === 'APPLY_TRAVEL_REPORTS' && (jsxRuntimeExports.jsxs("div", { className: `aui-confirmation-card ${msg.confirmationAction.applied ? 'is-applied' : ''}`, children: [jsxRuntimeExports.jsxs("div", { className: "aui-confirmation-header", children: [jsxRuntimeExports.jsxs("div", { className: "aui-confirmation-title", children: [jsxRuntimeExports.jsx("span", { className: "aui-confirmation-icon", children: msg.confirmationAction.applied ? '✅' : '📝' }), jsxRuntimeExports.jsx("span", { className: "aui-confirmation-title-text", children: msg.confirmationAction.applied ? '出差总结报告已回填至报销单' : '待确认：一键回填出差报告至报销单 (HITL)' })] }), jsxRuntimeExports.jsxs("span", { className: "aui-confirmation-badge", children: [msg.confirmationAction.reports.length, " \u4EFD\u51FA\u5DEE\u62A5\u544A"] })] }), jsxRuntimeExports.jsx("div", { className: "aui-confirmation-desc", children: msg.confirmationAction.applied ? (jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: ["\u5DF2\u5C06 AI \u64B0\u5199\u7684 ", jsxRuntimeExports.jsx("strong", { children: msg.confirmationAction.reports.length }), " \u4EFD\u51FA\u5DEE\u5DE5\u4F5C\u603B\u7ED3\u62A5\u544A\u6210\u529F\u56DE\u586B\u81F3\u5BF9\u5E94\u51FA\u5DEE\u5355\u7684\u3010\u51FA\u5DEE\u62A5\u544A\u3011\u5B57\u6BB5\u4E2D\u3002", msg.confirmationAction.appliedTime ? `(回填时间: ${msg.confirmationAction.appliedTime})` : ''] })) : (jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: ["AI \u5DF2\u4E3A\u60A8\u6DF1\u5EA6\u64B0\u5199 ", jsxRuntimeExports.jsx("strong", { children: msg.confirmationAction.reports.length }), " \u4EFD\u4E13\u4E1A\u51FA\u5DEE\u62A5\u544A\u3002\u8BF7\u590D\u6838\u4E0A\u65B9\u62A5\u544A\u6B63\u6587\uFF0C\u786E\u8BA4\u65E0\u8BEF\u540E\u70B9\u51FB\u4E0B\u65B9\u6309\u94AE\uFF0C\u4E00\u952E\u540C\u6B65\u56DE\u586B\u5199\u5165\u5BF9\u5E94\u51FA\u5DEE\u8D39\u7528\u62A5\u9500\u5355 (BC) \u7684\u62A5\u544A\u5B57\u6BB5\u4E2D\u3002"] })) }), !msg.confirmationAction.applied ? (jsxRuntimeExports.jsx("div", { className: "aui-confirmation-actions", children: jsxRuntimeExports.jsxs("button", { type: "button", className: "aui-confirmation-btn-primary", disabled: isExecuting, onClick: () => onApplyTravelReports?.(msg.id, msg.confirmationAction), children: ["\u2713 \u786E\u8BA4\u5C06\u62A5\u544A\u4E00\u952E\u56DE\u586B\u81F3\u5BF9\u5E94\u62A5\u9500\u5355 (", msg.confirmationAction.reports.length, " \u4EFD)"] }) })) : (jsxRuntimeExports.jsx("div", { className: "aui-confirmation-applied-note", children: jsxRuntimeExports.jsx("span", { children: "\u2713 \u62A5\u9500\u5355\u7BA1\u7406\u770B\u677F\u4E2D\u5BF9\u5E94\u51FA\u5DEE\u62A5\u544A\u5DF2\u66F4\u65B0\u5C31\u7EEA" }) }))] }))] }))] }, msg.id));
+                                }, title: att.name, children: [jsxRuntimeExports.jsx("span", { children: att.type === 'image' ? '🖼️' : '📄' }), jsxRuntimeExports.jsx("span", { style: { maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: att.name })] }, att.id))) })), isUser ? (jsxRuntimeExports.jsx("div", { style: {
+                                alignSelf: 'flex-end',
+                                maxWidth: '88%',
+                                background: '#2563eb',
+                                color: '#ffffff',
+                                padding: '10px 14px',
+                                borderRadius: '16px 16px 4px 16px',
+                                fontSize: '12.5px',
+                                lineHeight: 1.5,
+                                wordBreak: 'break-word',
+                                whiteSpace: 'pre-wrap',
+                                boxShadow: '0 2px 8px rgba(37, 99, 235, 0.18)'
+                            }, children: msg.text })) : (jsxRuntimeExports.jsxs(Card, { padding: 14, style: {
+                                alignSelf: 'flex-start',
+                                maxWidth: '100%',
+                                width: '100%',
+                                border: '1px solid #e2e8f0',
+                                borderRadius: '16px 16px 16px 4px',
+                                background: '#ffffff',
+                                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.03)',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: '10px'
+                            }, children: [msg.thinking && (jsxRuntimeExports.jsx(ThinkingSection, { thinking: msg.thinking })), msg.toolCalls && msg.toolCalls.length > 0 && (jsxRuntimeExports.jsx("div", { style: { display: 'flex', flexDirection: 'column', gap: '6px' }, children: msg.toolCalls.map((tool) => (jsxRuntimeExports.jsx(ToolCallSection, { toolCall: tool }, tool.id))) })), msg.text && (() => {
+                                    if (msg.text.startsWith('⚠️ 大模型回复异常：')) {
+                                        const parts = msg.text.replace('⚠️ 大模型回复异常：', '').split('\n\n以下为您提取的底层客观数据：');
+                                        const errReason = parts[0]?.trim() || '未能获取大模型有效响应';
+                                        const rest = parts[1] ? `以下为您提取的底层客观数据：\n\n${parts[1].trim()}` : '';
+                                        return (jsxRuntimeExports.jsxs("div", { style: { display: 'flex', flexDirection: 'column', gap: '10px' }, children: [jsxRuntimeExports.jsx(AlertBanner, { theme: "light", variant: "warning", title: "\u5927\u6A21\u578B\u54CD\u5E94\u63D0\u793A", description: errReason }), rest && jsxRuntimeExports.jsx(MarkdownContent, { content: rest, isStreaming: msg.isStreaming })] }));
+                                    }
+                                    return jsxRuntimeExports.jsx(MarkdownContent, { content: msg.text, isStreaming: msg.isStreaming });
+                                })(), msg.confirmationAction && msg.confirmationAction.type === 'APPLY_TRIP_PLANS' && (jsxRuntimeExports.jsx("div", { style: { marginTop: '4px' }, children: !msg.confirmationAction.applied ? (jsxRuntimeExports.jsx(PlanPreviewPattern, { theme: "light", title: "\u51FA\u5DEE\u6392\u671F\u89C4\u5212\u5EFA\u8BAE (HITL)", subtitle: "AI \u5DF2\u8BC6\u522B\u51FA\u5DEE\u5F80\u8FD4\u95ED\u73AF\uFF0C\u8BF7\u590D\u6838\u540E\u70B9\u51FB\u786E\u8BA4\u5E94\u7528\u81F3\u8D39\u7528\u660E\u7EC6\u8868", steps: msg.confirmationAction.trips.map((t, idx) => `Trip ${idx + 1}: ${t.origin || '起点'} ➔ ${t.destination || '目的地'} (${t.startDate || ''} ~ ${t.endDate || ''}, 共 ${t.days || 1} 天)`), badgeLabel: "\u5F85\u786E\u8BA4", proceedLabel: `确认应用到表格 (${msg.confirmationAction.trips.length} 轮 Trip)`, editLabel: "\u4EBA\u5DE5\u5FAE\u8C03", handoffLabel: "\u624B\u52A8\u6392\u671F", onProceed: () => onApplyTripPlans?.(msg.id, msg.confirmationAction) })) : (jsxRuntimeExports.jsx(ActionReceiptPattern, { theme: "light", title: "\u51FA\u5DEE\u6392\u671F\u89C4\u5212\u5DF2\u751F\u6548", stripLabel: "\u6392\u671F\u89C4\u5212", meta: [
+                                            { label: "应用项目", value: `${msg.confirmationAction.trips.length} 轮往返 Trip` },
+                                            { label: "生效时间", value: msg.confirmationAction.appliedTime || "已生效" },
+                                            { label: "执行模式", value: "人类在回路确认 (HITL)" }
+                                        ], before: 0, after: msg.confirmationAction.trips.length, unit: "Trips", autoplay: false })) })), msg.confirmationAction && msg.confirmationAction.type === 'APPLY_TRAVEL_REPORTS' && (jsxRuntimeExports.jsx("div", { style: { marginTop: '4px' }, children: !msg.confirmationAction.applied ? (jsxRuntimeExports.jsx(ApprovalCardPattern, { theme: "light", eyebrow: "\u9700\u8981\u4EBA\u5DE5\u6838\u51C6 (HITL)", badgeLabel: "\u5F85\u56DE\u586B", question: `是否确认将 AI 撰写的 ${msg.confirmationAction.reports.length} 份出差工作总结报告回填至对应报销单？`, options: msg.confirmationAction.reports.map((r, i) => ({
+                                            id: `report_${i}`,
+                                            title: r.title || `出差总结报告 ${i + 1}`,
+                                            sub: r.dest ? `目的地: ${r.dest} · 关联单据: ${r.billId || '待匹配'}` : undefined
+                                        })), approveLabel: `确认回填至单据 (${msg.confirmationAction.reports.length} 份)`, skipLabel: "\u6682\u4E0D\u56DE\u586B", onApprove: () => onApplyTravelReports?.(msg.id, msg.confirmationAction) })) : (jsxRuntimeExports.jsx(ActionReceiptPattern, { theme: "light", title: "\u51FA\u5DEE\u603B\u7ED3\u62A5\u544A\u5DF2\u56DE\u586B", stripLabel: "\u62A5\u544A\u56DE\u586B", meta: [
+                                            { label: "回填单据", value: `${msg.confirmationAction.reports.length} 份出差报告` },
+                                            { label: "生效时间", value: msg.confirmationAction.appliedTime || "已生效" },
+                                            { label: "单据字段", value: "【出差报告】正文" }
+                                        ], before: 0, after: msg.confirmationAction.reports.length, unit: "\u4EFD", autoplay: false })) }))] }))] }, msg.id));
             }) }));
     };
     /**
-     * 5. AssistantComposer: assistant-ui 标准复合输入框
+     * 5. AssistantComposer: Halaska Kit 复合输入框
      */
-    const AssistantComposer = ({ onSendMessage, selectedCount, selectedAmount, contextEnabled, onToggleContext, activeSkill, onDismissSkill, onCopyPromptTemplate, skills, onApplySkill, isExecuting = false, selectedModel = 'gemini-2.0-flash', onSelectModel, onOpenSettings, llmConfig }) => {
+    const AssistantComposer = ({ onSendMessage, selectedCount, selectedAmount, contextEnabled, onToggleContext, activeSkill, onDismissSkill, onCopyPromptTemplate, skills, onApplySkill, isExecuting = false, selectedModel = 'gemini-3.8-flash', onSelectModel, onOpenSettings, llmConfig }) => {
         const [inputText, setInputText] = reactExports.useState('');
         const [attachments, setAttachments] = reactExports.useState([]);
         const [isDragOver, setIsDragOver] = reactExports.useState(false);
@@ -68952,7 +70254,7 @@ JSON 输出格式：
                 : getDefaultModelsForProvider(activeCfg?.provider || 'gemini');
             const list = rawModels.filter(m => m.enabled);
             if (list.length === 0) {
-                const cur = activeCfg?.model || selectedModel || 'gemini-2.0-flash';
+                const cur = activeCfg?.model || selectedModel || 'gemini-3.8-flash';
                 list.push({ id: cur, name: cur, enabled: true });
             }
             if (selectedModel && !list.some(m => m.id === selectedModel)) {
@@ -68966,7 +70268,7 @@ JSON 输出格式：
             }
             return list;
         }, [llmConfig, selectedModel]);
-        // Auto-resize textarea (async rAF to eliminate forced synchronous reflow)
+        // Auto-resize textarea
         reactExports.useEffect(() => {
             const el = textareaRef.current;
             if (!el)
@@ -69080,19 +70382,85 @@ JSON 输出格式：
                 setAttachments((prev) => [...prev, ...newAttachments]);
             }
         };
-        return (jsxRuntimeExports.jsx("div", { className: "aui-composer-container", children: jsxRuntimeExports.jsxs("div", { className: `aui-composer-card ${isDragOver ? 'is-dragover' : ''}`, onDragOver: (e) => { e.preventDefault(); setIsDragOver(true); }, onDragLeave: (e) => { e.preventDefault(); setIsDragOver(false); }, onDrop: (e) => {
+        return (jsxRuntimeExports.jsx("div", { style: { padding: '12px 16px', background: '#ffffff', borderTop: '1px solid #e2e8f0', position: 'relative' }, children: jsxRuntimeExports.jsxs(Card, { padding: 10, style: {
+                    border: isDragOver ? '1px solid #2563eb' : '1px solid #cbd5e1',
+                    borderRadius: tokens.radius.lg,
+                    background: '#ffffff',
+                    boxShadow: '0 2px 10px rgba(0, 0, 0, 0.04)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '8px'
+                }, onDragOver: (e) => { e.preventDefault(); setIsDragOver(true); }, onDragLeave: (e) => { e.preventDefault(); setIsDragOver(false); }, onDrop: (e) => {
                     e.preventDefault();
                     setIsDragOver(false);
                     if (e.dataTransfer?.files)
                         handleFiles(e.dataTransfer.files);
-                }, children: [((contextEnabled && selectedCount > 0) || activeSkill) && (jsxRuntimeExports.jsxs("div", { style: { display: 'flex', flexDirection: 'column', gap: '6px' }, children: [jsxRuntimeExports.jsxs("div", { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center' }, children: [contextEnabled && selectedCount > 0 && (jsxRuntimeExports.jsxs("div", { className: "aui-bubble-context-chip", style: { margin: 0 }, children: [jsxRuntimeExports.jsxs("span", { children: ["\uD83D\uDCCE \u5DF2\u9009\u4E2D ", jsxRuntimeExports.jsx("strong", { children: selectedCount }), " \u7B14\u8D39\u7528 (\u00A5", selectedAmount.toFixed(2), ")"] }), jsxRuntimeExports.jsx("span", { style: { cursor: 'pointer', marginLeft: '4px', color: '#94a3b8' }, onClick: () => onToggleContext(false), title: "\u79FB\u9664\u672C\u6B21\u8F93\u5165\u5173\u8054\u7684\u8D39\u7528", children: "\u2715" })] })), activeSkill && (jsxRuntimeExports.jsxs("div", { className: "aui-bubble-context-chip", style: { margin: 0, background: '#fef3c7', borderColor: '#fde68a', color: '#92400e' }, children: [jsxRuntimeExports.jsxs("span", { children: [activeSkill.icon, " \u6280\u80FD: ", jsxRuntimeExports.jsx("strong", { children: activeSkill.name })] }), jsxRuntimeExports.jsx("span", { style: { cursor: 'pointer', marginLeft: '4px', color: '#b45309' }, onClick: onDismissSkill, title: "\u9000\u51FA\u6280\u80FD", children: "\u2715" })] }))] }), activeSkill && (jsxRuntimeExports.jsxs("div", { style: { background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '8px 10px', fontSize: '11px', color: '#475569' }, children: [jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '3px' }, children: [jsxRuntimeExports.jsxs("span", { style: { fontWeight: 600, color: '#1e293b' }, children: ["\uD83D\uDCA1 ", activeSkill.hintTitle] }), activeSkill.actionText && (jsxRuntimeExports.jsx("button", { type: "button", onClick: onCopyPromptTemplate, style: { background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '2px 6px', fontSize: '10.5px', color: '#2563eb', cursor: 'pointer' }, children: activeSkill.actionText }))] }), jsxRuntimeExports.jsx("div", { style: { fontSize: '10.5px', lineHeight: 1.5 }, children: activeSkill.hintText })] }))] })), attachments.length > 0 && (jsxRuntimeExports.jsx("div", { style: { display: 'flex', flexWrap: 'wrap', gap: '6px' }, children: attachments.map((att) => (jsxRuntimeExports.jsxs("div", { className: "aui-attachment-pill", children: [jsxRuntimeExports.jsx("span", { children: att.type === 'image' ? '🖼️' : '📄' }), jsxRuntimeExports.jsx("span", { style: { maxWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: att.name }), jsxRuntimeExports.jsx("span", { style: { cursor: 'pointer', color: '#94a3b8', marginLeft: '3px' }, onClick: () => setAttachments(prev => prev.filter(a => a.id !== att.id)), children: "\u2715" })] }, att.id))) })), slashMenuOpen && slashMatchingSkills.length > 0 && (jsxRuntimeExports.jsxs("div", { style: { position: 'absolute', bottom: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #cbd5e1', borderRadius: '12px', boxShadow: '0 8px 24px rgba(0,0,0,0.12)', marginBottom: '8px', zIndex: 100, overflow: 'hidden' }, children: [jsxRuntimeExports.jsxs("div", { style: { padding: '6px 12px', background: '#f8fafc', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', fontSize: '10.5px', color: '#64748b' }, children: [jsxRuntimeExports.jsx("span", { children: "\u526F\u9A7E\u5FEB\u6377\u6280\u80FD (Skills)" }), jsxRuntimeExports.jsx("span", { children: "\u2191\u2193 \u5BFC\u822A \u00B7 Tab/Enter \u786E\u8BA4 \u00B7 Esc \u5173\u95ED" })] }), jsxRuntimeExports.jsx("div", { style: { maxHeight: '180px', overflowY: 'auto' }, children: slashMatchingSkills.map((s, idx) => (jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', cursor: 'pointer', background: idx === slashSelectedIndex ? '#eff6ff' : 'transparent' }, onClick: () => {
+                }, children: [((contextEnabled && selectedCount > 0) || activeSkill) && (jsxRuntimeExports.jsxs("div", { style: { display: 'flex', flexDirection: 'column', gap: '6px' }, children: [jsxRuntimeExports.jsxs("div", { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center' }, children: [contextEnabled && selectedCount > 0 && (jsxRuntimeExports.jsxs(Chip, { selected: true, onRemove: () => onToggleContext(false), style: { background: '#e0f2fe', borderColor: '#bae6fd', color: '#0369a1', fontSize: '11px' }, children: ["\uD83D\uDCCE \u5DF2\u9009\u4E2D ", selectedCount, " \u7B14\u8D39\u7528 (\u00A5", selectedAmount.toFixed(2), ")"] })), activeSkill && (jsxRuntimeExports.jsxs(Tag, { color: "#f59e0b", removable: true, onRemove: onDismissSkill, children: [activeSkill.icon, " \u6280\u80FD: ", activeSkill.name] }))] }), activeSkill && (jsxRuntimeExports.jsxs("div", { style: {
+                                    background: '#f8fafc',
+                                    border: '1px solid #e2e8f0',
+                                    borderRadius: tokens.radius.sm,
+                                    padding: '6px 10px',
+                                    fontSize: '11px',
+                                    color: '#475569'
+                                }, children: [jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '3px' }, children: [jsxRuntimeExports.jsxs("span", { style: { fontWeight: 600, color: '#1e293b' }, children: ["\uD83D\uDCA1 ", activeSkill.hintTitle] }), activeSkill.actionText && (jsxRuntimeExports.jsx(Button, { size: "sm", variant: "secondary", onClick: onCopyPromptTemplate, style: { height: '22px', padding: '0 8px', fontSize: '10.5px' }, children: activeSkill.actionText }))] }), jsxRuntimeExports.jsx("div", { style: { fontSize: '10.5px', lineHeight: 1.4 }, children: activeSkill.hintText })] }))] })), attachments.length > 0 && (jsxRuntimeExports.jsx("div", { style: { display: 'flex', flexWrap: 'wrap', gap: '6px' }, children: attachments.map((att) => (jsxRuntimeExports.jsxs(Chip, { selected: false, onRemove: () => setAttachments(prev => prev.filter(a => a.id !== att.id)), style: { fontSize: '11px' }, children: [jsxRuntimeExports.jsx("span", { children: att.type === 'image' ? '🖼️' : '📄' }), jsxRuntimeExports.jsx("span", { style: { maxWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: att.name })] }, att.id))) })), slashMenuOpen && slashMatchingSkills.length > 0 && (jsxRuntimeExports.jsxs(Card, { padding: 0, style: {
+                            position: 'absolute',
+                            bottom: '100%',
+                            left: 16,
+                            right: 16,
+                            marginBottom: '8px',
+                            zIndex: 100,
+                            borderRadius: tokens.radius.md,
+                            boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+                            border: '1px solid #cbd5e1',
+                            background: '#ffffff',
+                            overflow: 'hidden'
+                        }, children: [jsxRuntimeExports.jsxs("div", { style: { padding: '6px 12px', background: '#f8fafc', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', fontSize: '10.5px', color: '#64748b' }, children: [jsxRuntimeExports.jsx("span", { children: "\u526F\u9A7E\u5FEB\u6377\u6280\u80FD (Skills)" }), jsxRuntimeExports.jsx("span", { children: "\u2191\u2193 \u5BFC\u822A \u00B7 Tab/Enter \u786E\u8BA4 \u00B7 Esc \u5173\u95ED" })] }), jsxRuntimeExports.jsx("div", { style: { maxHeight: '180px', overflowY: 'auto' }, children: slashMatchingSkills.map((s, idx) => (jsxRuntimeExports.jsxs("div", { style: {
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '8px',
+                                        padding: '8px 12px',
+                                        cursor: 'pointer',
+                                        background: idx === slashSelectedIndex ? '#eff6ff' : 'transparent',
+                                        borderBottom: '1px solid #f1f5f9'
+                                    }, onClick: () => {
                                         setInputText((prev) => prev.replace(/(?:^|\s)\/([a-zA-Z0-9_-]*)$/, ''));
                                         setSlashMenuOpen(false);
                                         onApplySkill(s.id);
-                                    }, children: [jsxRuntimeExports.jsx("span", { children: s.icon }), jsxRuntimeExports.jsx("span", { style: { fontFamily: 'monospace', fontWeight: 600, color: '#2563eb', fontSize: '11px' }, children: s.command }), jsxRuntimeExports.jsx("span", { style: { fontWeight: 600, fontSize: '11.5px', color: '#1e293b' }, children: s.name }), jsxRuntimeExports.jsx("span", { style: { fontSize: '10.5px', color: '#64748b', marginLeft: 'auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: s.summary })] }, s.id))) })] })), jsxRuntimeExports.jsx("textarea", { ref: textareaRef, className: "aui-composer-textarea", placeholder: "\u8F93\u5165\u6307\u4EE4\u6216\u5411\u526F\u9A7E\u63D0\u95EE\uFF08\u952E\u5165 '/' \u5524\u51FA\u6280\u80FD\uFF0C\u652F\u6301\u62D6\u62FD\u53D1\u7968/\u6392\u671F\u622A\u56FE\u6216\u9644\u4EF6\uFF09...", rows: 1, value: inputText, onChange: handleTextChange, onKeyDown: handleKeyDown }), jsxRuntimeExports.jsxs("div", { className: "aui-composer-toolbar", children: [jsxRuntimeExports.jsx("input", { type: "file", ref: fileInputRef, style: { display: 'none' }, multiple: true, accept: "image/*,.pdf,.doc,.docx,.xlsx,.xls,.txt,.csv", onChange: (e) => handleFiles(e.target.files) }), jsxRuntimeExports.jsxs("div", { className: "aui-toolbar-left", children: [jsxRuntimeExports.jsx("button", { type: "button", className: "aui-btn-tool", onClick: () => fileInputRef.current?.click(), title: "\u6DFB\u52A0\u53D1\u7968\u56FE\u7247\u3001\u6392\u671F\u6216\u9644\u4EF6\u6587\u4EF6", children: jsxRuntimeExports.jsx("span", { children: "\uFF0B" }) }), jsxRuntimeExports.jsxs("div", { style: { position: 'relative' }, children: [jsxRuntimeExports.jsxs("button", { type: "button", className: `aui-btn-tool ${skillMenuOpen ? 'active' : ''}`, onClick: () => setSkillMenuOpen(!skillMenuOpen), title: "\u9009\u62E9\u526F\u9A7E\u5FEB\u6377\u6280\u80FD (\u6216\u5728\u8F93\u5165\u6846\u952E\u5165 '/')", children: [jsxRuntimeExports.jsx("span", { children: "\u26A1 \u6280\u80FD" }), jsxRuntimeExports.jsx("span", { style: { fontSize: '8px', opacity: 0.7 }, children: "\u25BE" })] }), skillMenuOpen && (jsxRuntimeExports.jsxs("div", { style: { position: 'absolute', bottom: '100%', left: 0, width: '260px', background: '#fff', border: '1px solid #cbd5e1', borderRadius: '12px', boxShadow: '0 8px 24px rgba(0,0,0,0.12)', marginBottom: '8px', zIndex: 100, overflow: 'hidden' }, children: [jsxRuntimeExports.jsx("div", { style: { padding: '6px 12px', background: '#f8fafc', borderBottom: '1px solid #e2e8f0', fontSize: '10.5px', fontWeight: 600, color: '#475569' }, children: "\u9009\u62E9\u526F\u9A7E\u6280\u80FD (Skills)" }), jsxRuntimeExports.jsx("div", { style: { maxHeight: '200px', overflowY: 'auto' }, children: skills.map((s) => (jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', cursor: 'pointer', borderBottom: '1px solid #f1f5f9' }, onClick: () => {
+                                    }, children: [jsxRuntimeExports.jsx("span", { children: s.icon }), jsxRuntimeExports.jsx("span", { style: { fontFamily: tokens.font.mono, fontWeight: 600, color: '#2563eb', fontSize: '11px' }, children: s.command }), jsxRuntimeExports.jsx("span", { style: { fontWeight: 600, fontSize: '11.5px', color: '#1e293b' }, children: s.name }), jsxRuntimeExports.jsx("span", { style: { fontSize: '10.5px', color: '#64748b', marginLeft: 'auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: s.summary })] }, s.id))) })] })), jsxRuntimeExports.jsx("textarea", { ref: textareaRef, placeholder: "\u8F93\u5165\u6307\u4EE4\u6216\u5411\u526F\u9A7E\u63D0\u95EE\uFF08\u952E\u5165 '/' \u5524\u51FA\u6280\u80FD\uFF0C\u652F\u6301\u62D6\u62FD\u53D1\u7968/\u6392\u671F\u622A\u56FE\u6216\u9644\u4EF6\uFF09...", rows: 1, value: inputText, onChange: handleTextChange, onKeyDown: handleKeyDown, style: {
+                            width: '100%',
+                            border: 'none',
+                            outline: 'none',
+                            resize: 'none',
+                            fontSize: '12.5px',
+                            lineHeight: 1.5,
+                            color: '#0f172a',
+                            background: 'transparent',
+                            padding: '4px 2px',
+                            fontFamily: tokens.font.sans,
+                            boxSizing: 'border-box'
+                        } }), jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: '4px', borderTop: '1px solid #f1f5f9' }, children: [jsxRuntimeExports.jsx("input", { type: "file", ref: fileInputRef, style: { display: 'none' }, multiple: true, accept: "image/*,.pdf,.doc,.docx,.xlsx,.xls,.txt,.csv", onChange: (e) => handleFiles(e.target.files) }), jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: '6px' }, children: [jsxRuntimeExports.jsx(IconButton, { icon: jsxRuntimeExports.jsx("span", { style: { fontSize: '16px', fontWeight: 600 }, children: "\uFF0B" }), size: 28, variant: "ghost", label: "\u6DFB\u52A0\u9644\u4EF6\u6587\u4EF6\u6216\u56FE\u7247", onClick: () => fileInputRef.current?.click() }), jsxRuntimeExports.jsxs("div", { style: { position: 'relative' }, children: [jsxRuntimeExports.jsx(Button, { size: "sm", variant: skillMenuOpen ? "secondary" : "ghost", onClick: () => setSkillMenuOpen(!skillMenuOpen), style: { height: '28px', padding: '0 8px', fontSize: '11px' }, children: jsxRuntimeExports.jsx("span", { children: "\u26A1 \u6280\u80FD \u25BE" }) }), skillMenuOpen && (jsxRuntimeExports.jsxs(Card, { padding: 0, style: {
+                                                    position: 'absolute',
+                                                    bottom: '100%',
+                                                    left: 0,
+                                                    width: '260px',
+                                                    marginBottom: '8px',
+                                                    zIndex: 100,
+                                                    borderRadius: tokens.radius.md,
+                                                    boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+                                                    border: '1px solid #cbd5e1',
+                                                    background: '#ffffff',
+                                                    overflow: 'hidden'
+                                                }, children: [jsxRuntimeExports.jsx("div", { style: { padding: '6px 12px', background: '#f8fafc', borderBottom: '1px solid #e2e8f0', fontSize: '10.5px', fontWeight: 600, color: '#475569' }, children: "\u9009\u62E9\u526F\u9A7E\u6280\u80FD (Skills)" }), jsxRuntimeExports.jsx("div", { style: { maxHeight: '200px', overflowY: 'auto' }, children: skills.map((s) => (jsxRuntimeExports.jsxs("div", { style: {
+                                                                display: 'flex',
+                                                                alignItems: 'center',
+                                                                gap: '8px',
+                                                                padding: '8px 12px',
+                                                                cursor: 'pointer',
+                                                                borderBottom: '1px solid #f1f5f9'
+                                                            }, onClick: () => {
                                                                 setSkillMenuOpen(false);
                                                                 onApplySkill(s.id);
-                                                            }, children: [jsxRuntimeExports.jsx("span", { children: s.icon }), jsxRuntimeExports.jsxs("div", { style: { display: 'flex', flexDirection: 'column', overflow: 'hidden' }, children: [jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: '4px' }, children: [jsxRuntimeExports.jsx("span", { style: { fontSize: '11.5px', fontWeight: 600, color: '#1e293b' }, children: s.name }), jsxRuntimeExports.jsx("span", { style: { fontSize: '10px', color: '#2563eb', fontFamily: 'monospace' }, children: s.command })] }), jsxRuntimeExports.jsx("div", { style: { fontSize: '10px', color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: s.summary })] })] }, s.id))) })] }))] }), onSelectModel && (jsxRuntimeExports.jsxs("select", { value: selectedModel, onChange: (e) => {
+                                                            }, children: [jsxRuntimeExports.jsx("span", { children: s.icon }), jsxRuntimeExports.jsxs("div", { style: { display: 'flex', flexDirection: 'column', overflow: 'hidden' }, children: [jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: '4px' }, children: [jsxRuntimeExports.jsx("span", { style: { fontSize: '11.5px', fontWeight: 600, color: '#1e293b' }, children: s.name }), jsxRuntimeExports.jsx("span", { style: { fontSize: '10px', color: '#2563eb', fontFamily: tokens.font.mono }, children: s.command })] }), jsxRuntimeExports.jsx("div", { style: { fontSize: '10px', color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: s.summary })] })] }, s.id))) })] }))] }), onSelectModel && (jsxRuntimeExports.jsxs("select", { value: selectedModel, onChange: (e) => {
                                             const val = e.target.value;
                                             if (val === '__manage_models__') {
                                                 onOpenSettings?.();
@@ -69102,16 +70470,22 @@ JSON 输出格式：
                                         }, title: "\u5207\u6362\u5F53\u524D\u751F\u6548\u6A21\u578B (\u53EF\u5728\u8BBE\u7F6E\u4E2D\u81EA\u52A8\u8BC6\u522B\u4E0E\u52FE\u9009\u5C55\u793A\u7684\u6A21\u578B)", style: {
                                             background: '#ffffff',
                                             border: '1px solid #e2e8f0',
-                                            borderRadius: '8px',
+                                            borderRadius: tokens.radius.sm,
                                             fontSize: '11px',
+                                            fontFamily: tokens.font.sans,
                                             fontWeight: 500,
                                             color: '#334155',
-                                            padding: '3px 6px',
+                                            padding: '2px 6px',
                                             outline: 'none',
                                             cursor: 'pointer',
-                                            maxWidth: '180px',
-                                            height: '24px'
-                                        }, children: [enabledModels.map(m => (jsxRuntimeExports.jsxs("option", { value: m.id, children: [m.isReasoning ? '🧠 ' : (m.isVision ? '👁️ ' : ''), m.name || m.id] }, m.id))), jsxRuntimeExports.jsx("option", { disabled: true, style: { color: '#cbd5e1' }, children: "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500" }), jsxRuntimeExports.jsx("option", { value: "__manage_models__", children: "\u2699\uFE0F \u63A2\u6D4B\u4E0E\u914D\u7F6E\u66F4\u591A\u6A21\u578B..." })] }))] }), jsxRuntimeExports.jsx("button", { type: "button", className: "aui-btn-send", onClick: handleSend, disabled: isExecuting || (!inputText.trim() && attachments.length === 0), title: "\u53D1\u9001\u6D88\u606F (Enter)", children: isExecuting ? jsxRuntimeExports.jsx("span", { className: "aui-tool-spinner", style: { borderColor: '#fff', borderTopColor: 'transparent' } }) : '▲' })] })] }) }));
+                                            maxWidth: '170px',
+                                            height: '28px'
+                                        }, children: [enabledModels.map(m => (jsxRuntimeExports.jsxs("option", { value: m.id, children: [m.isReasoning ? '🧠 ' : (m.isVision ? '👁️ ' : ''), m.name || m.id] }, m.id))), jsxRuntimeExports.jsx("option", { disabled: true, style: { color: '#cbd5e1' }, children: "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500" }), jsxRuntimeExports.jsx("option", { value: "__manage_models__", children: "\u2699\uFE0F \u63A2\u6D4B\u4E0E\u914D\u7F6E\u66F4\u591A\u6A21\u578B..." })] }))] }), jsxRuntimeExports.jsx(Button, { size: "sm", variant: "primary", onClick: handleSend, disabled: isExecuting || (!inputText.trim() && attachments.length === 0), style: {
+                                    height: '28px',
+                                    minWidth: '34px',
+                                    padding: '0 10px',
+                                    borderRadius: tokens.radius.sm
+                                }, children: isExecuting ? jsxRuntimeExports.jsx(Orb, { variant: "pulse", size: 14, color: "#ffffff" }) : jsxRuntimeExports.jsx("span", { children: "\u25B2" }) })] })] }) }));
     };
     /**
      * 6. AssistantChatPanel: 主交互顶层组件，包含会话切换 Header、Thread 视口与 Composer
@@ -69129,7 +70503,7 @@ JSON 输出格式：
                 setLlmConfig(getLlmConfig());
             }
         }, [llmConfigProp, selectedModel]);
-        // 监听全局配置变更事件，即使 React 没有重新传参也能毫秒级无感响应
+        // 监听全局配置变更事件，毫秒级响应
         reactExports.useEffect(() => {
             const handleConfigChange = (e) => {
                 const updated = e?.detail || getLlmConfig();
@@ -69144,7 +70518,7 @@ JSON 输出格式：
                 return;
             const handleOutsideClick = (e) => {
                 const target = e.target;
-                if (!target.closest('.yn-gemini-history-dropdown') && !target.closest('.aui-history-trigger-btn')) {
+                if (!target.closest('.aui-history-menu') && !target.closest('.aui-history-btn')) {
                     setHistoryMenuOpen(false);
                 }
             };
@@ -69175,41 +70549,98 @@ JSON 输出格式：
                 });
             }
         }, [onOpenSettings, onSelectModel]);
-        return (jsxRuntimeExports.jsxs("div", { className: "aui-root", children: [jsxRuntimeExports.jsxs("div", { className: "yn-bem-ai-panel-header", children: [jsxRuntimeExports.jsxs("div", { className: "yn-bem-ai-title-wrap", children: [jsxRuntimeExports.jsx("span", { className: "yn-gemini-sparkle-icon", children: "\u2726" }), jsxRuntimeExports.jsx("span", { style: { fontWeight: 600, fontSize: '13px' }, children: "AI \u667A\u80FD\u526F\u9A7E" }), currentSession.title && (jsxRuntimeExports.jsxs("span", { style: { fontSize: '11px', color: '#64748b', fontWeight: 400, maxWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: currentSession.title, children: ["\u00B7 ", currentSession.title] }))] }), jsxRuntimeExports.jsxs("div", { className: "aui-header-actions", children: [jsxRuntimeExports.jsx("button", { type: "button", className: "aui-header-action-btn", onClick: () => {
-                                        setHistoryMenuOpen(false);
-                                        onNewSession();
-                                    }, title: "\u5F00\u542F\u65B0\u4F1A\u8BDD (Start new chat)", "aria-label": "\u65B0\u4F1A\u8BDD", children: jsxRuntimeExports.jsx("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", width: "16", height: "16", fill: "none", children: jsxRuntimeExports.jsxs("g", { fill: "transparent", stroke: "currentColor", strokeLinejoin: "round", strokeWidth: "2", children: [jsxRuntimeExports.jsx("path", { d: "M11 4H7.2c-1.12 0-1.68 0-2.108.218-.376.192-.682.498-.874.874C4 5.52 4 6.08 4 7.2v9.6c0 1.12 0 1.68.218 2.108.192.376.498.682.874.874C5.52 20 6.08 20 7.2 20h9.6c1.12 0 1.68 0 2.108-.218.376-.192.682-.498.874-.874C20 18.48 20 17.92 20 16.8V13", strokeLinecap: "round" }), jsxRuntimeExports.jsx("path", { d: "M9 15v-2.586c0-.265.105-.52.293-.707l8.043-8.043c.78-.78 2.047-.78 2.828 0l.172.172c.78.78.78 2.047 0 2.828l-8.043 8.043c-.188.188-.442.293-.707.293H9z", strokeLinecap: "square" })] }) }) }), jsxRuntimeExports.jsx("button", { type: "button", className: `aui-header-action-btn aui-history-trigger-btn ${historyMenuOpen ? 'is-active' : ''}`, onClick: (e) => {
-                                        e.stopPropagation();
-                                        setHistoryMenuOpen(!historyMenuOpen);
-                                    }, title: "\u5386\u53F2\u4F1A\u8BDD", "aria-label": "\u5386\u53F2\u4F1A\u8BDD", children: jsxRuntimeExports.jsx("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", width: "16", height: "16", fill: "currentColor", children: jsxRuntimeExports.jsx("path", { d: "M12 4C9.25 4 6.83 5.39 5.38 7.5H8v2H2v-6h2V6c1.82-2.43 4.73-4 8-4 5.52 0 10 4.48 10 10s-4.48 10-10 10c-4.76 0-8.74-3.33-9.75-7.78l1.95-.44C5.01 17.34 8.19 20 12 20c4.42 0 8-3.58 8-8s-3.58-8-8-8zm-1 4h2v3.59l3.21 3.2-1.42 1.42-3.79-3.8V8z" }) }) }), jsxRuntimeExports.jsx("button", { type: "button", className: "aui-header-action-btn", onClick: handleOpenSettings, title: "\u8BBE\u7F6E\u4E0E\u6A21\u578B\u53C2\u6570 (Settings)", "aria-label": "\u8BBE\u7F6E", children: jsxRuntimeExports.jsx("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", width: "16", height: "16", fill: "currentColor", children: jsxRuntimeExports.jsx("path", { d: "M10.54 1.75h2.92l1.57 2.36c.11.17.32.25.53.21l2.53-.59 2.17 2.17-.58 2.54c-.05.2.04.41.21.53l2.36 1.57v2.92l-2.36 1.57c-.17.12-.26.33-.21.53l.58 2.54-2.17 2.17-2.53-.59c-.21-.04-.42.04-.53.21l-1.57 2.36h-2.92l-1.58-2.36c-.11-.17-.32-.25-.52-.21l-2.54.59-2.17-2.17.58-2.54c.05-.2-.03-.41-.21-.53l-2.35-1.57v-2.92L4.1 8.97c.18-.12.26-.33.21-.53L3.73 5.9 5.9 3.73l2.54.59c.2.04.41-.04.52-.21l1.58-2.36zm1.07 2l-.98 1.47C10.05 6.08 9 6.5 7.99 6.27l-1.46-.34-.6.6.33 1.46c.24 1.01-.18 2.07-1.05 2.64l-1.46.98v.78l1.46.98c.87.57 1.29 1.63 1.05 2.64l-.33 1.46.6.6 1.46-.34c1.01-.23 2.06.19 2.64 1.05l.98 1.47h.78l.97-1.47c.58-.86 1.63-1.28 2.65-1.05l1.45.34.61-.6-.34-1.46c-.23-1.01.18-2.07 1.05-2.64l1.47-.98v-.78l-1.47-.98c-.87-.57-1.28-1.63-1.05-2.64l.34-1.46-.61-.6-1.45.34c-1.02.23-2.07-.19-2.65-1.05l-.97-1.47h-.78zM12 10.5c-.83 0-1.5.67-1.5 1.5s.67 1.5 1.5 1.5c.82 0 1.5-.67 1.5-1.5s-.68-1.5-1.5-1.5zM8.5 12c0-1.93 1.56-3.5 3.5-3.5 1.93 0 3.5 1.57 3.5 3.5s-1.57 3.5-3.5 3.5c-1.94 0-3.5-1.57-3.5-3.5z" }) }) }), onClose && (jsxRuntimeExports.jsx("button", { type: "button", className: "aui-header-action-btn", onClick: onClose, title: "\u5173\u95ED", "aria-label": "\u5173\u95ED", children: jsxRuntimeExports.jsx("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", width: "16", height: "16", fill: "currentColor", children: jsxRuntimeExports.jsx("path", { d: "M10.59 12L4.54 5.96l1.42-1.42L12 10.59l6.04-6.05 1.42 1.42L13.41 12l6.05 6.04-1.42 1.42L12 13.41l-6.04 6.05-1.42-1.42L10.59 12z" }) }) })), historyMenuOpen && (jsxRuntimeExports.jsxs("div", { className: "yn-gemini-history-dropdown", style: { display: 'flex' }, onClick: (e) => e.stopPropagation(), children: [jsxRuntimeExports.jsxs("div", { className: "yn-gemini-menu-item", onClick: () => {
+        return (jsxRuntimeExports.jsx(ThemeProvider, { theme: "light", children: jsxRuntimeExports.jsx(AccentContext.Provider, { value: "#2563eb", children: jsxRuntimeExports.jsxs("div", { className: "aui-root", style: {
+                        display: 'flex',
+                        flexDirection: 'column',
+                        width: '100%',
+                        height: '100%',
+                        background: '#ffffff',
+                        fontFamily: tokens.font.sans,
+                        position: 'relative',
+                        overflow: 'hidden'
+                    }, children: [jsxRuntimeExports.jsxs("div", { style: {
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                padding: '10px 14px',
+                                borderBottom: '1px solid #e2e8f0',
+                                background: '#ffffff',
+                                position: 'relative',
+                                zIndex: 20
+                            }, children: [jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }, children: [jsxRuntimeExports.jsx(Orb, { variant: "spark", size: 18, color: "#2563eb" }), jsxRuntimeExports.jsx("span", { style: { fontWeight: 600, fontSize: '13px', color: '#0f172a' }, children: "AI \u667A\u80FD\u526F\u9A7E" }), currentSession.title && (jsxRuntimeExports.jsx(Badge, { variant: "secondary", style: {
+                                                fontSize: '11px',
+                                                maxWidth: '130px',
+                                                overflow: 'hidden',
+                                                textOverflow: 'ellipsis',
+                                                whiteSpace: 'nowrap'
+                                            }, title: currentSession.title, children: currentSession.title }))] }), jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: '2px' }, children: [jsxRuntimeExports.jsx(IconButton, { icon: jsxRuntimeExports.jsx(NewChatIcon, {}), size: 28, variant: "ghost", label: "\u5F00\u542F\u65B0\u4F1A\u8BDD (Start new chat)", onClick: () => {
                                                 setHistoryMenuOpen(false);
                                                 onNewSession();
-                                            }, children: [jsxRuntimeExports.jsx("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", width: "15", height: "15", fill: "none", style: { color: '#475569', flexShrink: 0 }, children: jsxRuntimeExports.jsxs("g", { fill: "transparent", stroke: "currentColor", strokeLinejoin: "round", strokeWidth: "2", children: [jsxRuntimeExports.jsx("path", { d: "M11 4H7.2c-1.12 0-1.68 0-2.108.218-.376.192-.682.498-.874.874C4 5.52 4 6.08 4 7.2v9.6c0 1.12 0 1.68.218 2.108.192.376.498.682.874.874C5.52 20 6.08 20 7.2 20h9.6c1.12 0 1.68 0 2.108-.218.376-.192.682-.498.874-.874C20 18.48 20 17.92 20 16.8V13", strokeLinecap: "round" }), jsxRuntimeExports.jsx("path", { d: "M9 15v-2.586c0-.265.105-.52.293-.707l8.043-8.043c.78-.78 2.047-.78 2.828 0l.172.172c.78.78.78 2.047 0 2.828l-8.043 8.043c-.188.188-.442.293-.707.293H9z", strokeLinecap: "square" })] }) }), jsxRuntimeExports.jsx("span", { style: { fontSize: '12px', fontWeight: 500, color: '#0f172a' }, children: "Start new chat" })] }), jsxRuntimeExports.jsx("div", { className: "yn-gemini-menu-divider" }), jsxRuntimeExports.jsx("div", { className: "yn-gemini-history-list", children: sessions.map((s) => (jsxRuntimeExports.jsxs("div", { className: `yn-gemini-menu-item ${s.id === currentSession.id ? 'is-active' : ''}`, style: { justifyContent: 'space-between' }, onClick: () => {
+                                            } }), jsxRuntimeExports.jsx("span", { className: "aui-history-btn", children: jsxRuntimeExports.jsx(IconButton, { icon: jsxRuntimeExports.jsx(HistoryIcon, {}), size: 28, variant: historyMenuOpen ? "secondary" : "ghost", label: "\u5386\u53F2\u4F1A\u8BDD", onClick: (e) => {
+                                                    e.stopPropagation();
+                                                    setHistoryMenuOpen(!historyMenuOpen);
+                                                } }) }), jsxRuntimeExports.jsx(IconButton, { icon: jsxRuntimeExports.jsx(SettingsIcon, {}), size: 28, variant: "ghost", label: "\u8BBE\u7F6E\u4E0E\u6A21\u578B\u53C2\u6570 (Settings)", onClick: handleOpenSettings }), onClose && (jsxRuntimeExports.jsx(IconButton, { icon: jsxRuntimeExports.jsx(CloseIcon, {}), size: 28, variant: "ghost", label: "\u5173\u95ED", onClick: onClose }))] }), historyMenuOpen && (jsxRuntimeExports.jsxs(Card, { padding: 6, className: "aui-history-menu", style: {
+                                        position: 'absolute',
+                                        top: '44px',
+                                        right: '12px',
+                                        width: '260px',
+                                        zIndex: 1000,
+                                        borderRadius: tokens.radius.md,
+                                        boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+                                        border: '1px solid #cbd5e1',
+                                        background: '#ffffff'
+                                    }, onClick: (e) => e.stopPropagation(), children: [jsxRuntimeExports.jsxs("div", { style: {
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                gap: '8px',
+                                                padding: '8px 10px',
+                                                cursor: 'pointer',
+                                                borderRadius: tokens.radius.sm,
+                                                transition: `background ${motion.fast}`
+                                            }, onClick: () => {
+                                                setHistoryMenuOpen(false);
+                                                onNewSession();
+                                            }, children: [jsxRuntimeExports.jsx(NewChatIcon, {}), jsxRuntimeExports.jsx("span", { style: { fontSize: '12px', fontWeight: 500, color: '#0f172a' }, children: "Start new chat" })] }), jsxRuntimeExports.jsx(Divider, { style: { margin: '4px 0' } }), jsxRuntimeExports.jsx("div", { style: { maxHeight: '220px', overflowY: 'auto' }, children: sessions.map((s) => (jsxRuntimeExports.jsxs("div", { style: {
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'space-between',
+                                                    padding: '7px 10px',
+                                                    cursor: 'pointer',
+                                                    borderRadius: tokens.radius.sm,
+                                                    background: s.id === currentSession.id ? '#eff6ff' : 'transparent'
+                                                }, onClick: () => {
                                                     setHistoryMenuOpen(false);
                                                     onSelectSession(s.id);
-                                                }, children: [jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden', minWidth: 0 }, children: [jsxRuntimeExports.jsx("span", { style: { fontSize: '13px', color: '#64748b', flexShrink: 0, fontFamily: 'monospace' }, children: "\u2261" }), jsxRuntimeExports.jsx("span", { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '12px' }, children: s.title || '未命名会话' })] }), sessions.length > 1 && (jsxRuntimeExports.jsx("span", { className: "yn-gemini-session-del", onClick: (e) => {
+                                                }, children: [jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden', minWidth: 0 }, children: [jsxRuntimeExports.jsx("span", { style: { fontSize: '12px', color: '#64748b', fontFamily: tokens.font.mono }, children: "\u2261" }), jsxRuntimeExports.jsx("span", { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '12px', color: '#1e293b' }, children: s.title || '未命名会话' })] }), sessions.length > 1 && (jsxRuntimeExports.jsx("span", { style: { cursor: 'pointer', color: '#94a3b8', fontSize: '12px', padding: '0 4px' }, onClick: (e) => {
                                                             e.stopPropagation();
                                                             onDeleteSession(s.id);
-                                                        }, title: "\u5220\u9664\u4F1A\u8BDD", children: "\u2715" }))] }, s.id))) }), jsxRuntimeExports.jsx("div", { className: "yn-gemini-menu-divider" }), jsxRuntimeExports.jsxs("div", { className: "yn-gemini-menu-item", style: { justifyContent: 'space-between' }, onClick: handleOpenSettings, children: [jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: '8px' }, children: [jsxRuntimeExports.jsx("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", width: "15", height: "15", fill: "currentColor", style: { color: '#64748b', flexShrink: 0 }, children: jsxRuntimeExports.jsx("path", { d: "M10.54 1.75h2.92l1.57 2.36c.11.17.32.25.53.21l2.53-.59 2.17 2.17-.58 2.54c-.05.2.04.41.21.53l2.36 1.57v2.92l-2.36 1.57c-.17.12-.26.33-.21.53l.58 2.54-2.17 2.17-2.53-.59c-.21-.04-.42.04-.53.21l-1.57 2.36h-2.92l-1.58-2.36c-.11-.17-.32-.25-.52-.21l-2.54.59-2.17-2.17.58-2.54c.05-.2-.03-.41-.21-.53l-2.35-1.57v-2.92L4.1 8.97c.18-.12.26-.33.21-.53L3.73 5.9 5.9 3.73l2.54.59c.2.04.41-.04.52-.21l1.58-2.36zm1.07 2l-.98 1.47C10.05 6.08 9 6.5 7.99 6.27l-1.46-.34-.6.6.33 1.46c.24 1.01-.18 2.07-1.05 2.64l-1.46.98v.78l1.46.98c.87.57 1.29 1.63 1.05 2.64l-.33 1.46.6.6 1.46-.34c1.01-.23 2.06.19 2.64 1.05l.98 1.47h.78l.97-1.47c.58-.86 1.63-1.28 2.65-1.05l1.45.34.61-.6-.34-1.46c-.23-1.01.18-2.07 1.05-2.64l1.47-.98v-.78l-1.47-.98c-.87-.57-1.28-1.63-1.05-2.64l.34-1.46-.61-.6-1.45.34c-1.02.23-2.07-.19-2.65-1.05l-.97-1.47h-.78zM12 10.5c-.83 0-1.5.67-1.5 1.5s.67 1.5 1.5 1.5c.82 0 1.5-.67 1.5-1.5s-.68-1.5-1.5-1.5zM8.5 12c0-1.93 1.56-3.5 3.5-3.5 1.93 0 3.5 1.57 3.5 3.5s-1.57 3.5-3.5 3.5c-1.94 0-3.5-1.57-3.5-3.5z" }) }), jsxRuntimeExports.jsx("span", { style: { fontSize: '12px', color: '#475569' }, children: "Settings & Help" })] }), jsxRuntimeExports.jsx("span", { style: { fontSize: '11px', color: '#94a3b8' }, children: "\u203A" })] })] }))] })] }), jsxRuntimeExports.jsx(AssistantThread, { messages: currentSession.messages, employeeName: employeeName, onSuggestionClick: onSuggestionClick, onImagePreview: (url) => setPreviewImageUrl(url), onApplyTripPlans: onApplyTripPlans, onApplyTravelReports: onApplyTravelReports, isExecuting: isExecuting }), jsxRuntimeExports.jsx(AssistantComposer, { onSendMessage: onSendMessage, selectedCount: selectedExpenseCount, selectedAmount: selectedExpenseAmount, contextEnabled: attachedExpenseContextEnabled, onToggleContext: onToggleExpenseContext, activeSkill: activeSkill, onDismissSkill: onDismissSkill, onCopyPromptTemplate: onCopyPromptTemplate, skills: skills, onApplySkill: (sid) => onApplySkill?.(sid), isExecuting: isExecuting, selectedModel: selectedModel || llmConfig.model, onSelectModel: (newModel) => {
-                        const cfg = getLlmConfig();
-                        cfg.model = newModel;
-                        saveLlmConfig(cfg);
-                        setLlmConfig(cfg);
-                        onSelectModel?.(newModel);
-                    }, onOpenSettings: handleOpenSettings, llmConfig: llmConfig }), previewImageUrl && (jsxRuntimeExports.jsxs("div", { style: {
-                        position: 'fixed',
-                        top: 0,
-                        left: 0,
-                        right: 0,
-                        bottom: 0,
-                        background: 'rgba(0, 0, 0, 0.75)',
-                        backdropFilter: 'blur(4px)',
-                        zIndex: 1000000,
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        padding: '24px'
-                    }, onClick: () => setPreviewImageUrl(null), children: [jsxRuntimeExports.jsx("img", { src: previewImageUrl, alt: "Preview", style: { maxWidth: '90%', maxHeight: '90%', borderRadius: '12px', boxShadow: '0 8px 32px rgba(0,0,0,0.5)' } }), jsxRuntimeExports.jsx("button", { type: "button", style: { position: 'absolute', top: '20px', right: '20px', background: 'rgba(255,255,255,0.2)', color: '#fff', border: 'none', borderRadius: '50%', width: '36px', height: '36px', fontSize: '18px', cursor: 'pointer' }, onClick: () => setPreviewImageUrl(null), children: "\u2715" })] }))] }));
+                                                        }, title: "\u5220\u9664\u4F1A\u8BDD", children: "\u2715" }))] }, s.id))) }), jsxRuntimeExports.jsx(Divider, { style: { margin: '4px 0' } }), jsxRuntimeExports.jsxs("div", { style: {
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                justifyContent: 'space-between',
+                                                padding: '7px 10px',
+                                                cursor: 'pointer',
+                                                borderRadius: tokens.radius.sm
+                                            }, onClick: handleOpenSettings, children: [jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: '8px' }, children: [jsxRuntimeExports.jsx(SettingsIcon, {}), jsxRuntimeExports.jsx("span", { style: { fontSize: '12px', color: '#475569' }, children: "Settings & Models" })] }), jsxRuntimeExports.jsx("span", { style: { fontSize: '11px', color: '#94a3b8' }, children: "\u203A" })] })] }))] }), jsxRuntimeExports.jsx(AssistantThread, { messages: currentSession.messages, employeeName: employeeName, selectedModel: selectedModel || llmConfig.model, onSuggestionClick: onSuggestionClick, onImagePreview: (url) => setPreviewImageUrl(url), onApplyTripPlans: onApplyTripPlans, onApplyTravelReports: onApplyTravelReports, isExecuting: isExecuting }), jsxRuntimeExports.jsx(AssistantComposer, { onSendMessage: onSendMessage, selectedCount: selectedExpenseCount, selectedAmount: selectedExpenseAmount, contextEnabled: attachedExpenseContextEnabled, onToggleContext: onToggleExpenseContext, activeSkill: activeSkill, onDismissSkill: onDismissSkill, onCopyPromptTemplate: onCopyPromptTemplate, skills: skills, onApplySkill: (sid) => onApplySkill?.(sid), isExecuting: isExecuting, selectedModel: selectedModel || llmConfig.model, onSelectModel: (newModel) => {
+                                const cfg = getLlmConfig();
+                                cfg.model = newModel;
+                                saveLlmConfig(cfg);
+                                setLlmConfig(cfg);
+                                onSelectModel?.(newModel);
+                            }, onOpenSettings: handleOpenSettings, llmConfig: llmConfig }), previewImageUrl && (jsxRuntimeExports.jsxs("div", { style: {
+                                position: 'fixed',
+                                top: 0,
+                                left: 0,
+                                right: 0,
+                                bottom: 0,
+                                background: 'rgba(0, 0, 0, 0.75)',
+                                backdropFilter: 'blur(4px)',
+                                zIndex: 1000000,
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                padding: '24px'
+                            }, onClick: () => setPreviewImageUrl(null), children: [jsxRuntimeExports.jsx("img", { src: previewImageUrl, alt: "Preview", style: { maxWidth: '90%', maxHeight: '90%', borderRadius: tokens.radius.lg, boxShadow: '0 8px 32px rgba(0,0,0,0.5)' } }), jsxRuntimeExports.jsx(IconButton, { icon: jsxRuntimeExports.jsx(CloseIcon, {}), size: 36, variant: "secondary", label: "\u5173\u95ED\u9884\u89C8", onClick: () => setPreviewImageUrl(null), style: { position: 'absolute', top: '20px', right: '20px', background: 'rgba(255,255,255,0.2)', color: '#fff' } })] }))] }) }) }));
     };
 
     const BILL_TYPE_LABELS = {
@@ -76740,7 +78171,8 @@ ${contextDataMarkdown}
    - 第二部分：按每位人员分别展开呈现【各人员费用明细清单 (/list)】（清晰列出序号、日期、费用类型、金额、发票张数、费用说明、发票备注）；
    - 第三部分：若数据源中包含了【系统后台已创建未提交报销单草稿流转状态】，简要说明当前有哪些单据已在草稿箱中；
 3. 保持专业、客观、严谨，格式美观优雅。`;
-                    const res = await callDirectLlmText(systemPrompt, text, undefined, 60000);
+                    // 放宽超时至 240 秒 (4 分钟)，为深度推理模型与大批量账目分析提供充裕的思考与生成时间
+                    const res = await callDirectLlmText(systemPrompt, text, undefined, 240000);
                     const duration = Date.now() - startTime;
                     if (assistMsg.thinking) {
                         assistMsg.thinking.status = 'done';
@@ -80295,7 +81727,7 @@ ${contextDataMarkdown}
         const isYuanNian = typeof window !== 'undefined' && (window.location.hostname.includes('yuanian.com') ||
             mode !== 'UNKNOWN');
         if (isYuanNian) {
-            injectStyles();
+            injectStyles$1();
             initWebMcpSystem(STATE);
             // 挂载报销单预算批量修改 (Mode A, 仅在 #billWrite 呈现)
             createModalDOM(STATE);

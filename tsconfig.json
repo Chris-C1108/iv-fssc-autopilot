@@ -16,7 +16,8 @@
     "rootDir": "./src",
     "declaration": false,
     "sourceMap": true,
-    "jsx": "react-jsx"
+    "jsx": "react-jsx",
+    "allowJs": true
   },
   "include": ["src/**/*"]
 }

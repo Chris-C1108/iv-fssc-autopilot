@@ -98,7 +98,9 @@ function onwarn(warning, warn) {
   // 忽略来自第三方库中无效 @__PURE__ 注解的警告
   if (
     warning.code === 'INVALID_ANNOTATION' || 
-    (warning.message && warning.message.includes('/* @__PURE__ */'))
+    warning.code === 'MODULE_LEVEL_DIRECTIVE' ||
+    (warning.message && warning.message.includes('/* @__PURE__ */')) ||
+    (warning.message && warning.message.includes('"use client"'))
   ) {
     return;
   }
@@ -127,7 +129,7 @@ export default [
         '__MARKSTREAM_CSS__': JSON.stringify(markstreamCss),
         preventAssignment: true
       }),
-      resolve({ browser: true }),
+      resolve({ browser: true, extensions: ['.mjs', '.js', '.jsx', '.json', '.node', '.ts', '.tsx'] }),
       commonjs(),
       typescript({ tsconfig: './tsconfig.json' }),
       ...(ENABLE_OBFUSCATION ? [customObfuscatePlugin(userScriptBanner)] : [])
@@ -151,7 +153,7 @@ export default [
         '__MARKSTREAM_CSS__': JSON.stringify(markstreamCss),
         preventAssignment: true
       }),
-      resolve({ browser: true }),
+      resolve({ browser: true, extensions: ['.mjs', '.js', '.jsx', '.json', '.node', '.ts', '.tsx'] }),
       commonjs(),
       typescript({ tsconfig: './tsconfig.json' })
     ]

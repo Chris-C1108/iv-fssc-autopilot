@@ -77,7 +77,7 @@ ${legsText}
 
 请基于上述真实出行信息，为我撰写该轮出差工作总结报告。`;
 
-            const res = await callDirectLlmText(systemPrompt, userPrompt, signal, 60000);
+            const res = await callDirectLlmText(systemPrompt, userPrompt, signal, 180000);
             if (res.success && res.text && res.text.trim().length > 50) {
                 AutopilotLogger.info(`[TravelReport] LLM 出差报告生成成功 (${res.text.length} 字符)`);
                 return res.text.trim();
