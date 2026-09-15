@@ -7154,12 +7154,14 @@ ${contextDataMarkdown}
 3. 保持专业、客观、严谨，格式美观优雅。`;
 
                 // 放宽超时至 240 秒 (4 分钟)，为深度推理模型与大批量账目分析提供充裕的思考与生成时间
+                const llmStartTime = Date.now();
                 const res = await callDirectLlmText(systemPrompt, text, undefined, 240000);
-                const duration = Date.now() - startTime;
+                const llmDuration = Date.now() - llmStartTime;
+                const sysDuration = llmStartTime - startTime;
                 if (assistMsg.thinking) {
                     assistMsg.thinking.status = 'done';
-                    assistMsg.thinking.durationMs = duration;
-                    assistMsg.thinking.content = '已穿透提取系统真实账目并完成列表整理。';
+                    assistMsg.thinking.durationMs = llmDuration;
+                    assistMsg.thinking.content = `已完成全员账目归集。(系统接口并发拉取: ${(sysDuration / 1000).toFixed(1)}s, 大模型深度思考与输出: ${(llmDuration / 1000).toFixed(1)}s)`;
                     assistMsg.thinking.isExpanded = false;
                 }
                 if (res.success && res.text) {

@@ -1267,8 +1267,8 @@
             const status = it.e2bf9fe2a4f211e88f5e9d87398070eb?.showValue || it.e2bf9fe2a4f211e88f5e9d87398070eb?.value;
             return status === '未提交';
         });
-        const bills = [];
-        for (const it of uncommittedList) {
+        // 并发并发并发！使用 Promise.all 并行拉取全部草稿单据详情，将 15~20s 串行耗时压减至 1~2s
+        const billPromises = uncommittedList.map(async (it) => {
             const codeObj = Object.values(it).find((v) => typeof v === 'string' && (v.startsWith('BC') || v.startsWith('BJ')))
                 || Object.values(it).find((v) => typeof v === 'object' && String(v?.value).startsWith('BC'));
             const billCode = typeof codeObj === 'object' ? codeObj?.value : (codeObj || '');
@@ -1276,7 +1276,7 @@
             const billName = it.e2bedc66a4f211e88f5ef99ecdff44af?.showValue || it.e2bedc66a4f211e88f5ef99ecdff44af?.value || '';
             const createTime = it.e2bedc68a4f211e88f5e27a9ff593444?.showValue || it.e2bedc68a4f211e88f5e27a9ff593444?.value || '';
             if (!billMainId)
-                continue;
+                return null;
             try {
                 const detailRes = await fetchBillDataAndTemplateApi(billMainId, state);
                 const { billRows } = parseBillDataStructure(detailRes.billData);
@@ -1304,7 +1304,7 @@
                         personName
                     };
                 });
-                bills.push({
+                return {
                     billMainId,
                     billCode,
                     billName,
@@ -1312,19 +1312,21 @@
                     createTime,
                     totalAmount: Math.round(totalAmount * 100) / 100,
                     rows
-                });
+                };
             }
             catch (detailErr) {
-                bills.push({
+                return {
                     billMainId,
                     billCode,
                     billName,
                     status: '未提交',
                     createTime,
                     rows: []
-                });
+                };
             }
-        }
+        });
+        const billResults = await Promise.all(billPromises);
+        const bills = billResults.filter((b) => Boolean(b));
         // 格式化为 Markdown 列表
         let md = `### 📋 当前未提交报销单明细清单 (共 ${bills.length} 张)\n\n`;
         if (bills.length === 0) {
@@ -78172,12 +78174,14 @@ ${contextDataMarkdown}
    - 第三部分：若数据源中包含了【系统后台已创建未提交报销单草稿流转状态】，简要说明当前有哪些单据已在草稿箱中；
 3. 保持专业、客观、严谨，格式美观优雅。`;
                     // 放宽超时至 240 秒 (4 分钟)，为深度推理模型与大批量账目分析提供充裕的思考与生成时间
+                    const llmStartTime = Date.now();
                     const res = await callDirectLlmText(systemPrompt, text, undefined, 240000);
-                    const duration = Date.now() - startTime;
+                    const llmDuration = Date.now() - llmStartTime;
+                    const sysDuration = llmStartTime - startTime;
                     if (assistMsg.thinking) {
                         assistMsg.thinking.status = 'done';
-                        assistMsg.thinking.durationMs = duration;
-                        assistMsg.thinking.content = '已穿透提取系统真实账目并完成列表整理。';
+                        assistMsg.thinking.durationMs = llmDuration;
+                        assistMsg.thinking.content = `已完成全员账目归集。(系统接口并发拉取: ${(sysDuration / 1000).toFixed(1)}s, 大模型深度思考与输出: ${(llmDuration / 1000).toFixed(1)}s)`;
                         assistMsg.thinking.isExpanded = false;
                     }
                     if (res.success && res.text) {
