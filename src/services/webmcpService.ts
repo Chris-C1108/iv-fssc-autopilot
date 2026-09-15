@@ -1,4 +1,4 @@
-import { initializeWebMCPPolyfill } from '@mcp-b/webmcp-polyfill';
+import { initializeWebMCPPolyfill } from './webmcpPolyfill';
 import { GlobalState, TripApplicationConfig, InvoiceItem, ExpensePlanOptions, A2UiRootAST } from '../types/state';
 import {
     fetchPersonnelVO,
@@ -120,8 +120,8 @@ export function initWebMcpSystem(state: GlobalState) {
     if (WEBMCP_STATE.initialized) return;
 
     try {
-        // 1. 激活 W3C WebMCP 标准 Polyfill (在 document.modelContext 挂载标准环境)
-        initializeWebMCPPolyfill();
+        // 1. 激活高性能 W3C WebMCP 标准 Polyfill (纯编程式注册，免除声明式表单的全文档 DOM 监听)
+        initializeWebMCPPolyfill({ declarativeForms: false });
         AutopilotLogger.info('[WebMCP] document.modelContext polyfill 已就绪');
     } catch (e: any) {
         AutopilotLogger.warn(`[WebMCP] 初始化 Polyfill 异常: ${e.message}`);

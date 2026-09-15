@@ -1177,8 +1177,8 @@ export function injectWebMcpStyles() {
         .webmcp-settings-backdrop {
             position: fixed;
             inset: 0;
-            z-index: 100020;
-            background: rgba(15, 23, 42, 0.55);
+            z-index: 10000050 !important;
+            background: rgba(15, 23, 42, 0.6);
             backdrop-filter: blur(4px);
             display: flex;
             align-items: center;
@@ -1190,11 +1190,11 @@ export function injectWebMcpStyles() {
             to { opacity: 1; }
         }
         .webmcp-settings-card {
-            width: 540px;
-            max-width: 92vw;
+            width: 640px;
+            max-width: 94vw;
             background: #ffffff;
             border-radius: var(--wm-radius-lg);
-            box-shadow: 0 24px 50px -12px rgba(15, 23, 42, 0.35);
+            box-shadow: 0 24px 50px -12px rgba(15, 23, 42, 0.45);
             border: 1px solid var(--wm-border);
             display: flex;
             flex-direction: column;
@@ -1279,6 +1279,240 @@ export function injectWebMcpStyles() {
             color: #6d28d9;
             font-weight: 600;
         }
+        .webmcp-models-section {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            background: #f8fafc;
+            border: 1px solid var(--wm-border);
+            border-radius: var(--wm-radius-sm);
+            padding: 12px;
+        }
+        .webmcp-models-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .webmcp-models-title-wrap {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .webmcp-models-title {
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--wm-text-primary);
+        }
+        .webmcp-models-badge {
+            font-size: 10px;
+            background: #e0f2fe;
+            color: #0369a1;
+            padding: 1px 6px;
+            border-radius: 10px;
+            font-weight: 600;
+        }
+        .webmcp-models-actions {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .webmcp-btn-detect {
+            background: #ffffff;
+            border: 1px solid #cbd5e1;
+            color: #2563eb;
+            font-size: 11px;
+            font-weight: 600;
+            padding: 4px 10px;
+            border-radius: 6px;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            transition: all 0.15s;
+        }
+        .webmcp-btn-detect:hover {
+            background: #eff6ff;
+            border-color: #3b82f6;
+        }
+        .webmcp-btn-detect:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        .webmcp-btn-add-custom {
+            background: #ffffff;
+            border: 1px solid #cbd5e1;
+            color: #475569;
+            font-size: 11px;
+            font-weight: 500;
+            padding: 4px 8px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .webmcp-btn-add-custom:hover {
+            background: #f1f5f9;
+            color: #1e293b;
+        }
+        .webmcp-models-search-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .webmcp-models-filter {
+            flex: 1;
+            padding: 5px 8px;
+            font-size: 11px;
+            border: 1px solid #cbd5e1;
+            border-radius: 4px;
+            outline: none;
+            background: #ffffff;
+            box-sizing: border-box;
+        }
+        .webmcp-models-filter:focus {
+            border-color: #3b82f6;
+        }
+        .webmcp-btn-quick-toggle {
+            background: none;
+            border: none;
+            font-size: 10.5px;
+            color: #2563eb;
+            cursor: pointer;
+            padding: 2px 4px;
+            white-space: nowrap;
+        }
+        .webmcp-btn-quick-toggle:hover {
+            text-decoration: underline;
+        }
+        .webmcp-models-list {
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+            max-height: 190px;
+            overflow-y: auto;
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 4px;
+        }
+        .webmcp-model-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 6px 8px;
+            border-radius: 4px;
+            border: 1px solid transparent;
+            transition: all 0.1s ease;
+            user-select: none;
+        }
+        .webmcp-model-item:hover {
+            background: #f8fafc;
+        }
+        .webmcp-model-item.is-active-model {
+            background: #f0fdf4;
+            border-color: #86efac;
+        }
+        .webmcp-model-left {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 0;
+            flex: 1;
+            cursor: pointer;
+        }
+        .webmcp-model-checkbox {
+            cursor: pointer;
+            accent-color: #2563eb;
+        }
+        .webmcp-model-info {
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+        }
+        .webmcp-model-title {
+            font-size: 11.5px;
+            font-weight: 600;
+            color: #1e293b;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .webmcp-model-id {
+            font-size: 10px;
+            color: #64748b;
+            font-family: ui-monospace, monospace;
+        }
+        .webmcp-model-right {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-shrink: 0;
+        }
+        .webmcp-model-badge {
+            font-size: 9.5px;
+            padding: 1px 5px;
+            border-radius: 4px;
+            background: #f1f5f9;
+            color: #475569;
+            border: 1px solid #e2e8f0;
+        }
+        .webmcp-model-badge.reasoning {
+            background: #ede9fe;
+            color: #6d28d9;
+            border-color: #ddd6fe;
+        }
+        .webmcp-model-badge.vision {
+            background: #fef3c7;
+            color: #b45309;
+            border-color: #fde68a;
+        }
+        .webmcp-model-badge.active {
+            background: #dcfce7;
+            color: #15803d;
+            border-color: #bbf7d0;
+            font-weight: 700;
+        }
+        .webmcp-model-btn-set-default {
+            background: none;
+            border: none;
+            color: #94a3b8;
+            cursor: pointer;
+            font-size: 10.5px;
+            padding: 2px 5px;
+            border-radius: 4px;
+            transition: all 0.15s;
+        }
+        .webmcp-model-btn-set-default:hover {
+            color: #16a34a;
+            background: #f0fdf4;
+        }
+        .webmcp-model-btn-del {
+            background: none;
+            border: none;
+            color: #94a3b8;
+            cursor: pointer;
+            font-size: 11px;
+            padding: 2px 4px;
+            border-radius: 4px;
+        }
+        .webmcp-model-btn-del:hover {
+            color: #ef4444;
+            background: #fef2f2;
+        }
+        .webmcp-custom-model-box {
+            display: none;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 8px;
+            background: #ffffff;
+            border: 1px dashed #cbd5e1;
+            border-radius: 6px;
+        }
+        .webmcp-custom-model-box.is-open {
+            display: flex;
+        }
+
         .webmcp-test-box {
             display: flex;
             align-items: center;

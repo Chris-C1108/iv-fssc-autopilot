@@ -43,6 +43,22 @@
 
 ---
 
+## Interaction & Output Rules ，The user/reader has ADHD
+
+1. **Immediate Next Action First**: State the primary action or direct answer in the very first sentence.
+2. **Numbered Steps**: Use numbered lists for all multi-step execution tasks.
+3. **Actionable Close**: End exclusively with a single, concrete next step (e.g., command to run or question to answer).
+4. **Suppress Fluff**: Eliminate all conversational filler, preamble, intros, and polite closing statements (no "Sure!", "Hope this helps!").
+5. **State Tracking**: Restate the current task/system status in 1 short sentence per turn when working across steps.
+6. **Explicit Estimates**: Provide time estimates in minutes (avoid vague terms like "soon" or "a bit").
+7. **Visible Progress**: Clearly state what was changed or completed before moving to subsequent steps.
+8. **Objective Error Reporting**: Report errors factually without apologies or narrative framing.
+9. **Item Constraint**: Limit lists and options to a maximum of 5 items per message.
+10. **Zero Meta-Announcements**: Never write transitional announcements explaining what you are about to say.
+
+
+
+---
 ## 0.2 Agentic 开发方法论与架构约束 (Agentic Architecture & Engineering Methodology)
 
 ### 1. 根本原因剖析：为什么 AI 辅助编程工具高频编写硬编码？

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVision FSSC Autopilot (元年云费控极速自动驾驶副驾)
 // @namespace    https://github.com/Chris-C1108/iv-fssc-autopilot
-// @version      4.61.3
+// @version      4.66.1
 // @description  元年云报销全流程超级副驾：①【发票夹 & 费用记录】全量OCR数据穿透补全(乘车时间/里程100%恢复)、自动识别通信费、自由切换分类、早晚行程智能推断、拖拽多附件；②【经费报销单页】丰富多维菜单Item(科目/项目/成本中心/向客户请款)、自动聚合备注TAG(如X2605-001)、智能检索匹配项目、蝴蝶效应引擎链式联动、一键自动持久化保存(saveBillData)并自动刷新单据视图；③【极速模式】首行蝴蝶+内存克隆+单次入库(30倍提速)。
 // @author       Chris-C1108
 // @match        https://ync37.yuanian.com/*
@@ -735,6 +735,7 @@
      * 覆盖：top window 与所有同源 iframe 的 sessionStorage / localStorage / URL 查询参数 / Cookies
      */
     function extractLatestTokens(state) {
+        const sState = state || {};
         let bestLoginToken = '';
         let bestEcsToken = '';
         // 1. 扫描 URL 参数 (最高权威性，宿主打开各微前端应用时直接在 URL 下发最新 TOKEN)
@@ -802,32 +803,32 @@
                 }
             }
             // 3. 扫描并自动同步宿主当前登录用户信息 (包含真实 userId, userName, loginName)
-            if (!state.currentUser?.userId || !state.applicantId) {
+            if (!sState.currentUser?.userId || !sState.applicantId) {
                 try {
                     const uStr = s.getItem('ecs_currentUser');
                     if (uStr) {
                         const u = JSON.parse(uStr);
                         if (u && u.id) {
-                            if (!state.currentUser)
-                                state.currentUser = {};
-                            state.currentUser.userId = u.id;
-                            state.currentUser.userName = u.userName || '';
-                            state.currentUser.loginName = u.loginName || '';
-                            state.applicantId = u.id;
-                            state.applicantName = u.userName || '';
+                            if (!sState.currentUser)
+                                sState.currentUser = {};
+                            sState.currentUser.userId = u.id;
+                            sState.currentUser.userName = u.userName || '';
+                            sState.currentUser.loginName = u.loginName || '';
+                            sState.applicantId = u.id;
+                            sState.applicantName = u.userName || '';
                         }
                     }
                 }
                 catch (e) { }
             }
-            if (bestLoginToken && bestEcsToken && state.applicantId)
+            if (bestLoginToken && bestEcsToken && sState.applicantId)
                 break;
         }
         if (bestLoginToken)
-            state.loginToken = bestLoginToken;
+            sState.loginToken = bestLoginToken;
         if (bestEcsToken)
-            state.ecsToken = bestEcsToken;
-        return { loginToken: state.loginToken || bestLoginToken || '', ecsToken: state.ecsToken || bestEcsToken || '' };
+            sState.ecsToken = bestEcsToken;
+        return { loginToken: sState.loginToken || bestLoginToken || '', ecsToken: sState.ecsToken || bestEcsToken || '' };
     }
     function getHeaders(state, isFormUrlEncoded = false, isMultipart = false, url, customMenuId, data) {
         const { loginToken, ecsToken } = extractLatestTokens(state);
@@ -6321,6 +6322,25 @@
         return dyn;
     }
     /**
+     * 标准化费用记录状态为中文显示
+     * 彻底解决系统底层 REIMBURSE / ALREADY_REIMBURSE / NO_REIMBURSE 显示为英文的问题
+     */
+    function normalizeExpenseStatus(status) {
+        if (!status)
+            return '未报销';
+        const s = String(status).trim().toUpperCase();
+        if (s === 'NO_REIMBURSE' || s === 'UNREIMBURSED' || s === 'DRAFT' || s === '未报销') {
+            return '未报销';
+        }
+        if (s === 'REIMBURSING' || s === 'IN_REIMBURSE' || s === '报销中') {
+            return '报销中';
+        }
+        if (s === 'REIMBURSE' || s === 'ALREADY_REIMBURSE' || s === 'ALREADY_REIMBURSED' || s === 'REIMBURSED' || s === '已报销') {
+            return '已报销';
+        }
+        return status;
+    }
+    /**
      * 智能生成开票日期与行程日期的差异核验预警
      */
     function generateReconciliationNote(rec, inv) {
@@ -6591,11 +6611,12 @@
                 });
                 const rowDatas = ruleData?.rowDatas || {};
                 const invList = rowDatas?.expenseRecordInvoiceList?.value || [];
+                const attachList = rowDatas?.expenseRecordAttachmentList?.value || [];
                 const savedDynamicFields = extractSavedDynamicFields(rowDatas, rec, ruleData?.fullData);
                 const baseRowInfo = {
                     expenseRecordId: rec.expenseRecordId || '',
                     expenseTypeId: rec.expenseTypeId || '',
-                    status: rec.status === 'NO_REIMBURSE' ? '未报销' : (rec.status === 'REIMBURSING' ? '报销中' : (rec.status === 'REIMBURSED' ? '已报销' : (rec.status || '未报销'))),
+                    status: normalizeExpenseStatus(rec.status),
                     expenseTypeName: rec.expenseType?.title?.zh_CN || rec.expenseTypeName || (rec.expenseTypeId === 'UNIDENTIFIED' ? '未知类型' : (rec.expenseTypeId || '')),
                     expenseAmount: rec.amountObj?.amount !== undefined ? rec.amountObj.amount : (rec.amount || ''),
                     businessDate: rec.businessDate ? rec.businessDate.split(' ')[0] : '',
@@ -6607,8 +6628,12 @@
                     savedRowDatas: rowDatas
                 };
                 if (invList.length === 0) {
+                    const fallbackAttach = attachList[0]?.filePath || attachList[0]?.attachmentId || attachList[0]?.id || '';
                     exportRows.push({
                         ...baseRowInfo,
+                        attachmentId: fallbackAttach,
+                        rawAttachmentId: fallbackAttach,
+                        invoiceDataId: '',
                         invoiceIndex: 0,
                         invoiceType: '',
                         invoiceCode: '',
@@ -6641,8 +6666,74 @@
                         const stOn = inv.stationGetOn || inv.from || '';
                         const stOff = inv.stationGetOff || inv.to || '';
                         const train = inv.trainNo || inv.trainNumber || inv.licensePlate || '';
+                        // =========================================================================
+                        // 提取 OCR 裁切特写单票 ID (inv.videoAddress) 与 原始全图上传 ID (inv.filePath)
+                        // 核心逆向机制：
+                        // 1. inv.videoAddress 代表宿主系统 OCR 自动识别并切片裁切后的单张发票特写图像
+                        // 2. inv.filePath 代表用户原始上传的整页/整张大图 (如手机拍摄包含多张票据的桌面照片)
+                        // =========================================================================
+                        const candidateCropIds = [
+                            inv.videoAddress,
+                            invItem.videoAddress,
+                            inv.scanVideoAddress,
+                            inv.imagePath
+                        ];
+                        let attachmentId = '';
+                        for (const cand of candidateCropIds) {
+                            if (typeof cand === 'string' && cand.trim().length > 3) {
+                                const trimmed = cand.trim();
+                                if (/^\d{12,}$/.test(trimmed))
+                                    continue;
+                                if (trimmed === '[object Object]' || trimmed === 'null' || trimmed === 'undefined')
+                                    continue;
+                                attachmentId = trimmed;
+                                break;
+                            }
+                        }
+                        const candidateRawIds = [
+                            inv.filePath,
+                            invItem.filePath,
+                            inv.attachmentPath,
+                            inv.attachmentUrl,
+                            inv.attachmentId,
+                            inv.attachId,
+                            invItem.attachmentId,
+                            invItem.attachmentVO?.attachmentId,
+                            attachList[idx]?.filePath,
+                            attachList[idx]?.attachmentId,
+                            attachList[idx]?.id,
+                            attachList[0]?.filePath,
+                            attachList[0]?.attachmentId,
+                            inv.invoiceAttachmentId,
+                            inv.fileId,
+                            inv.boTemplateAndData?.boData?.area?.rowDatas?.[0]?.datas?.IMAGE_PATH?.value,
+                            inv.boTemplateAndData?.boData?.area?.rowDatas?.[0]?.datas?.FILE_PATH?.value
+                        ];
+                        let rawAttachmentId = '';
+                        for (const cand of candidateRawIds) {
+                            if (typeof cand === 'string' && cand.trim().length > 3) {
+                                const trimmed = cand.trim();
+                                if (/^\d{12,}$/.test(trimmed))
+                                    continue;
+                                if (trimmed === '[object Object]' || trimmed === 'null' || trimmed === 'undefined')
+                                    continue;
+                                rawAttachmentId = trimmed;
+                                break;
+                            }
+                        }
+                        // 互为后备兜底 (如电子发票 PDF 仅有 filePath 无 videoAddress，则裁切特写自动回退为 filePath)
+                        if (!attachmentId) {
+                            attachmentId = rawAttachmentId;
+                        }
+                        if (!rawAttachmentId) {
+                            rawAttachmentId = attachmentId;
+                        }
+                        const invoiceDataId = inv.invoiceDataId || inv.dataId || invItem.invoiceDataId || invItem.dataId || inv.id || '';
                         exportRows.push({
                             ...baseRowInfo,
+                            attachmentId,
+                            rawAttachmentId,
+                            invoiceDataId,
                             invoiceIndex: idx + 1,
                             invoiceType: inv.invoiceTypeAbbreviation || inv.invoiceType || '',
                             invoiceCode: inv.invoiceCode || '',
@@ -6671,7 +6762,7 @@
             catch (err) {
                 exportRows.push({
                     expenseRecordId: rec.expenseRecordId || '',
-                    status: rec.status || '未报销',
+                    status: normalizeExpenseStatus(rec.status),
                     expenseTypeName: rec.expenseType?.title?.zh_CN || '',
                     expenseAmount: rec.amountObj?.amount || '',
                     businessDate: rec.businessDate ? rec.businessDate.split(' ')[0] : '',
@@ -6681,6 +6772,8 @@
                     createDate: rec.createDate || '',
                     savedDynamicFields: {},
                     savedRowDatas: {},
+                    attachmentId: '',
+                    invoiceDataId: '',
                     invoiceIndex: 0,
                     invoiceType: '',
                     invoiceCode: '',
@@ -40555,7 +40648,7 @@
 
     //#endregion
     //#region src/parser/token-clone.ts
-    function isPlainObject$2(value) {
+    function isPlainObject(value) {
     	if (!value || typeof value !== "object") return false;
     	const proto = Object.getPrototypeOf(value);
     	return proto === Object.prototype || proto === null;
@@ -40636,7 +40729,7 @@
     		seen.set(object, value);
     		return value;
     	}
-    	if (!isPlainObject$2(value)) {
+    	if (!isPlainObject(value)) {
     		const cloned$1 = Object.create(Object.getPrototypeOf(value));
     		seen.set(object, cloned$1);
     		copyCloneableOwnDataProperties(object, cloned$1, seen);
@@ -50756,10 +50849,11 @@ ${getMarkstreamCss()}
 
 /* ==========================================================================
    Markdown Content Markdown 内容与表格设计系统 (assistant-ui 特色)
+   彻底重置并收敛 markstream-react 庞大 rem 字号、2rem外边距与表格过度膨胀
    ========================================================================== */
 .aui-markdown {
-    font-size: 12.5px;
-    line-height: 1.65;
+    font-size: 12px;
+    line-height: 1.45;
     color: #1e293b;
     word-break: break-word;
     width: 100%;
@@ -50767,135 +50861,256 @@ ${getMarkstreamCss()}
     overflow-x: auto;
     box-sizing: border-box;
 }
-.aui-markdown p {
-    margin: 0 0 8px 0;
-}
-.aui-markdown p:last-child {
-    margin-bottom: 0;
+
+/* 核心字号与段落重置，彻底禁用 content-visibility 与 800x600 预留画幅 */
+.aui-markdown .markstream-react,
+.aui-markdown .markdown-renderer,
+.aui-markdown :where(.markstream-react).markdown-renderer {
+    font-size: 12px !important;
+    line-height: 1.45 !important;
+    color: #1e293b !important;
+    content-visibility: visible !important;
+    contain: none !important;
+    contain-intrinsic-size: auto !important;
 }
 
-.aui-markdown h1, .aui-markdown h2, .aui-markdown h3, .aui-markdown h4 {
-    color: #0f172a;
-    font-weight: 600;
-    margin: 12px 0 6px 0;
-    letter-spacing: -0.01em;
-}
-.aui-markdown h1 { font-size: 15px; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }
-.aui-markdown h2 { font-size: 14px; }
-.aui-markdown h3 { font-size: 13px; }
-.aui-markdown h4 { font-size: 12.5px; }
-
-.aui-markdown ul, .aui-markdown ol {
-    margin: 4px 0 8px 0;
-    padding-left: 20px;
-}
-.aui-markdown li {
-    margin-bottom: 3px;
+/* 彻底隐藏虚拟化高度占位撑开的巨大空白块 (杜绝 600px 巨型空白) */
+.aui-markdown .node-spacer,
+.aui-markdown .node-placeholder {
+    display: none !important;
+    height: 0 !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
 }
 
-.aui-markdown blockquote {
-    margin: 8px 0;
-    padding: 6px 12px;
-    background: #f8fafc;
-    border-left: 3px solid #3b82f6;
-    border-radius: 0 6px 6px 0;
-    color: #475569;
-    font-size: 12px;
+.aui-markdown p,
+.aui-markdown .paragraph-node {
+    font-size: 12px !important;
+    line-height: 1.45 !important;
+    margin: 0 0 5px 0 !important;
+    color: #1e293b !important;
+}
+.aui-markdown p:last-child,
+.aui-markdown .paragraph-node:last-child {
+    margin-bottom: 0 !important;
 }
 
-.aui-markdown code:not(pre code) {
-    background: #f1f5f9;
-    color: #0f172a;
-    padding: 1px 5px;
-    border-radius: 4px;
-    font-size: 11.5px;
-    border: 1px solid #e2e8f0;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+/* 标题精细化收敛 (严禁 2.25rem/1.5rem 巨型标题在侧栏撑爆) */
+.aui-markdown h1, .aui-markdown .heading-1 {
+    font-size: 14px !important;
+    font-weight: 700 !important;
+    color: #0f172a !important;
+    margin: 8px 0 4px 0 !important;
+    line-height: 1.35 !important;
+    border-bottom: 1px solid #e2e8f0 !important;
+    padding-bottom: 3px !important;
+}
+.aui-markdown h2, .aui-markdown .heading-2 {
+    font-size: 13px !important;
+    font-weight: 600 !important;
+    color: #0f172a !important;
+    margin: 6px 0 3px 0 !important;
+    line-height: 1.35 !important;
+}
+.aui-markdown h3, .aui-markdown .heading-3 {
+    font-size: 12.5px !important;
+    font-weight: 600 !important;
+    color: #0f172a !important;
+    margin: 5px 0 2px 0 !important;
+    line-height: 1.35 !important;
+}
+.aui-markdown h4, .aui-markdown .heading-4,
+.aui-markdown h5, .aui-markdown .heading-5,
+.aui-markdown h6, .aui-markdown .heading-6 {
+    font-size: 12px !important;
+    font-weight: 600 !important;
+    color: #334155 !important;
+    margin: 4px 0 2px 0 !important;
+    line-height: 1.35 !important;
 }
 
-.aui-markdown pre {
-    background: #0f172a;
-    color: #f8fafc;
-    padding: 10px 14px;
-    border-radius: 8px;
-    overflow-x: auto;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-    font-size: 11px;
-    line-height: 1.5;
-    margin: 8px 0;
+/* 分隔线收敛 (杜绝 3rem/48px 巨型外边距) */
+.aui-markdown hr,
+.aui-markdown .thematic-break,
+.aui-markdown .hr-node {
+    margin: 8px 0 !important;
+    border: none !important;
+    border-top: 1px solid #e2e8f0 !important;
+    height: 1px !important;
 }
 
-/* assistant-ui 高质感排期与对账表格 */
+/* 列表与引用 (收紧行距与嵌套列表外边距，彻底解决行间距巨大) */
+.aui-markdown ul, .aui-markdown ol,
+.aui-markdown .list-node,
+.aui-markdown .markstream-react ul, .aui-markdown .markstream-react ol {
+    margin: 3px 0 5px 0 !important;
+    padding-left: 18px !important;
+}
+.aui-markdown li,
+.aui-markdown .list-item {
+    font-size: 12px !important;
+    line-height: 1.45 !important;
+    margin: 2px 0 !important;
+    padding: 0 !important;
+    color: #1e293b !important;
+}
+/* 彻底压平宽松列表 (Loose Lists) 中 li 嵌套 p 带来的巨大空行 */
+.aui-markdown li > p,
+.aui-markdown li > .paragraph-node,
+.aui-markdown .list-item > p,
+.aui-markdown .list-item > .paragraph-node {
+    margin: 0 !important;
+    line-height: 1.45 !important;
+    display: inline !important;
+}
+.aui-markdown li > ul,
+.aui-markdown li > ol,
+.aui-markdown .list-item > .list-node {
+    margin: 2px 0 2px 12px !important;
+    padding-left: 0 !important;
+}
+
+/* 强制重置 Tailwind 注入的巨大外边距类名 */
+.aui-markdown .my-8,
+.aui-markdown .my-5,
+.aui-markdown .my-4 {
+    margin-top: 6px !important;
+    margin-bottom: 6px !important;
+}
+.aui-markdown .my-2 {
+    margin-top: 2px !important;
+    margin-bottom: 2px !important;
+}
+.aui-markdown .mb-4 {
+    margin-bottom: 6px !important;
+}
+.aui-markdown .mt-2 {
+    margin-top: 4px !important;
+}
+
+.aui-markdown blockquote,
+.aui-markdown .blockquote-node {
+    margin: 5px 0 !important;
+    padding: 4px 8px !important;
+    background: #f8fafc !important;
+    border-left: 3px solid #3b82f6 !important;
+    border-radius: 0 4px 4px 0 !important;
+    color: #475569 !important;
+    font-size: 11.5px !important;
+    line-height: 1.45 !important;
+}
+
+/* 行内与块级代码 */
+.aui-markdown code:not(pre code),
+.aui-markdown .inline-code {
+    background: #f1f5f9 !important;
+    color: #0f172a !important;
+    padding: 1px 4px !important;
+    border-radius: 3px !important;
+    font-size: 11px !important;
+    border: 1px solid #e2e8f0 !important;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+}
+.aui-markdown pre,
+.aui-markdown .code-block-node {
+    background: #0f172a !important;
+    color: #f8fafc !important;
+    padding: 8px 10px !important;
+    border-radius: 6px !important;
+    overflow-x: auto !important;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+    font-size: 11px !important;
+    line-height: 1.45 !important;
+    margin: 6px 0 !important;
+}
+
+/* ==========================================================================
+   assistant-ui 高质感排期与对账表格重塑 (彻底修复表格巨型字号与2rem边距)
+   ========================================================================== */
+.aui-markdown .table-node-wrapper,
 .aui-markdown-table-wrapper {
-    overflow-x: auto;
-    max-width: 100%;
-    margin: 10px 0;
-    border: 1px solid #e2e8f0;
-    border-radius: 10px;
-    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.03);
-    background: #ffffff;
+    overflow-x: auto !important;
+    max-width: 100% !important;
+    margin: 6px 0 !important;
+    border: 1px solid #e2e8f0 !important;
+    border-radius: 6px !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03) !important;
+    background: #ffffff !important;
 }
 
-.aui-markdown-table,
 .aui-markdown table,
-.markstream table {
-    width: 100%;
-    min-width: 480px;
-    border-collapse: separate;
-    border-spacing: 0;
-    font-size: 11.5px;
-    line-height: 1.4;
-    text-align: left;
-    margin: 8px 0;
-    border: 1px solid #e2e8f0;
-    border-radius: 8px;
-    overflow: hidden;
+.aui-markdown .table-node,
+.aui-markdown .markstream-react table,
+.aui-markdown table.my-8,
+.aui-markdown table.text-sm {
+    width: 100% !important;
+    min-width: 100% !important;
+    border-collapse: collapse !important;
+    font-size: 11px !important;
+    line-height: 1.35 !important;
+    text-align: left !important;
+    margin: 0 !important;
+    border: none !important;
+    border-radius: 0 !important;
 }
 
-.aui-markdown-table th,
 .aui-markdown th,
-.markstream th {
-    background: #f8fafc;
-    color: #334155;
-    font-weight: 600;
-    padding: 8px 12px;
-    border-bottom: 1px solid #e2e8f0;
-    white-space: nowrap;
-    position: sticky;
-    top: 0;
-}
-.aui-markdown-table th:not(:last-child),
-.aui-markdown-table td:not(:last-child),
-.aui-markdown th:not(:last-child),
-.aui-markdown td:not(:last-child),
-.markstream th:not(:last-child),
-.markstream td:not(:last-child) {
-    border-right: 1px solid #f1f5f9;
+.aui-markdown .table-node th,
+.aui-markdown .table-node thead th {
+    background: #f8fafc !important;
+    color: #475569 !important;
+    font-weight: 600 !important;
+    font-size: 10.5px !important;
+    padding: 4px 6px !important;
+    border-bottom: 1px solid #e2e8f0 !important;
+    border-right: 1px solid #f1f5f9 !important;
+    white-space: nowrap !important;
+    position: sticky !important;
+    top: 0 !important;
+    line-height: 1.3 !important;
+    text-align: left !important;
 }
 
-.aui-markdown-table td,
 .aui-markdown td,
-.markstream td {
-    padding: 7px 12px;
-    border-bottom: 1px solid #f1f5f9;
-    color: #1e293b;
-    font-variant-numeric: tabular-nums;
+.aui-markdown .table-node td,
+.aui-markdown .table-node tbody td {
+    padding: 3px 6px !important;
+    border-bottom: 1px solid #f1f5f9 !important;
+    border-right: 1px solid #f1f5f9 !important;
+    color: #1e293b !important;
+    font-size: 10.5px !important;
+    line-height: 1.35 !important;
+    font-variant-numeric: tabular-nums !important;
+    white-space: normal !important;
+    word-break: break-all !important;
 }
 
-.aui-markdown-table tbody tr:nth-child(even),
+/* 单元格内部文本节点字号收敛 */
+.aui-markdown .table-node td *,
+.aui-markdown .table-node th * {
+    font-size: 10.5px !important;
+    line-height: 1.3 !important;
+}
+
+.aui-markdown th:last-child,
+.aui-markdown td:last-child,
+.aui-markdown .table-node th:last-child,
+.aui-markdown .table-node td:last-child {
+    border-right: none !important;
+}
+
 .aui-markdown tbody tr:nth-child(even),
-.markstream tbody tr:nth-child(even) {
-    background: #fbfcfd;
+.aui-markdown .table-node tbody tr:nth-child(even) {
+    background: #fafbfc !important;
 }
-.aui-markdown-table tbody tr:hover,
 .aui-markdown tbody tr:hover,
-.markstream tbody tr:hover {
-    background: #eff6ff;
+.aui-markdown .table-node tbody tr:hover {
+    background: #eff6ff !important;
 }
-.aui-markdown-table tbody tr:last-child td,
 .aui-markdown tbody tr:last-child td,
-.markstream tbody tr:last-child td {
-    border-bottom: none;
+.aui-markdown .table-node tbody tr:last-child td {
+    border-bottom: none !important;
 }
 
 /* ==========================================================================
@@ -51098,6 +51313,7 @@ ${ASSISTANT_UI_STYLES}
     display: none;
     flex-direction: column;
     overflow: hidden;
+    contain: strict;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     color: var(--coss-fg-default);
     animation: ynFadeIn 0.15s var(--coss-ease);
@@ -51749,6 +51965,7 @@ ${ASSISTANT_UI_STYLES}
     overflow: auto;
     position: relative;
     background: #ffffff;
+    contain: layout style paint;
 }
 
 .yn-bem-table {
@@ -52209,18 +52426,23 @@ td.yn-bem-cell-interactive {
     border-color: #000000;
 }
 
+/* 列头处于筛选浮层打开状态时的粘性层级提升 (保证绝对高于任何表格 sticky 列与行) */
+th.yn-bem-th-popover-open {
+    z-index: 10000 !important;
+}
+
 /* 列头筛选下拉浮层 (Vercel Popover) */
 .yn-bem-filter-popover {
     position: absolute;
     top: calc(100% + 5px);
     left: 0;
-    min-width: 220px;
-    max-width: 320px;
+    min-width: 230px;
+    max-width: 340px;
     background: #ffffff;
-    border: 1px solid #eaeaea;
-    border-radius: 6px;
-    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
-    z-index: 100;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    box-shadow: 0 14px 36px -4px rgba(0, 0, 0, 0.24), 0 4px 12px rgba(0, 0, 0, 0.1);
+    z-index: 10001 !important;
     padding: 8px;
     display: flex;
     flex-direction: column;
@@ -52230,6 +52452,12 @@ td.yn-bem-cell-interactive {
     cursor: default;
     animation: ynFadeIn 0.12s ease-out;
     box-sizing: border-box;
+}
+/* 右对齐列的筛选浮层靠右对齐，防止右边界溢出被截断 */
+th[style*="text-align:right"] .yn-bem-filter-popover,
+th[style*="text-align: right"] .yn-bem-filter-popover {
+    left: auto;
+    right: 0;
 }
 .yn-bem-filter-popover-search {
     width: 100%;
@@ -53198,26 +53426,50 @@ td.yn-bem-cell-interactive {
 /* 多级分组展示、纯 CSS 折叠与单据流向 Tag 样式系统 (Vercel 质感) */
 /* ============================================================ */
 
-/* 分组表头容器与行 (现代视口外剔除优化，极大释放主线程渲染负载) */
+/* 分组表头容器与虚拟占位行 (Native Virtual Scroll Engine) */
+.yn-bem-virtual-tbody {
+    border-bottom: 2px solid #e5e7eb;
+}
+tr.yn-bem-vscroll-spacer {
+    padding: 0 !important;
+    margin: 0 !important;
+    border: none !important;
+    background: transparent !important;
+}
+tr.yn-bem-vscroll-spacer td {
+    padding: 0 !important;
+    margin: 0 !important;
+    border: none !important;
+    background: transparent !important;
+}
 .yn-bem-group-tbody {
     border-bottom: 2px solid #e5e7eb;
     content-visibility: auto;
-    contain-intrinsic-size: 0 42px;
+    contain-intrinsic-size: 0 160px;
+}
+.yn-bem-chunk-tbody {
+    content-visibility: auto;
+    contain-intrinsic-size: 0 450px;
 }
 .yn-bem-group-header-row {
-    background: #f8fafc;
-    border-top: 1px solid #e2e8f0;
-    border-bottom: 1px solid #cbd5e1;
+    background: #edf2f7;
+    border-top: 2px solid #cbd5e1;
+    border-bottom: 1px solid #94a3b8;
     user-select: none;
 }
+.yn-bem-group-header-row:hover td {
+    background: #e2e8f0 !important;
+}
 .yn-bem-group-header-cell {
+    background: #edf2f7 !important;
     padding: 8px 16px !important;
     font-size: 13px;
-    font-weight: 600;
-    color: #1e293b;
+    font-weight: 700;
+    color: #0f172a;
     position: sticky;
     left: 0;
-    z-index: 10;
+    z-index: 15;
+    border-left: 4px solid #2563eb !important;
 }
 .yn-bem-group-header-content {
     display: inline-flex;
@@ -53247,7 +53499,8 @@ td.yn-bem-cell-interactive {
     background: #e2e8f0;
     color: #0f172a;
 }
-.yn-bem-group-tbody.is-collapsed .yn-bem-group-toggle-btn {
+.yn-bem-group-tbody.is-collapsed .yn-bem-group-toggle-btn,
+.yn-bem-group-header-row.is-collapsed .yn-bem-group-toggle-btn {
     transform: rotate(-90deg);
 }
 
@@ -53314,14 +53567,16 @@ td.yn-bem-cell-interactive {
 
 /* 二级子分组头 (Trip + 费用类型) */
 .yn-bem-subgroup-header-row {
-    background: #fdfdfd;
-    border-bottom: 1px dashed #cbd5e1;
+    background: #f1f5f9;
+    border-bottom: 1px dashed #94a3b8;
 }
 .yn-bem-subgroup-header-cell {
+    background: #f1f5f9 !important;
     padding: 6px 16px 6px 36px !important;
     font-size: 12px;
     font-weight: 600;
-    color: #475569;
+    color: #334155;
+    border-left: 4px solid #64748b !important;
 }
 
 /* 单据流向徽章 (BC vs BJ) */
@@ -53746,6 +54001,7 @@ td.yn-bem-cell-interactive {
     height: calc(100vh - 46px);
     min-height: 0;
     overflow: hidden;
+    contain: layout paint;
     transition: margin-right 0.25s cubic-bezier(0.16, 1, 0.3, 1);
     position: relative;
 }
@@ -54128,13 +54384,14 @@ td.yn-bem-cell-interactive {
 /* AI 助手侧边栏左边缘拖拽把手 (自由调整宽度) */
 .yn-bem-ai-resizer {
     position: absolute;
-    left: -4px;
+    left: -6px;
     top: 0;
     bottom: 0;
-    width: 8px;
+    width: 12px;
     cursor: col-resize;
     z-index: 1000000;
     user-select: none;
+    touch-action: none;
     transition: background-color 0.15s ease;
 }
 .yn-bem-ai-resizer:hover,
@@ -54143,8 +54400,8 @@ td.yn-bem-cell-interactive {
     box-shadow: 0 0 8px rgba(37, 99, 235, 0.6);
 }
 .yn-bem-ai-resizer.is-resizing {
-    width: 14px;
-    left: -7px;
+    width: 16px;
+    left: -8px;
 }
 #yn-bem-ai-panel-wrap.is-resizing {
     transition: none !important;
@@ -54324,11 +54581,41 @@ body.yn-resizing-active {
 }
 
 /* Gemini AI 助手面板头部会话历史菜单 (Screenshot 4) */
-.yn-gemini-header-right {
+.yn-gemini-header-right,
+.aui-header-actions {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 4px;
     position: relative;
+}
+.aui-header-action-btn {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: #475569;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    padding: 0;
+    transition: all 120ms ease;
+    user-select: none;
+    flex-shrink: 0;
+}
+.aui-header-action-btn:hover {
+    background: #f1f5f9;
+    color: #0f172a;
+    border-color: #e2e8f0;
+}
+.aui-header-action-btn.is-active {
+    background: #eff6ff;
+    color: #2563eb;
+    border-color: #bfdbfe;
+}
+.aui-header-action-btn svg {
+    display: block;
 }
 .yn-gemini-menu-trigger {
     background: transparent;
@@ -54350,15 +54637,15 @@ body.yn-resizing-active {
 }
 .yn-gemini-history-dropdown {
     position: absolute;
-    top: 32px;
+    top: calc(100% + 6px);
     right: 0;
-    width: 240px;
+    width: 280px;
     background: #ffffff;
-    border: 1px solid rgba(0, 0, 0, 0.12);
-    border-radius: 10px;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.14);
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
     z-index: 1000;
-    padding: 6px 0;
+    padding: 6px;
     display: flex;
     flex-direction: column;
     animation: ynBemFadeIn 0.15s ease-out;
@@ -54370,29 +54657,31 @@ body.yn-resizing-active {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 8px 14px;
+    padding: 8px 10px;
+    border-radius: 6px;
     font-size: 12px;
-    color: #1e293b;
+    color: #334155;
     cursor: pointer;
     text-decoration: none;
-    transition: background 100ms ease;
+    transition: background 100ms ease, color 100ms ease;
     user-select: none;
 }
 .yn-gemini-menu-item:hover {
-    background: #f1f5f9;
+    background: #f8fafc;
+    color: #0f172a;
 }
 .yn-gemini-menu-item.is-active {
     background: #eff6ff;
     color: #2563eb;
-    font-weight: 600;
+    font-weight: 500;
 }
 .yn-gemini-menu-divider {
     height: 1px;
-    background: #e2e8f0;
+    background: #f1f5f9;
     margin: 4px 0;
 }
 .yn-gemini-menu-header {
-    padding: 4px 14px;
+    padding: 4px 10px;
     font-size: 10px;
     font-weight: 600;
     color: #94a3b8;
@@ -54400,7 +54689,7 @@ body.yn-resizing-active {
     letter-spacing: 0.05em;
 }
 .yn-gemini-history-list {
-    max-height: 180px;
+    max-height: 220px;
     overflow-y: auto;
 }
 
@@ -54769,6 +55058,146 @@ td.has-save-error {
     font-size: 11px;
     font-weight: 600;
     margin-left: 6px;
+}
+
+/* 发票类型单元格内照片预览微按钮 */
+.yn-bem-invoice-photo-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    margin: 0;
+    border-radius: 4px;
+    border: 1px solid #e5e7eb;
+    background: #ffffff;
+    cursor: pointer;
+    font-size: 11px;
+    line-height: 1;
+    transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+    flex-shrink: 0;
+}
+.yn-bem-invoice-photo-btn:hover {
+    border-color: #3b82f6;
+    background: #eff6ff;
+    transform: scale(1.1);
+    box-shadow: 0 1px 3px rgba(59, 130, 246, 0.25);
+}
+.yn-bem-invoice-photo-btn.no-attachment {
+    opacity: 0.45;
+    filter: grayscale(1);
+    cursor: help;
+}
+.yn-bem-invoice-photo-btn.no-attachment:hover {
+    border-color: #e5e7eb;
+    background: #ffffff;
+    transform: none;
+    box-shadow: none;
+}
+
+/* 全局单例发票原件悬浮预览浮窗 (高度大幅加大以看清发票，宽度自适应，智能视口内防遮挡) */
+.yn-bem-invoice-preview-popover {
+    position: fixed;
+    z-index: 1000000;
+    width: auto;
+    min-width: 360px;
+    max-width: min(720px, 94vw);
+    max-height: 88vh;
+    background: #ffffff;
+    border: 1px solid rgba(0, 0, 0, 0.18);
+    border-radius: 10px;
+    box-shadow: 0 20px 48px -6px rgba(0, 0, 0, 0.28), 0 8px 20px -2px rgba(0, 0, 0, 0.12);
+    pointer-events: auto; /* 支持用户将鼠标平滑移入浮层进行全屏查看或切换原图/裁切图 */
+    overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    animation: ynFadeIn 0.12s ease-out;
+    display: flex;
+    flex-direction: column;
+}
+.yn-bem-invoice-preview-popover .yn-bem-pop-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    background: #fafafa;
+    border-bottom: 1px solid #f0f0f0;
+    flex-shrink: 0;
+}
+.yn-bem-invoice-preview-popover .yn-bem-pop-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: #171717;
+}
+.yn-bem-invoice-preview-popover .yn-bem-pop-tag {
+    font-size: 11px;
+    background: #f4f4f5;
+    color: #52525b;
+    padding: 1px 6px;
+    border-radius: 4px;
+    border: 1px solid #e4e4e7;
+}
+.yn-bem-invoice-preview-popover .yn-bem-pop-img-wrap {
+    width: 100%;
+    min-height: 260px;
+    max-height: min(620px, 75vh);
+    background: #f8fafc;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: auto;
+    padding: 6px;
+    box-sizing: border-box;
+    flex-grow: 1;
+}
+.yn-bem-invoice-preview-popover .yn-bem-pop-img {
+    max-width: 100%;
+    max-height: min(600px, 74vh);
+    width: auto;
+    height: auto;
+    object-fit: contain;
+    opacity: 0;
+    transition: opacity 0.2s ease-in-out;
+}
+.yn-bem-invoice-preview-popover .yn-bem-pop-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 12px;
+    background: #ffffff;
+    border-top: 1px solid #f0f0f0;
+    pointer-events: auto; /* 允许点击在新标签中打开 */
+}
+.yn-bem-invoice-preview-popover .yn-bem-pop-link {
+    font-size: 11px;
+    color: #2563eb;
+    text-decoration: none;
+    font-weight: 500;
+}
+.yn-bem-invoice-preview-popover .yn-bem-pop-link:hover {
+    text-decoration: underline;
+}
+.yn-bem-invoice-preview-popover .yn-bem-pop-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 36px 16px;
+    color: #94a3b8;
+}
+
+/* 费用类型列筛选多维维度分组标题 */
+.yn-bem-filter-group-header {
+    font-size: 11px;
+    font-weight: 600;
+    color: #475569;
+    background: #f1f5f9;
+    padding: 4px 8px;
+    margin: 6px 0 2px 0;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
 }
 `;
 
@@ -56415,6 +56844,20 @@ td.has-save-error {
         background: #f1f5f9;
         color: #64748b;
         border: 1px solid #cbd5e1;
+    }
+    .yn-bem-row-reimbursed {
+        background-color: #fafafa;
+    }
+    .yn-bem-row-reimbursed td {
+        color: #525252;
+    }
+    .yn-bem-row-reimbursed select:disabled,
+    .yn-bem-row-reimbursed input:disabled,
+    .yn-bem-row-reimbursed input[readonly] {
+        background-color: transparent !important;
+        border-color: transparent !important;
+        cursor: default !important;
+        color: #525252 !important;
     }
 `;
     function injectStyles() {
@@ -58846,1176 +59289,438 @@ td.has-save-error {
         }, duration);
     }
 
-    //#region src/schema.ts
-    const FAILED_TO_PARSE_INPUT_ARGUMENTS_MESSAGE = "Failed to parse input arguments";
-    const TOOL_INVOCATION_FAILED_MESSAGE = "Tool was executed but the invocation failed. For example, the script function threw an error";
-    const VALID_TOOL_NAME_RE = /^[A-Za-z0-9_.-]{1,128}$/u;
-    function isPlainObject(value) {
-    	return typeof value === "object" && value !== null && !Array.isArray(value);
-    }
-    function toDomString(value) {
-    	if (typeof value === "symbol") throw new TypeError("Symbol values cannot be converted to a DOMString");
-    	return String(value);
-    }
-    function coerceWebMcpToolDescriptor(tool) {
-    	const name = Reflect.get(tool, "name");
-    	const description = Reflect.get(tool, "description");
-    	const title = Reflect.get(tool, "title");
-    	if (name === void 0) throw new TypeError("Tool \"name\" is required");
-    	if (description === void 0) throw new TypeError("Tool \"description\" is required");
-    	const annotations = Reflect.get(tool, "annotations");
-    	const annotationMembers = isPlainObject(annotations) ? annotations : {};
-    	const inputSchema = Reflect.get(tool, "inputSchema");
-    	const outputSchema = Reflect.get(tool, "outputSchema");
-    	const execute = Reflect.get(tool, "execute");
-    	return {
-    		name: toDomString(name),
-    		...title === void 0 ? {} : { title: toDomString(title).toWellFormed() },
-    		description: toDomString(description),
-    		...inputSchema === void 0 ? {} : { inputSchema },
-    		...outputSchema === void 0 ? {} : { outputSchema },
-    		execute,
-    		...annotations === void 0 ? {} : { annotations: {
-    			...annotationMembers.title === void 0 ? {} : { title: toDomString(annotationMembers.title).toWellFormed() },
-    			readOnlyHint: Boolean(annotationMembers.readOnlyHint),
-    			...annotationMembers.destructiveHint === void 0 ? {} : { destructiveHint: Boolean(annotationMembers.destructiveHint) },
-    			...annotationMembers.idempotentHint === void 0 ? {} : { idempotentHint: Boolean(annotationMembers.idempotentHint) },
-    			...annotationMembers.openWorldHint === void 0 ? {} : { openWorldHint: Boolean(annotationMembers.openWorldHint) },
-    			untrustedContentHint: Boolean(annotationMembers.untrustedContentHint)
-    		} }
-    	};
-    }
-    function createUnknownError(message) {
-    	return new DOMException(message, "UnknownError");
-    }
-    function createToolInvocationFailedError(error) {
-    	return createUnknownError(error instanceof Error ? `${TOOL_INVOCATION_FAILED_MESSAGE}: ${error.message}` : TOOL_INVOCATION_FAILED_MESSAGE);
-    }
-    function createInvalidStateError(message) {
-    	return new DOMException(message, "InvalidStateError");
-    }
-    function validateWebMcpToolDescriptor(tool) {
-    	if (tool.name === "") throw createInvalidStateError("Tool \"name\" must be a non-empty string");
-    	if (typeof tool.name !== "string" || !VALID_TOOL_NAME_RE.test(tool.name)) throw createInvalidStateError("Tool \"name\" must be 1–128 characters and contain only ASCII alphanumeric, underscore, hyphen, or period");
-    	if (typeof tool.description !== "string" || tool.description.length === 0) throw createInvalidStateError("Tool \"description\" must be a non-empty string");
-    	if (typeof tool.execute !== "function") throw new TypeError("Tool \"execute\" must be a function");
-    }
-    function toWebMcpAnnotations(annotations) {
-    	return {
-    		readOnlyHint: annotations.readOnlyHint ?? false,
-    		untrustedContentHint: annotations.untrustedContentHint ?? false
-    	};
-    }
-    function parseChromeToolInput(input) {
-    	try {
-    		const value = JSON.parse(input);
-    		if (Array.isArray(value) || isPlainObject(value)) return value;
-    	} catch {}
-    	throw createUnknownError(FAILED_TO_PARSE_INPUT_ARGUMENTS_MESSAGE);
-    }
-    function serializeChromeToolResult(value) {
-    	if (typeof value === "object" && value !== null || typeof value === "function") try {
-    		const serialized = JSON.stringify(value);
-    		if (serialized) return serialized;
-    	} catch {}
-    	return String(value) || "Operation succeeded";
-    }
-    function withAbortSignal(operation, signal, getAbortReason = () => signal?.reason) {
-    	if (!signal) return operation;
-    	if (signal.aborted) return Promise.reject(getAbortReason());
-    	return new Promise((resolve, reject) => {
-    		const onAbort = () => {
-    			cleanup();
-    			reject(getAbortReason());
-    		};
-    		const cleanup = () => signal.removeEventListener("abort", onAbort);
-    		signal.addEventListener("abort", onAbort, { once: true });
-    		operation.then((value) => {
-    			cleanup();
-    			resolve(value);
-    		}, (error) => {
-    			cleanup();
-    			reject(error);
-    		});
-    	});
-    }
-    function isPotentiallyTrustworthyOrigin(url) {
-    	const originUrl = url.origin === "null" ? url : new URL(url.origin);
-    	const protocol = originUrl.protocol;
-    	if ([
-    		"https:",
-    		"wss:",
-    		"file:",
-    		"chrome-extension:",
-    		"moz-extension:"
-    	].includes(protocol)) return true;
-    	const hostname = originUrl.hostname.toLowerCase();
-    	const ipv4 = hostname.split(".");
-    	const isLoopbackIpv4 = ipv4.length === 4 && ipv4.every((part) => /^\d{1,3}$/u.test(part) && Number(part) <= 255) && Number(ipv4[0]) === 127;
-    	return hostname === "::1" || hostname === "[::1]" || hostname === "localhost" || hostname === "localhost." || hostname.endsWith(".localhost") || hostname.endsWith(".localhost.") || isLoopbackIpv4;
-    }
-    function validatePotentiallyTrustworthyOrigins(origins) {
-    	for (const origin of origins ?? []) {
-    		let parsed;
-    		try {
-    			parsed = new URL(origin);
-    		} catch {
-    			throw new DOMException(`Invalid or untrustworthy origin: ${String(origin)}`, "SecurityError");
-    		}
-    		if (!isPotentiallyTrustworthyOrigin(parsed)) throw new DOMException(`Invalid or untrustworthy origin: ${origin}`, "SecurityError");
-    	}
-    }
-    function validateWebMcpAccess(ownerDocument) {
-    	validateOriginAgentCluster();
-    	if (!ownerDocument) return;
-    	const DOMExceptionConstructor = ownerDocument.defaultView?.DOMException ?? DOMException;
-    	let fullyActive = false;
-    	try {
-    		const ownerWindow = ownerDocument.defaultView;
-    		fullyActive = Boolean(ownerWindow && ownerWindow.document === ownerDocument);
-    	} catch {}
-    	if (!fullyActive) throw new DOMExceptionConstructor("The associated document is not fully active", "InvalidStateError");
-    	const policy = Reflect.get(ownerDocument, "permissionsPolicy") ?? Reflect.get(ownerDocument, "featurePolicy");
-    	if (policy && typeof policy === "object") {
-    		const features = Reflect.get(policy, "features");
-    		const allowsFeature = Reflect.get(policy, "allowsFeature");
-    		if (typeof features === "function" && typeof allowsFeature === "function") {
-    			const supported = Reflect.apply(features, policy, []);
-    			if (Array.isArray(supported) && supported.includes("tools")) {
-    				if (Reflect.apply(allowsFeature, policy, ["tools"]) === true) return;
-    				throw new DOMExceptionConstructor("WebMCP is disabled by Permissions Policy", "NotAllowedError");
-    			}
-    		}
-    	}
-    	const ownerWindow = ownerDocument.defaultView;
-    	if (!ownerWindow || ownerWindow.parent === ownerWindow) return;
-    	try {
-    		ownerWindow.parent.document;
-    		return;
-    	} catch {}
-    	throw new DOMExceptionConstructor("WebMCP in cross-origin frames requires native Permissions Policy support", "NotAllowedError");
-    }
-    function validateOriginAgentCluster() {
-    	if (globalThis.originAgentCluster === false && globalThis.location?.protocol !== "file:") throw new DOMException("", "SecurityError");
-    }
-    function validateExecutableOrigin(origin) {
-    	try {
-    		if (new URL(String(origin)).origin !== "null") return;
-    	} catch {}
-    	throw new DOMException(`Unsupported tool origin: ${String(origin)}`, "NotSupportedError");
-    }
-    function serializeInputSchema(schema) {
-    	if (schema === null || typeof schema !== "object" && typeof schema !== "function") throw new TypeError("inputSchema must be an object");
-    	const serialized = JSON.stringify(schema);
-    	if (serialized === void 0) throw new TypeError("inputSchema must be JSON-serializable");
-    	return serialized;
+    /******************************************************************************
+    Copyright (c) Microsoft Corporation.
+
+    Permission to use, copy, modify, and/or distribute this software for any
+    purpose with or without fee is hereby granted.
+
+    THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+    REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+    AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+    INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+    LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+    OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+    PERFORMANCE OF THIS SOFTWARE.
+    ***************************************************************************** */
+    /* global Reflect, Promise, SuppressedError, Symbol, Iterator */
+
+
+    function __classPrivateFieldGet(receiver, state, kind, f) {
+        if (kind === "a" && !f) throw new TypeError("Private accessor was defined without a getter");
+        if (typeof state === "function" ? receiver !== state || !f : !state.has(receiver)) throw new TypeError("Cannot read private member from an object whose class did not declare it");
+        return kind === "m" ? f : kind === "a" ? f.call(receiver) : f ? f.value : state.get(receiver);
     }
 
-    //#region src/declarative-forms.ts
-    const agentInvokedEvents = /* @__PURE__ */ new WeakSet();
-    const agentResponses = /* @__PURE__ */ new WeakMap();
-    const activeSubmissions = /* @__PURE__ */ new WeakMap();
-    function isAgentInvokedSubmitEvent(event) {
-    	return event.isTrusted && (agentInvokedEvents.has(event) || event.eventPhase !== Event.NONE && event.target instanceof HTMLFormElement && activeSubmissions.has(event.target));
+    function __classPrivateFieldSet(receiver, state, value, kind, f) {
+        if (kind === "m") throw new TypeError("Private method is not writable");
+        if (kind === "a" && !f) throw new TypeError("Private accessor was defined without a setter");
+        if (typeof state === "function" ? receiver !== state || !f : !state.has(receiver)) throw new TypeError("Cannot write private member to an object whose class did not declare it");
+        return (kind === "a" ? f.call(receiver, value) : f ? f.value = value : state.set(receiver, value)), value;
     }
-    function respondWithAgentSubmitEvent(event, agentResponse) {
-    	if (!isAgentInvokedSubmitEvent(event)) throw new DOMException("respondWith() is only available during an agent-invoked submit event", "InvalidStateError");
-    	if (!event.defaultPrevented) throw new DOMException("respondWith() requires preventDefault() during an agent-invoked submit event", "InvalidStateError");
-    	if (event.eventPhase === Event.NONE) throw new DOMException("respondWith() is only available while the submit event is being dispatched", "InvalidStateError");
-    	agentInvokedEvents.add(event);
-    	const response = Promise.resolve(agentResponse);
-    	agentResponses.set(event, response);
-    	if (event.target instanceof HTMLFormElement) activeSubmissions.get(event.target)?.respond(event);
-    }
-    const TEXT_INPUT_TYPES = new Set([
-    	"email",
-    	"password",
-    	"search",
-    	"tel",
-    	"text",
-    	"url"
-    ]);
-    const READONLY_INPUT_TYPES = new Set([
-    	...TEXT_INPUT_TYPES,
-    	"date",
-    	"datetime-local",
-    	"month",
-    	"number",
-    	"time",
-    	"week"
-    ]);
-    function isControl(element) {
-    	return element instanceof HTMLInputElement || element instanceof HTMLSelectElement || element instanceof HTMLTextAreaElement;
-    }
-    function getFormControls(form) {
-    	return Reflect.get(HTMLFormElement.prototype, "elements", form);
-    }
-    function getFormAttribute(form, name) {
-    	return Reflect.apply(Element.prototype.getAttribute, form, [name]);
-    }
-    function formHasAttribute(form, name) {
-    	return Reflect.apply(Element.prototype.hasAttribute, form, [name]);
-    }
-    function isFormConnected(form) {
-    	return Reflect.get(Node.prototype, "isConnected", form);
-    }
+
+    typeof SuppressedError === "function" ? SuppressedError : function (error, suppressed, message) {
+        var e = new Error(message);
+        return e.name = "SuppressedError", e.error = error, e.suppressed = suppressed, e;
+    };
+
+    /**
+     * High-Performance W3C WebMCP (Web Model Context Protocol) Runtime Polyfill
+     *
+     * Optimized for high-throughput enterprise single-page applications (Yuanian FSSC):
+     * 1. WeakMap-based memoized Shadow DOM root caching (O(1) lookup, eliminating 866ms traversal bottleneck)
+     * 2. Task decomposition with window.requestIdleCallback / requestAnimationFrame (preventing UI stutter and INP presentation delays)
+     * 3. Event-driven targeted queries rather than full-document querySelectorAll('*')
+     * 4. Spec-compliant document.modelContext with registerTool, getTools, executeTool, and toolchange events
+     */
+    var _StrictWebMCPContext_instances, _StrictWebMCPContext_tools, _StrictWebMCPContext_testingShim, _StrictWebMCPContext_ontoolchangeHandler, _StrictWebMCPContext_ownerDocument, _StrictWebMCPContext_removeTool, _StrictWebMCPContext_notifyToolsChanged;
+    const POLYFILL_MARKER_PROPERTY = '__isWebMCPPolyfill';
+    const REGISTRATION_SIGNAL_SYMBOL = Symbol('registrationSignal');
+    const REGISTRATION_ABORT_SYMBOL = Symbol('registrationAbort');
+    const REGISTERED_INPUT_SCHEMA_SYMBOL = Symbol('registeredInputSchema');
+    // 1. WeakMap 缓存已探查过的 ShadowRoot (O(1) 秒级查表，彻底消除 866ms 深度递归开销)
+    const shadowRootCache = new WeakMap();
+    /**
+     * 高性能带缓存的 ShadowRoot 查找 (支持针对非自定义元素直接短路)
+     */
     function getOpenShadowRoot(element) {
-    	return Reflect.get(Element.prototype, "shadowRoot", element);
+        if (!element || !(element instanceof Element))
+            return null;
+        if (shadowRootCache.has(element)) {
+            return shadowRootCache.get(element) || null;
+        }
+        // 针对常见标准 HTML 元素（无连字符且非自定义元素）进行首道安全过滤
+        const tagName = element.tagName ? element.tagName.toLowerCase() : '';
+        const isCustomElement = tagName.includes('-');
+        let root = null;
+        try {
+            root = Reflect.get(Element.prototype, 'shadowRoot', element) || element.shadowRoot || null;
+        }
+        catch {
+            root = null;
+        }
+        // 仅当是 open 模式才可被遍历
+        if (root && (root.mode === 'open' || !root.mode)) {
+            shadowRootCache.set(element, root);
+            return root;
+        }
+        // 若非自定义标签且无 shadowRoot，永久缓存 null
+        if (!isCustomElement) {
+            shadowRootCache.set(element, null);
+        }
+        return null;
     }
-    function checkFormValidity(form) {
-    	return Reflect.apply(HTMLFormElement.prototype.checkValidity, form, []);
+    /**
+     * 任务分解调度器：优先利用 requestIdleCallback，降级为 requestAnimationFrame / setTimeout
+     */
+    function scheduleIdleTask(callback, timeoutMs = 300) {
+        if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+            const handle = window.requestIdleCallback(callback, { timeout: timeoutMs });
+            return () => window.cancelIdleCallback(handle);
+        }
+        if (typeof requestAnimationFrame === 'function') {
+            const handle = requestAnimationFrame(() => callback());
+            return () => cancelAnimationFrame(handle);
+        }
+        const timer = setTimeout(callback, 50);
+        return () => clearTimeout(timer);
     }
-    function requestFormSubmit(form, submitter) {
-    	Reflect.apply(HTMLFormElement.prototype.requestSubmit, form, submitter ? [submitter] : []);
+    function currentOrigin() {
+        return typeof globalThis.origin === 'string'
+            ? globalThis.origin
+            : globalThis.location?.origin ?? '';
     }
-    function getControls(form) {
-    	return [...getFormControls(form)].filter((element) => isControl(element) && !element.matches(":disabled") && !("readOnly" in element && element.readOnly && (element instanceof HTMLTextAreaElement || READONLY_INPUT_TYPES.has(element.type))));
+    function parseInputArguments(input) {
+        if (input === undefined || input === null)
+            return {};
+        if (typeof input === 'object')
+            return input;
+        if (typeof input === 'string') {
+            try {
+                return JSON.parse(input);
+            }
+            catch {
+                return input;
+            }
+        }
+        return input;
     }
-    function controlGroups(form) {
-    	const groups = /* @__PURE__ */ new Map();
-    	for (const control of getControls(form)) {
-    		const name = control.name.trim();
-    		const controls = groups.get(name);
-    		if (controls) controls.push(control);
-    		else groups.set(name, [control]);
-    	}
-    	return groups;
+    function serializeOutputResult(value) {
+        if (typeof value === 'string')
+            return value;
+        if (typeof value === 'object' && value !== null) {
+            try {
+                return JSON.stringify(value);
+            }
+            catch {
+                return String(value);
+            }
+        }
+        return String(value ?? '');
     }
-    function labelText(control) {
-    	return [...control.labels ?? []].map((label) => {
-    		const copy = label.cloneNode(true);
-    		if (!(copy instanceof HTMLElement)) return "";
-    		copy.querySelectorAll("button, input, meter, output, progress, select, textarea").forEach((element) => element.remove());
-    		return copy.textContent?.trim() ?? "";
-    	}).filter(Boolean).join("; ");
+    /**
+     * 严格 W3C 规范级 WebMCP Context 实现
+     */
+    class StrictWebMCPContext extends EventTarget {
+        constructor(ownerDocument) {
+            super();
+            _StrictWebMCPContext_instances.add(this);
+            _StrictWebMCPContext_tools.set(this, new Map());
+            _StrictWebMCPContext_testingShim.set(this, null);
+            _StrictWebMCPContext_ontoolchangeHandler.set(this, null);
+            _StrictWebMCPContext_ownerDocument.set(this, void 0);
+            __classPrivateFieldSet(this, _StrictWebMCPContext_ownerDocument, ownerDocument, "f");
+            Object.defineProperty(this, POLYFILL_MARKER_PROPERTY, {
+                value: true,
+                enumerable: false,
+                writable: false,
+                configurable: false
+            });
+        }
+        get ontoolchange() {
+            return __classPrivateFieldGet(this, _StrictWebMCPContext_ontoolchangeHandler, "f");
+        }
+        set ontoolchange(handler) {
+            if (__classPrivateFieldGet(this, _StrictWebMCPContext_ontoolchangeHandler, "f")) {
+                super.removeEventListener('toolchange', __classPrivateFieldGet(this, _StrictWebMCPContext_ontoolchangeHandler, "f"));
+            }
+            __classPrivateFieldSet(this, _StrictWebMCPContext_ontoolchangeHandler, typeof handler === 'function' ? handler : null, "f");
+            if (__classPrivateFieldGet(this, _StrictWebMCPContext_ontoolchangeHandler, "f")) {
+                super.addEventListener('toolchange', __classPrivateFieldGet(this, _StrictWebMCPContext_ontoolchangeHandler, "f"));
+            }
+        }
+        async registerTool(tool, options) {
+            if (!tool || typeof tool !== 'object') {
+                throw new TypeError('Tool descriptor must be an object');
+            }
+            if (!tool.name || typeof tool.name !== 'string') {
+                throw new TypeError('Tool "name" must be a non-empty string');
+            }
+            if (typeof tool.execute !== 'function') {
+                throw new TypeError('Tool "execute" must be a function');
+            }
+            const signal = options?.signal;
+            signal?.throwIfAborted?.();
+            const toolEntry = {
+                name: String(tool.name).trim(),
+                title: tool.title ? String(tool.title) : undefined,
+                description: String(tool.description || ''),
+                inputSchema: tool.inputSchema,
+                outputSchema: tool.outputSchema,
+                annotations: tool.annotations,
+                execute: tool.execute,
+                [REGISTERED_INPUT_SCHEMA_SYMBOL]: tool.inputSchema ? JSON.stringify(tool.inputSchema) : undefined
+            };
+            __classPrivateFieldGet(this, _StrictWebMCPContext_tools, "f").set(toolEntry.name, toolEntry);
+            if (signal) {
+                const onAbort = () => {
+                    __classPrivateFieldGet(this, _StrictWebMCPContext_instances, "m", _StrictWebMCPContext_removeTool).call(this, toolEntry.name);
+                    __classPrivateFieldGet(this, _StrictWebMCPContext_instances, "m", _StrictWebMCPContext_notifyToolsChanged).call(this);
+                };
+                toolEntry[REGISTRATION_SIGNAL_SYMBOL] = signal;
+                toolEntry[REGISTRATION_ABORT_SYMBOL] = onAbort;
+                signal.addEventListener('abort', onAbort, { once: true });
+            }
+            await __classPrivateFieldGet(this, _StrictWebMCPContext_instances, "m", _StrictWebMCPContext_notifyToolsChanged).call(this);
+        }
+        async unregisterTool(name) {
+            const removed = __classPrivateFieldGet(this, _StrictWebMCPContext_instances, "m", _StrictWebMCPContext_removeTool).call(this, name);
+            if (removed) {
+                await __classPrivateFieldGet(this, _StrictWebMCPContext_instances, "m", _StrictWebMCPContext_notifyToolsChanged).call(this);
+            }
+            return removed;
+        }
+        async getTools(options) {
+            const tools = [];
+            for (const tool of __classPrivateFieldGet(this, _StrictWebMCPContext_tools, "f").values()) {
+                const schema = tool[REGISTERED_INPUT_SCHEMA_SYMBOL]
+                    ? JSON.parse(tool[REGISTERED_INPUT_SCHEMA_SYMBOL])
+                    : tool.inputSchema;
+                tools.push({
+                    name: tool.name,
+                    title: tool.title ?? '',
+                    description: tool.description,
+                    inputSchema: schema,
+                    origin: currentOrigin(),
+                    window: globalThis.window,
+                    ...(tool.annotations ? { annotations: tool.annotations } : {})
+                });
+            }
+            tools.sort((a, b) => a.name.localeCompare(b.name));
+            return tools;
+        }
+        async executeTool(toolOrName, inputArgsJson, options) {
+            options?.signal?.throwIfAborted?.();
+            const toolName = typeof toolOrName === 'string' ? toolOrName : toolOrName?.name;
+            if (!toolName) {
+                throw new TypeError('executeTool requires tool name');
+            }
+            const tool = __classPrivateFieldGet(this, _StrictWebMCPContext_tools, "f").get(toolName);
+            if (!tool) {
+                throw new Error(`WebMCP Tool not found: ${toolName}`);
+            }
+            const args = parseInputArguments(inputArgsJson);
+            const result = await Promise.resolve(tool.execute(args));
+            return serializeOutputResult(result);
+        }
+        static dispose(context) {
+            for (const name of Array.from(__classPrivateFieldGet(context, _StrictWebMCPContext_tools, "f").keys())) {
+                __classPrivateFieldGet(context, _StrictWebMCPContext_instances, "m", _StrictWebMCPContext_removeTool).call(context, name);
+            }
+            context.ontoolchange = null;
+        }
     }
-    function commonFieldset(form, controls) {
-    	for (let element = controls[0]?.parentElement; element && element !== form; element = element.parentElement) if (element instanceof HTMLFieldSetElement && controls.every((control) => element.contains(control))) return element;
-    }
-    function parameterDescription(form, controls) {
-    	if (controls.length === 1) {
-    		const control = controls[0];
-    		if (!control) return void 0;
-    		return control.getAttribute("toolparamdescription") || labelText(control) || control.getAttribute("aria-description") || void 0;
-    	}
-    	return commonFieldset(form, controls)?.getAttribute("toolparamdescription") || void 0;
-    }
-    function withDescription(schema, form, controls, extra) {
-    	const description = parameterDescription(form, controls);
-    	const combined = description && extra ? `${description} (${extra})` : description || extra;
-    	return combined ? {
-    		...schema,
-    		description: combined
-    	} : schema;
-    }
-    function validNumberAttribute(input, name) {
-    	const raw = input.getAttribute(name);
-    	if (raw === null || raw.trim() === "") return void 0;
-    	const value = Number(raw);
-    	return Number.isFinite(value) ? value : void 0;
-    }
-    function isStepBaseMultiple(stepBase, step) {
-    	const quotient = stepBase / step;
-    	return Math.abs(quotient - Math.round(quotient)) < Number.EPSILON * 16;
-    }
-    function validPattern(input) {
-    	const pattern = input.getAttribute("pattern");
-    	if (pattern === null) return void 0;
-    	try {
-    		new RegExp(pattern, "v");
-    		return pattern;
-    	} catch {
-    		return;
-    	}
-    }
-    function numberSchema(input, includePattern = true) {
-    	const schema = { type: "number" };
-    	const minimum = validNumberAttribute(input, "min");
-    	const maximum = validNumberAttribute(input, "max");
-    	if (minimum !== void 0) schema.minimum = minimum;
-    	if (maximum !== void 0) schema.maximum = maximum;
-    	const rawStep = input.getAttribute("step");
-    	if (rawStep !== "any") {
-    		const parsedStep = rawStep === null || rawStep === "" ? 1 : Number(rawStep);
-    		const step = Number.isFinite(parsedStep) && parsedStep > 0 ? parsedStep : 1;
-    		const rawValue = Number(input.getAttribute("value"));
-    		if (isStepBaseMultiple(minimum ?? (Number.isFinite(rawValue) ? rawValue : 0), step)) schema.multipleOf = step;
-    	}
-    	const pattern = includePattern ? validPattern(input) : void 0;
-    	if (pattern !== void 0) schema.pattern = pattern;
-    	return schema;
-    }
-    function temporalFormat(input, datePrefix) {
-    	const rawStep = input.getAttribute("step");
-    	const parsedStep = rawStep === null || rawStep === "" ? 60 : Number(rawStep);
-    	const step = Number.isFinite(parsedStep) && parsedStep > 0 ? parsedStep : 60;
-    	if (step < 1) return `${datePrefix}(:[0-5][0-9](\\.[0-9]{1,3})?)?$`;
-    	if (step < 60) return `${datePrefix}(:[0-5][0-9])?$`;
-    	return `${datePrefix}$`;
-    }
-    function optionSchemas(options) {
-    	return {
-    		anyOf: options.map((option) => ({
-    			type: "string",
-    			const: option.value,
-    			title: option.textContent ?? ""
-    		})),
-    		enum: options.map((option) => option.value)
-    	};
-    }
-    function groupChoiceSchemas(controls) {
-    	return {
-    		anyOf: controls.map((control) => {
-    			const title = labelText(control);
-    			return {
-    				type: "string",
-    				const: control.value,
-    				...title ? { title } : {}
-    			};
-    		}),
-    		enum: controls.map((control) => control.value)
-    	};
-    }
-    function parameterSchema(form, controls) {
-    	const first = controls[0];
-    	if (!first) return void 0;
-    	if (controls.length > 1) {
-    		if (!controls.every((control) => control instanceof HTMLInputElement)) return void 0;
-    		if (controls.every((control) => control.type === "checkbox")) return withDescription({
-    			type: "array",
-    			items: {
-    				type: "string",
-    				...groupChoiceSchemas(controls)
-    			},
-    			uniqueItems: true
-    		}, form, controls);
-    		if (controls.every((control) => control.type === "radio")) return withDescription({
-    			type: "string",
-    			...groupChoiceSchemas(controls)
-    		}, form, controls);
-    		return;
-    	}
-    	if (first instanceof HTMLTextAreaElement) return withDescription({ type: "string" }, form, controls);
-    	if (first instanceof HTMLSelectElement) {
-    		const choices = optionSchemas([...first.options]);
-    		return withDescription(first.multiple ? {
-    			type: "array",
-    			items: {
-    				type: "string",
-    				...choices
-    			},
-    			uniqueItems: true
-    		} : {
-    			type: "string",
-    			...choices
-    		}, form, controls);
-    	}
-    	if (TEXT_INPUT_TYPES.has(first.type)) {
-    		const schema = { type: "string" };
-    		const pattern = validPattern(first);
-    		if (pattern !== void 0) schema.pattern = pattern;
-    		return withDescription(schema, form, controls);
-    	}
-    	if (first.type === "hidden") return first.getAttribute("toolparamdescription") ? withDescription({ type: "string" }, form, controls) : void 0;
-    	if (first.type === "number") return withDescription(numberSchema(first), form, controls);
-    	if (first.type === "range") {
-    		const schema = numberSchema(first, false);
-    		schema.minimum ??= 0;
-    		schema.maximum ??= 100;
-    		return withDescription(schema, form, controls);
-    	}
-    	if (first.type === "checkbox") return withDescription({ type: "boolean" }, form, controls);
-    	if (first.type === "radio") return withDescription({
-    		type: "string",
-    		...groupChoiceSchemas([first])
-    	}, form, controls);
-    	if (first.type === "date") return withDescription({
-    		type: "string",
-    		format: "date"
-    	}, form, controls, "Dates MUST be provided in 'YYYY-MM-DD' format.");
-    	if (first.type === "month") return withDescription({
-    		type: "string",
-    		format: "^[0-9]{4}-(0[1-9]|1[0-2])$"
-    	}, form, controls);
-    	if (first.type === "week") return withDescription({
-    		type: "string",
-    		format: "^[0-9]{4}-W(0[1-9]|[1-4][0-9]|5[0-3])$"
-    	}, form, controls);
-    	if (first.type === "time") return withDescription({
-    		type: "string",
-    		format: temporalFormat(first, "^([01][0-9]|2[0-3]):[0-5][0-9]")
-    	}, form, controls);
-    	if (first.type === "datetime-local") return withDescription({
-    		type: "string",
-    		format: temporalFormat(first, "^[0-9]{4}-(0[1-9]|1[0-2])-[0-9]{2}T([01][0-9]|2[0-3]):[0-5][0-9]")
-    	}, form, controls);
-    	if (first.type === "color") return withDescription({
-    		type: "string",
-    		format: "^#[0-9a-zA-Z]{6}$"
-    	}, form, controls);
-    }
-    function synthesizeSchema(form) {
-    	const properties = {};
-    	const required = [];
-    	for (const [name, controls] of controlGroups(form)) {
-    		if (!name) continue;
-    		const schema = parameterSchema(form, controls);
-    		if (!schema) continue;
-    		Object.defineProperty(properties, name, {
-    			configurable: true,
-    			enumerable: true,
-    			value: schema,
-    			writable: true
-    		});
-    		if (controls.some((control) => control.required)) required.push(name);
-    	}
-    	return {
-    		type: "object",
-    		properties,
-    		required
-    	};
-    }
-    function toolDefinition(form) {
-    	return {
-    		name: getFormAttribute(form, "toolname") ?? "",
-    		title: getFormAttribute(form, "tooltitle") ?? "",
-    		description: getFormAttribute(form, "tooldescription") ?? "",
-    		inputSchema: synthesizeSchema(form),
-    		autosubmit: formHasAttribute(form, "toolautosubmit")
-    	};
-    }
-    function toFormString(value) {
-    	if (typeof value === "string" || typeof value === "boolean") return String(value);
-    	if (typeof value === "number" && Number.isFinite(value)) return String(value);
-    }
-    function toFormBoolean(value) {
-    	if (typeof value === "boolean") return value;
-    	if (typeof value === "number" && Number.isInteger(value)) return value !== 0;
-    	if (typeof value !== "string") return void 0;
-    	if (value === "1" || value.toLowerCase() === "true") return true;
-    	if (value === "0" || value.toLowerCase() === "false") return false;
-    }
-    function hasUniqueAllowedValues(value, allowed) {
-    	if (!Array.isArray(value)) return false;
-    	const remaining = new Set(allowed);
-    	for (const item of value) {
-    		const string = toFormString(item);
-    		if (string === void 0 || !remaining.delete(string)) return false;
-    	}
-    	return true;
-    }
-    function inputAcceptsValue(input, value) {
-    	if (value === "") return input.type !== "number" && input.type !== "range";
-    	const probe = input.ownerDocument.createElement("input");
-    	probe.type = input.type;
-    	probe.value = value;
-    	return probe.value !== "";
-    }
-    function validatesParameter(form, controls, value) {
-    	const first = controls[0];
-    	if (!first || !parameterSchema(form, controls)) return false;
-    	if (controls.length > 1) {
-    		if (!controls.every((control) => control instanceof HTMLInputElement)) return false;
-    		if (controls.every((control) => control.type === "checkbox")) return hasUniqueAllowedValues(value, new Set(controls.map((control) => control.value)));
-    		if (controls.every((control) => control.type === "radio")) {
-    			const string = toFormString(value);
-    			return string !== void 0 && controls.some((control) => control.value === string);
-    		}
-    		return false;
-    	}
-    	if (first instanceof HTMLSelectElement) {
-    		const allowed = new Set([...first.options].map((option) => option.value));
-    		if (first.multiple) return hasUniqueAllowedValues(value, allowed);
-    		const string = toFormString(value);
-    		return string !== void 0 && allowed.has(string);
-    	}
-    	if (first instanceof HTMLTextAreaElement) return toFormString(value) !== void 0;
-    	if (first.type === "checkbox") return toFormBoolean(value) !== void 0;
-    	if (first.type === "radio") {
-    		const string = toFormString(value);
-    		return string !== void 0 && first.value === string;
-    	}
-    	const string = toFormString(value);
-    	return string !== void 0 && inputAcceptsValue(first, string);
-    }
-    function dispatchInputAndChange(control) {
-    	control.dispatchEvent(new Event("input", {
-    		bubbles: true,
-    		composed: true
-    	}));
-    	control.dispatchEvent(new Event("change", { bubbles: true }));
-    }
-    function setNativeValue(control, value) {
-    	const prototype = control instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
-    	Object.getOwnPropertyDescriptor(prototype, "value")?.set?.call(control, value);
-    }
-    function setNativeChecked(control, checked) {
-    	Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "checked")?.set?.call(control, checked);
-    }
-    function fillParameter(controls, value) {
-    	const first = controls[0];
-    	if (!first) return;
-    	if (controls.length > 1 && controls.every((control) => control instanceof HTMLInputElement)) {
-    		if (controls.every((control) => control.type === "checkbox") && Array.isArray(value)) {
-    			const checked = new Set(value.map(toFormString));
-    			for (const control of controls) {
-    				const next = checked.has(control.value);
-    				if (control.checked === next) continue;
-    				setNativeChecked(control, next);
-    				dispatchInputAndChange(control);
-    			}
-    			return;
-    		}
-    		const selected = toFormString(value);
-    		const control = controls.find((candidate) => candidate.value === selected);
-    		if (control && !control.checked) {
-    			setNativeChecked(control, true);
-    			dispatchInputAndChange(control);
-    		}
-    		return;
-    	}
-    	if (first instanceof HTMLSelectElement) {
-    		if (first.multiple && Array.isArray(value)) {
-    			const selected = new Set(value.map(toFormString));
-    			let changed = false;
-    			for (const option of first.options) {
-    				const next = selected.has(option.value);
-    				if (option.selected === next) continue;
-    				option.selected = next;
-    				changed = true;
-    			}
-    			if (changed) dispatchInputAndChange(first);
-    			return;
-    		}
-    		const next = toFormString(value);
-    		if (next !== void 0 && first.value !== next) {
-    			first.value = next;
-    			dispatchInputAndChange(first);
-    		}
-    		return;
-    	}
-    	if (first instanceof HTMLInputElement && first.type === "checkbox") {
-    		const next = toFormBoolean(value);
-    		if (next !== void 0 && first.checked !== next) {
-    			setNativeChecked(first, next);
-    			dispatchInputAndChange(first);
-    		}
-    		return;
-    	}
-    	if (first instanceof HTMLInputElement && first.type === "radio") {
-    		if (toFormString(value) === first.value && !first.checked) {
-    			setNativeChecked(first, true);
-    			dispatchInputAndChange(first);
-    		}
-    		return;
-    	}
-    	const next = toFormString(value);
-    	if (next !== void 0 && first.value !== next) {
-    		setNativeValue(first, next);
-    		dispatchInputAndChange(first);
-    	}
-    }
-    function fillForm(form, input) {
-    	if (Array.isArray(input)) throw new TypeError("Declarative tool input must be an object");
-    	const groups = controlGroups(form);
-    	for (const [name, value] of Object.entries(input)) {
-    		const controls = groups.get(name);
-    		if (!controls || !validatesParameter(form, controls, value)) throw new TypeError(`Invalid value for declarative form parameter "${name}"`);
-    	}
-    	for (const [name, value] of Object.entries(input)) fillParameter(groups.get(name) ?? [], value);
-    }
-    function findSubmitter(form) {
-    	return [...getFormControls(form)].find((element) => !element.matches(":disabled") && (element instanceof HTMLButtonElement && element.type === "submit" || element instanceof HTMLInputElement && ["image", "submit"].includes(element.type)));
-    }
-    function validationError(form) {
-    	const failures = [...getFormControls(form)].filter((element) => isControl(element) && element.willValidate && !element.validity.valid).map((control) => `${control.name.trim() || "{unknown}"}: ${control.validationMessage}`).join(". ");
-    	return new DOMException(`Form validation failed: ${failures}`, "UnknownError");
-    }
-    function toolActivatedEvent(toolName) {
-    	const event = new Event("toolactivated");
-    	Object.defineProperty(event, "toolName", {
-    		enumerable: true,
-    		value: toolName
-    	});
-    	return event;
-    }
-    function waitForSubmission(registration, toolName, autosubmit, submitter) {
-    	const { form } = registration;
-    	registration.cancelPending?.(new DOMException("Tool execution cancelled", "UnknownError"));
-    	return new Promise((resolve, reject) => {
-    		let settled = false;
-    		const cleanup = () => {
-    			Reflect.apply(EventTarget.prototype.removeEventListener, form, [
-    				"invalid",
-    				onInvalid,
-    				true
-    			]);
-    			activeSubmissions.delete(form);
-    			if (registration.cancelPending === cancel) delete registration.cancelPending;
-    		};
-    		const finish = (callback) => {
-    			if (settled) return;
-    			settled = true;
-    			cleanup();
-    			callback();
-    		};
-    		const cancel = (reason) => finish(() => reject(reason));
-    		const settleResponse = (response) => {
-    			response.then((value) => finish(() => resolve(value)), (error) => finish(() => reject(error)));
-    		};
-    		const onInvalid = (event) => {
-    			if (!event.isTrusted) return;
-    			queueMicrotask(() => {
-    				if (!checkFormValidity(form)) cancel(validationError(form));
-    			});
-    		};
-    		activeSubmissions.set(form, {
-    			complete(event) {
-    				queueMicrotask(() => {
-    					const response = agentResponses.get(event);
-    					if (response) settleResponse(response);
-    					else if (event.defaultPrevented) cancel(new DOMException("preventDefault() requires respondWith()", "UnknownError"));
-    					else finish(() => resolve(void 0));
-    				});
-    			},
-    			direct() {
-    				finish(() => resolve(void 0));
-    			},
-    			respond(event) {
-    				queueMicrotask(() => {
-    					const response = agentResponses.get(event);
-    					if (response) settleResponse(response);
-    				});
-    			}
-    		});
-    		registration.cancelPending = cancel;
-    		Reflect.apply(EventTarget.prototype.addEventListener, form, [
-    			"invalid",
-    			onInvalid,
-    			true
-    		]);
-    		if (!autosubmit) {
-    			submitter?.focus();
-    			window.dispatchEvent(toolActivatedEvent(toolName));
-    			return;
-    		}
-    		try {
-    			requestFormSubmit(form, submitter);
-    			window.dispatchEvent(toolActivatedEvent(toolName));
-    		} catch (error) {
-    			cancel(error);
-    		}
-    	});
-    }
-    /** Installs the DOM-backed half of the draft Declarative WebMCP API. */
-    function installDeclarativeForms(document, context) {
-    	let active = true;
-    	const registrations = /* @__PURE__ */ new Map();
-    	const blockedDefinitions = /* @__PURE__ */ new Map();
-    	const observers = /* @__PURE__ */ new Map();
-    	const onSubmit = (event) => {
-    		if (!(event instanceof SubmitEvent) || !event.isTrusted || !(event.target instanceof HTMLFormElement)) return;
-    		const submission = activeSubmissions.get(event.target);
-    		if (!submission) return;
-    		agentInvokedEvents.add(event);
-    		submission.complete(event);
-    	};
-    	const onReset = (event) => {
-    		if (!event.isTrusted || !(event.target instanceof HTMLFormElement)) return;
-    		const form = event.target;
-    		queueMicrotask(() => {
-    			if (event.defaultPrevented) return;
-    			registrations.get(form)?.cancelPending?.(new DOMException("Tool execution cancelled by form reset", "UnknownError"));
-    		});
-    	};
-    	function stopObservingRoot(root) {
-    		observers.get(root)?.disconnect();
-    		observers.delete(root);
-    		root.removeEventListener("reset", onReset, true);
-    		root.removeEventListener("submit", onSubmit, true);
-    	}
-    	function observeRoot(root) {
-    		if (observers.has(root)) return;
-    		const observer = new MutationObserver(sync);
-    		observers.set(root, observer);
-    		observer.observe(root, {
-    			attributes: true,
-    			characterData: true,
-    			childList: true,
-    			subtree: true
-    		});
-    		root.addEventListener("reset", onReset, true);
-    		root.addEventListener("submit", onSubmit, true);
-    	}
-    	function sync() {
-    		observeRoot(document);
-    		for (const root of observers.keys()) if (root instanceof ShadowRoot && !Reflect.get(Node.prototype, "isConnected", root.host)) stopObservingRoot(root);
-    		const candidates = /* @__PURE__ */ new Set();
-    		const selected = /* @__PURE__ */ new Map();
-    		const selectedByName = /* @__PURE__ */ new Map();
-    		for (const root of observers.keys()) for (const element of root.querySelectorAll("*")) {
-    			const shadowRoot = getOpenShadowRoot(element);
-    			if (shadowRoot) observeRoot(shadowRoot);
-    			if (!(element instanceof HTMLFormElement) || !formHasAttribute(element, "toolname") || !formHasAttribute(element, "tooldescription") || !isFormConnected(element)) continue;
-    			const form = element;
-    			candidates.add(form);
-    			const definition = toolDefinition(form);
-    			const fingerprint = JSON.stringify(definition);
-    			const blockedFingerprint = blockedDefinitions.get(form);
-    			if (blockedFingerprint === fingerprint) continue;
-    			const retryingChangedDefinition = blockedFingerprint !== void 0;
-    			blockedDefinitions.delete(form);
-    			const existingForm = selectedByName.get(definition.name);
-    			if (existingForm && !retryingChangedDefinition) {
-    				blockedDefinitions.set(form, fingerprint);
-    				continue;
-    			}
-    			if (existingForm) {
-    				const existingSelection = selected.get(existingForm);
-    				if (existingSelection) {
-    					blockedDefinitions.set(existingForm, existingSelection.fingerprint);
-    					selected.delete(existingForm);
-    				}
-    			}
-    			selectedByName.set(definition.name, form);
-    			selected.set(form, {
-    				definition,
-    				fingerprint
-    			});
-    		}
-    		for (const form of blockedDefinitions.keys()) if (!candidates.has(form)) blockedDefinitions.delete(form);
-    		for (const [form, registration] of registrations) if (selected.get(form)?.fingerprint !== registration.fingerprint) {
-    			registration.cancelPending?.(new DOMException("Tool execution cancelled because its form changed", "UnknownError"));
-    			registration.controller.abort();
-    			registrations.delete(form);
-    		}
-    		for (const [form, { definition, fingerprint }] of selected) {
-    			if (registrations.has(form)) continue;
-    			const controller = new AbortController();
-    			const registration = {
-    				controller,
-    				fingerprint,
-    				form
-    			};
-    			registrations.set(form, registration);
-    			context.registerTool({
-    				name: definition.name,
-    				title: definition.title,
-    				description: definition.description,
-    				inputSchema: definition.inputSchema,
-    				execute(input) {
-    					const submitter = findSubmitter(form);
-    					if (!definition.autosubmit && !submitter) throw new DOMException("A declarative form without toolautosubmit requires a submit button", "UnknownError");
-    					fillForm(form, input);
-    					return waitForSubmission(registration, definition.name, definition.autosubmit, submitter);
-    				}
-    			}, { signal: controller.signal }).catch((error) => {
-    				controller.abort();
-    				if (error?.name === "AbortError") return;
-    				console.error(`[webmcp] declarative form tool "${definition.name}" was not registered:`, error);
-    			});
-    		}
-    	}
-    	let restoreAttachShadow = () => {};
-    	const elementPrototype = document.defaultView?.Element.prototype;
-    	const attachShadowDescriptor = elementPrototype ? Object.getOwnPropertyDescriptor(elementPrototype, "attachShadow") : void 0;
-    	if (elementPrototype && attachShadowDescriptor?.configurable) {
-    		const nativeAttachShadow = elementPrototype.attachShadow;
-    		const attachShadow = function(init) {
-    			const root = nativeAttachShadow.call(this, init);
-    			if (active && root.mode === "open" && Reflect.get(Node.prototype, "ownerDocument", this) === document && Reflect.get(Node.prototype, "isConnected", this)) observeRoot(root);
-    			return root;
-    		};
-    		Object.defineProperty(elementPrototype, "attachShadow", {
-    			...attachShadowDescriptor,
-    			value: attachShadow
-    		});
-    		restoreAttachShadow = () => {
-    			if (elementPrototype.attachShadow === attachShadow) Object.defineProperty(elementPrototype, "attachShadow", attachShadowDescriptor);
-    		};
-    	}
-    	let restoreFormSubmit = () => {};
-    	const formPrototype = document.defaultView?.HTMLFormElement.prototype;
-    	const submitDescriptor = formPrototype ? Object.getOwnPropertyDescriptor(formPrototype, "submit") : void 0;
-    	if (formPrototype && submitDescriptor?.configurable) {
-    		const nativeSubmit = formPrototype.submit;
-    		const submit = function() {
-    			nativeSubmit.call(this);
-    			if (active) activeSubmissions.get(this)?.direct();
-    		};
-    		Object.defineProperty(formPrototype, "submit", {
-    			...submitDescriptor,
-    			value: submit
-    		});
-    		restoreFormSubmit = () => {
-    			if (formPrototype.submit === submit) Object.defineProperty(formPrototype, "submit", submitDescriptor);
-    		};
-    	}
-    	sync();
-    	return () => {
-    		active = false;
-    		restoreFormSubmit();
-    		restoreAttachShadow();
-    		for (const root of observers.keys()) stopObservingRoot(root);
-    		blockedDefinitions.clear();
-    		for (const registration of registrations.values()) {
-    			registration.cancelPending?.(new DOMException("Tool execution cancelled", "UnknownError"));
-    			registration.controller.abort();
-    		}
-    		registrations.clear();
-    	};
-    }
-
-    //#endregion
-    //#region src/index.ts
-    const POLYFILL_MARKER_PROPERTY = "__isWebMCPPolyfill";
-    const REGISTERED_INPUT_SCHEMA_SYMBOL = Symbol("registeredInputSchema");
-    const REGISTRATION_SIGNAL_SYMBOL = Symbol("registrationSignal");
-    const REGISTRATION_ABORT_SYMBOL = Symbol("registrationAbort");
+    _StrictWebMCPContext_tools = new WeakMap(), _StrictWebMCPContext_testingShim = new WeakMap(), _StrictWebMCPContext_ontoolchangeHandler = new WeakMap(), _StrictWebMCPContext_ownerDocument = new WeakMap(), _StrictWebMCPContext_instances = new WeakSet(), _StrictWebMCPContext_removeTool = function _StrictWebMCPContext_removeTool(name) {
+        const tool = __classPrivateFieldGet(this, _StrictWebMCPContext_tools, "f").get(name);
+        if (!tool)
+            return false;
+        const signal = tool[REGISTRATION_SIGNAL_SYMBOL];
+        const onAbort = tool[REGISTRATION_ABORT_SYMBOL];
+        if (signal && onAbort) {
+            signal.removeEventListener('abort', onAbort);
+        }
+        return __classPrivateFieldGet(this, _StrictWebMCPContext_tools, "f").delete(name);
+    }, _StrictWebMCPContext_notifyToolsChanged = async function _StrictWebMCPContext_notifyToolsChanged() {
+        this.dispatchEvent(new Event('toolchange'));
+        if (__classPrivateFieldGet(this, _StrictWebMCPContext_testingShim, "f") && typeof __classPrivateFieldGet(this, _StrictWebMCPContext_testingShim, "f").dispatchToolChange === 'function') {
+            __classPrivateFieldGet(this, _StrictWebMCPContext_testingShim, "f").dispatchToolChange();
+        }
+    };
+    // 全局单例与安装状态
     const installedProperties = [];
     let installedContext = null;
-    let cleanupDeclarativeForms = null;
-    function currentOrigin() {
-    	return typeof globalThis.origin === "string" ? globalThis.origin : globalThis.location?.origin ?? "";
-    }
+    let declarativeFormsCleanup = null;
     function installProperty(target, key, descriptor) {
-    	const previous = Object.getOwnPropertyDescriptor(target, key);
-    	try {
-    		Object.defineProperty(target, key, descriptor);
-    	} catch (error) {
-    		cleanupWebMCPPolyfill();
-    		throw error;
-    	}
-    	installedProperties.push({
-    		target,
-    		key,
-    		previous
-    	});
-    }
-    var StrictWebMCPContext = class extends EventTarget {
-    	#tools = /* @__PURE__ */ new Map();
-    	#testingShim = null;
-    	#ontoolchangeHandler = null;
-    	#ontoolchangeListener = (event) => {
-    		this.#ontoolchangeHandler?.call(this, event);
-    	};
-    	#domException;
-    	#ownerDocument;
-    	constructor(ownerDocument) {
-    		super();
-    		this.#ownerDocument = ownerDocument;
-    		this.#domException = ownerDocument?.defaultView?.DOMException ?? DOMException;
-    		Object.defineProperty(this, POLYFILL_MARKER_PROPERTY, {
-    			value: true,
-    			enumerable: false,
-    			writable: false,
-    			configurable: false
-    		});
-    	}
-    	get ontoolchange() {
-    		return this.#ontoolchangeHandler;
-    	}
-    	set ontoolchange(handler) {
-    		const listener = typeof handler === "function" ? handler : null;
-    		if (listener === null) {
-    			this.#ontoolchangeHandler = null;
-    			super.removeEventListener("toolchange", this.#ontoolchangeListener);
-    			return;
-    		}
-    		if (this.#ontoolchangeHandler === null) super.addEventListener("toolchange", this.#ontoolchangeListener);
-    		this.#ontoolchangeHandler = listener;
-    	}
-    	async registerTool(tool, options = {}) {
-    		validateWebMcpAccess(this.#ownerDocument);
-    		const signal = options?.signal;
-    		const normalized = normalizeToolDescriptor(tool, this.#tools);
-    		signal?.throwIfAborted();
-    		validatePotentiallyTrustworthyOrigins(options?.exposedTo);
-    		signal?.throwIfAborted();
-    		if (options?.exposedTo?.length) throw new this.#domException("Cross-document tool exposure requires native WebMCP", "NotSupportedError");
-    		this.#tools.set(normalized.name, normalized);
-    		if (signal) {
-    			const abort = () => {
-    				if (this.#removeTool(normalized.name, normalized)) this.#notifyToolsChanged();
-    			};
-    			normalized[REGISTRATION_SIGNAL_SYMBOL] = signal;
-    			normalized[REGISTRATION_ABORT_SYMBOL] = abort;
-    			signal.addEventListener("abort", abort, { once: true });
-    		}
-    		await this.#notifyToolsChanged();
-    		if (signal?.aborted) throw signal.reason;
-    	}
-    	async getTools(options = {}) {
-    		validateWebMcpAccess(this.#ownerDocument);
-    		validatePotentiallyTrustworthyOrigins(options?.fromOrigins);
-    		if (options?.fromOrigins?.length) throw new this.#domException("Cross-document tool discovery requires native WebMCP", "NotSupportedError");
-    		const tools = [...this.#tools.values()].map((tool) => {
-    			const serialized = tool[REGISTERED_INPUT_SCHEMA_SYMBOL];
-    			const parsed = serialized === void 0 ? void 0 : JSON.parse(serialized);
-    			return {
-    				name: tool.name,
-    				title: tool.title ?? "",
-    				description: tool.description,
-    				...isPlainObject(parsed) ? { inputSchema: parsed } : {},
-    				origin: currentOrigin(),
-    				window: globalThis.window,
-    				...tool.annotations ? { annotations: toWebMcpAnnotations(tool.annotations) } : {}
-    			};
-    		}).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
-    		await new Promise((resolve) => setTimeout(resolve, 0));
-    		return tools;
-    	}
-    	async executeTool(tool, inputArgsJson, options = {}) {
-    		validateWebMcpAccess(this.#ownerDocument);
-    		if (tool === null || typeof tool !== "object") throw new TypeError("RegisteredTool must be an object");
-    		for (const required of [
-    			"name",
-    			"description",
-    			"window",
-    			"origin"
-    		]) if (!(required in tool)) throw new TypeError(`RegisteredTool.${required} is required`);
-    		validateExecutableOrigin(tool.origin);
-    		if (tool.window !== globalThis.window || tool.origin !== currentOrigin()) throw createUnknownError(`Tool not found: ${tool.name}`);
-    		return this.#invokeToolByName(tool.name, inputArgsJson, options);
-    	}
-    	/** @internal Used by initializeWebMCPPolyfill */
-    	static getTestingShim(context) {
-    		context.#testingShim ??= new PolyfillTestingShim(context);
-    		return context.#testingShim;
-    	}
-    	/** @internal Used by PolyfillTestingShim */
-    	static getToolInfos(context) {
-    		return [...context.#tools.values()].map((tool) => ({
-    			name: tool.name,
-    			description: tool.description,
-    			...tool[REGISTERED_INPUT_SCHEMA_SYMBOL] === void 0 ? {} : { inputSchema: tool[REGISTERED_INPUT_SCHEMA_SYMBOL] }
-    		}));
-    	}
-    	/** @internal Used by PolyfillTestingShim */
-    	static executeToolForTesting(context, toolName, inputArgsJson, options) {
-    		validateWebMcpAccess(context.#ownerDocument);
-    		return context.#invokeToolByName(toolName, inputArgsJson, options);
-    	}
-    	/** @internal Used by cleanupWebMCPPolyfill */
-    	static dispose(context) {
-    		for (const name of context.#tools.keys()) context.#removeTool(name);
-    		context.ontoolchange = null;
-    		context.#testingShim?.dispose();
-    	}
-    	#removeTool(name, expected) {
-    		const registered = this.#tools.get(name);
-    		if (!registered || expected && registered !== expected) return false;
-    		const signal = registered[REGISTRATION_SIGNAL_SYMBOL];
-    		const abort = registered[REGISTRATION_ABORT_SYMBOL];
-    		if (signal && abort) signal.removeEventListener("abort", abort);
-    		return this.#tools.delete(name);
-    	}
-    	async #invokeToolByName(toolName, inputArgsJson, options) {
-    		options?.signal?.throwIfAborted();
-    		const tool = this.#tools.get(toolName);
-    		if (!tool) throw createUnknownError(`Tool not found: ${toolName}`);
-    		const args = parseChromeToolInput(inputArgsJson);
-    		options?.signal?.throwIfAborted();
-    		if (tool[REGISTRATION_SIGNAL_SYMBOL]?.aborted) throw createUnknownError("Tool unregistered");
-    		let rawResult;
-    		try {
-    			const registrationSignal = tool[REGISTRATION_SIGNAL_SYMBOL];
-    			rawResult = await withAbortSignal(withAbortSignal(Promise.resolve(tool.execute(args)), registrationSignal, () => createUnknownError("Tool unregistered")), options?.signal);
-    		} catch (error) {
-    			if (options?.signal?.aborted && error === options.signal.reason) throw error;
-    			if (tool[REGISTRATION_SIGNAL_SYMBOL]?.aborted) throw error;
-    			throw createToolInvocationFailedError(error);
-    		}
-    		return serializeChromeToolResult(rawResult);
-    	}
-    	async #notifyToolsChanged() {
-    		await new Promise((resolve) => setTimeout(resolve, 0));
-    		this.dispatchEvent(new Event("toolchange"));
-    		this.#testingShim?.dispatchToolChange();
-    	}
-    };
-    const modelContextConstructor = function ModelContext() {
-    	throw new TypeError("Illegal constructor");
-    };
-    Object.defineProperty(modelContextConstructor, "name", { value: "ModelContext" });
-    Object.defineProperty(modelContextConstructor, "prototype", {
-    	value: StrictWebMCPContext.prototype,
-    	writable: false
-    });
-    Object.setPrototypeOf(modelContextConstructor, EventTarget);
-    Object.defineProperty(StrictWebMCPContext.prototype, "constructor", {
-    	configurable: true,
-    	writable: true,
-    	value: modelContextConstructor
-    });
-    Object.defineProperty(StrictWebMCPContext.prototype, Symbol.toStringTag, {
-    	configurable: true,
-    	value: "ModelContext"
-    });
-    for (const member of [
-    	"registerTool",
-    	"getTools",
-    	"executeTool",
-    	"ontoolchange"
-    ]) {
-    	const descriptor = Object.getOwnPropertyDescriptor(StrictWebMCPContext.prototype, member);
-    	if (descriptor) Object.defineProperty(StrictWebMCPContext.prototype, member, {
-    		...descriptor,
-    		enumerable: true
-    	});
+        const previous = Object.getOwnPropertyDescriptor(target, key);
+        try {
+            Object.defineProperty(target, key, descriptor);
+        }
+        catch (e) {
+            cleanupWebMCPPolyfill();
+            throw e;
+        }
+        installedProperties.push({ target, key, previous });
     }
     /**
-    * EventTarget-based testing shim matching the native Chromium ModelContextTesting surface.
-    *
-    * Fires `toolchange` events and supports the `ontoolchange` handler property.
-    */
-    var PolyfillTestingShim = class extends EventTarget {
-    	_ontoolchange = null;
-    	ontoolchangeListener = (event) => {
-    		this._ontoolchange?.call(this, event);
-    	};
-    	#context;
-    	constructor(context) {
-    		super();
-    		this.#context = context;
-    	}
-    	listTools() {
-    		return StrictWebMCPContext.getToolInfos(this.#context);
-    	}
-    	executeTool(toolName, inputArgsJson, options) {
-    		return StrictWebMCPContext.executeToolForTesting(this.#context, toolName, inputArgsJson, options);
-    	}
-    	get ontoolchange() {
-    		return this._ontoolchange;
-    	}
-    	set ontoolchange(handler) {
-    		const listener = typeof handler === "function" ? handler : null;
-    		if (listener === null) {
-    			this._ontoolchange = null;
-    			super.removeEventListener("toolchange", this.ontoolchangeListener);
-    			return;
-    		}
-    		if (this._ontoolchange === null) super.addEventListener("toolchange", this.ontoolchangeListener);
-    		this._ontoolchange = listener;
-    	}
-    	/** @internal Called by StrictWebMCPContext when tools change. */
-    	dispatchToolChange() {
-    		this.dispatchEvent(new Event("toolchange"));
-    	}
-    	dispose() {
-    		this.ontoolchange = null;
-    	}
-    };
-    function normalizeToolDescriptor(tool, existing) {
-    	if (!tool || typeof tool !== "object") throw new TypeError("registerTool(tool) requires a tool object");
-    	const coerced = coerceWebMcpToolDescriptor(tool);
-    	validateWebMcpToolDescriptor(coerced);
-    	if (existing.has(coerced.name)) throw createInvalidStateError(`Tool already registered: ${coerced.name}`);
-    	const registeredInputSchema = coerced.inputSchema === void 0 ? void 0 : serializeInputSchema(coerced.inputSchema);
-    	return {
-    		name: coerced.name,
-    		...coerced.title === void 0 ? {} : { title: coerced.title },
-    		description: coerced.description,
-    		...coerced.inputSchema === void 0 ? {} : { inputSchema: coerced.inputSchema },
-    		...coerced.annotations === void 0 ? {} : { annotations: coerced.annotations },
-    		execute: (input) => Reflect.apply(coerced.execute, void 0, [input]),
-    		...registeredInputSchema !== void 0 ? { [REGISTERED_INPUT_SCHEMA_SYMBOL]: registeredInputSchema } : {}
-    	};
+     * 现代轻量化声明式表单监听器 (仅对 form[toolname] 执行目标感知，彻底避免全文档 querySelectorAll('*') 遍历)
+     */
+    function installOptimizedDeclarativeForms(document, context) {
+        let active = true;
+        let cancelIdleSync = null;
+        const runSync = () => {
+            if (!active)
+                return;
+            try {
+                // 采用精确定位选择器代替全量 document.querySelectorAll('*')
+                const forms = Array.from(document.querySelectorAll('form[toolname]'));
+                // 探查潜在的自定义元素 Open ShadowRoot (利用 WeakMap memoized lookup 极速命中，零递归)
+                const potentialHosts = document.querySelectorAll(':not(:defined), [data-has-shadow]');
+                potentialHosts.forEach(host => {
+                    const root = getOpenShadowRoot(host);
+                    if (root) {
+                        const shadowForms = Array.from(root.querySelectorAll('form[toolname]'));
+                        forms.push(...shadowForms);
+                    }
+                });
+                forms.forEach(form => {
+                    const toolName = form.getAttribute('toolname');
+                    const toolDescription = form.getAttribute('tooldescription') || '';
+                    if (!toolName)
+                        return;
+                    // 注册表单工具
+                    context.registerTool({
+                        name: toolName,
+                        description: toolDescription,
+                        execute: async (input) => {
+                            // 触发原生表单提交
+                            form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+                            return { success: true, toolName };
+                        }
+                    }).catch(() => { });
+                });
+            }
+            catch { }
+        };
+        const debouncedSync = () => {
+            if (cancelIdleSync)
+                cancelIdleSync();
+            cancelIdleSync = scheduleIdleTask(runSync, 200);
+        };
+        // 仅监听 DOM 添加子树中是否存在表单，避免监听全文档 attributes 和 characterData 造成每秒千次触发
+        let observer = null;
+        try {
+            observer = new MutationObserver((mutations) => {
+                let hasFormMutation = false;
+                for (const m of mutations) {
+                    if (m.type === 'childList') {
+                        for (let i = 0; i < m.addedNodes.length; i++) {
+                            const node = m.addedNodes[i];
+                            if (node.nodeType === Node.ELEMENT_NODE) {
+                                const el = node;
+                                if (el.tagName === 'FORM' || (el.querySelector && el.querySelector('form[toolname]'))) {
+                                    hasFormMutation = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if (hasFormMutation)
+                        break;
+                }
+                if (hasFormMutation)
+                    debouncedSync();
+            });
+            if (document.body) {
+                observer.observe(document.body, { childList: true, subtree: true });
+            }
+        }
+        catch { }
+        // 初始执行一次空闲扫描
+        debouncedSync();
+        return () => {
+            active = false;
+            if (cancelIdleSync)
+                cancelIdleSync();
+            if (observer)
+                observer.disconnect();
+        };
     }
-    let navigatorModelContextDeprecationWarned = false;
     /**
-    * Backing store for the `Document.prototype.modelContext` getter.
-    *
-    * WebIDL puts `[SameObject] readonly attribute ModelContext modelContext` on
-    * the Document *interface prototype object*, not on the document instance, and
-    * Chrome matches that. One shared accessor therefore needs somewhere to keep
-    * the per-document value, and keying it by document is what makes repeated
-    * reads return the identical object, as `[SameObject]` requires.
-    */
-    const documentModelContexts = /* @__PURE__ */ new WeakMap();
-    const { modelContext: documentModelContextGetter } = { modelContext() {
-    	if (!(this instanceof Document)) throw new TypeError("Illegal invocation");
-    	return documentModelContexts.get(this);
-    } };
-    Object.defineProperty(documentModelContextGetter, "name", { value: "get modelContext" });
-    function defineDocumentModelContext(target, value) {
-    	documentModelContexts.set(target, value);
-    	if (Object.hasOwn(Document.prototype, "modelContext")) return;
-    	installProperty(Document.prototype, "modelContext", {
-    		configurable: true,
-    		enumerable: true,
-    		get: documentModelContextGetter
-    	});
+     * 激活 WebMCP Polyfill 环境 (支持可选 options)
+     */
+    function initializeWebMCPPolyfill(options = {}) {
+        if (typeof window === 'undefined' || typeof document === 'undefined')
+            return;
+        const doc = document;
+        if (doc.modelContext) {
+            return;
+        }
+        if (installedProperties.length > 0) {
+            cleanupWebMCPPolyfill();
+        }
+        const context = new StrictWebMCPContext(doc);
+        installedContext = context;
+        window.getOpenShadowRoot = getOpenShadowRoot;
+        context.getOpenShadowRoot = getOpenShadowRoot;
+        // 1. 安装 ModelContext 全局类
+        const modelContextConstructor = function ModelContext() {
+            throw new TypeError('Illegal constructor');
+        };
+        Object.defineProperty(modelContextConstructor, 'name', { value: 'ModelContext' });
+        Object.defineProperty(modelContextConstructor, 'prototype', {
+            value: StrictWebMCPContext.prototype,
+            writable: false
+        });
+        installProperty(window, 'ModelContext', {
+            configurable: true,
+            enumerable: false,
+            writable: true,
+            value: modelContextConstructor
+        });
+        // 2. 安装 document.modelContext
+        installProperty(Document.prototype, 'modelContext', {
+            configurable: true,
+            enumerable: true,
+            get() {
+                return context;
+            }
+        });
+        // 3. 安装兼容性 navigator.modelContext
+        if (typeof navigator !== 'undefined') {
+            installProperty(navigator, 'modelContext', {
+                configurable: true,
+                enumerable: true,
+                get() {
+                    return context;
+                }
+            });
+        }
+        // 4. 仅在显式声明或需要时挂载声明式表单监听，默认避免全文档属性轰炸
+        if (options.declarativeForms !== false) {
+            declarativeFormsCleanup = installOptimizedDeclarativeForms(doc, context);
+        }
     }
-    function defineDeprecatedNavigatorModelContext(target, value) {
-    	installProperty(target, "modelContext", {
-    		configurable: true,
-    		enumerable: true,
-    		get() {
-    			if (!navigatorModelContextDeprecationWarned) {
-    				navigatorModelContextDeprecationWarned = true;
-    				console.warn("[WebMCPPolyfill] navigator.modelContext is deprecated. The May 27, 2026 WebMCP draft moved the modelContext getter from Navigator to Document — use document.modelContext instead. See https://github.com/webmachinelearning/webmcp/pull/184.");
-    			}
-    			return value;
-    		}
-    	});
-    }
-    function installSubmitEventPolyfill() {
-    	const prototype = SubmitEvent.prototype;
-    	if (!("agentInvoked" in prototype)) installProperty(prototype, "agentInvoked", {
-    		configurable: true,
-    		enumerable: true,
-    		get() {
-    			return isAgentInvokedSubmitEvent(this);
-    		}
-    	});
-    	if (!("respondWith" in prototype)) installProperty(prototype, "respondWith", {
-    		configurable: true,
-    		enumerable: true,
-    		writable: true,
-    		value(agentResponse) {
-    			respondWithAgentSubmitEvent(this, agentResponse);
-    		}
-    	});
-    }
-    function initializeWebMCPPolyfill(options) {
-    	if (globalThis.isSecureContext === false) return;
-    	const nav = typeof navigator === "undefined" ? null : navigator;
-    	const doc = typeof document === "undefined" ? null : document;
-    	if (!nav || !doc || typeof window === "undefined") return;
-    	if (doc.modelContext) return;
-    	const navigatorModelContext = nav.modelContext;
-    	if (installedProperties.length > 0) cleanupWebMCPPolyfill();
-    	if (navigatorModelContext) {
-    		defineDocumentModelContext(doc, navigatorModelContext);
-    		return;
-    	}
-    	const previousDescriptor = Object.getOwnPropertyDescriptor(window, "ModelContext");
-    	if (previousDescriptor && !previousDescriptor.configurable) {
-    		if (!Object.is(Reflect.get(window, "ModelContext"), modelContextConstructor)) throw new TypeError("Cannot install ModelContext over a non-configurable global");
-    	} else installProperty(window, "ModelContext", {
-    		configurable: true,
-    		enumerable: false,
-    		writable: true,
-    		value: modelContextConstructor
-    	});
-    	const context = new StrictWebMCPContext(doc);
-    	installedContext = context;
-    	defineDocumentModelContext(doc, context);
-    	navigatorModelContextDeprecationWarned = false;
-    	defineDeprecatedNavigatorModelContext(nav, context);
-    	installSubmitEventPolyfill();
-    	cleanupDeclarativeForms = installDeclarativeForms(doc, context);
-    }
+    /**
+     * 卸载清理 WebMCP Polyfill
+     */
     function cleanupWebMCPPolyfill() {
-    	cleanupDeclarativeForms?.();
-    	cleanupDeclarativeForms = null;
-    	if (installedContext) StrictWebMCPContext.dispose(installedContext);
-    	installedContext = null;
-    	for (const { target, key, previous } of [...installedProperties].reverse()) if (previous) Object.defineProperty(target, key, previous);
-    	else Reflect.deleteProperty(target, key);
-    	installedProperties.length = 0;
-    	navigatorModelContextDeprecationWarned = false;
+        if (declarativeFormsCleanup) {
+            declarativeFormsCleanup();
+            declarativeFormsCleanup = null;
+        }
+        if (installedContext) {
+            StrictWebMCPContext.dispose(installedContext);
+            installedContext = null;
+        }
+        for (const { target, key, previous } of [...installedProperties].reverse()) {
+            if (previous) {
+                Object.defineProperty(target, key, previous);
+            }
+            else {
+                Reflect.deleteProperty(target, key);
+            }
+        }
+        installedProperties.length = 0;
     }
 
     /**
@@ -60918,8 +60623,8 @@ td.has-save-error {
         if (WEBMCP_STATE.initialized)
             return;
         try {
-            // 1. 激活 W3C WebMCP 标准 Polyfill (在 document.modelContext 挂载标准环境)
-            initializeWebMCPPolyfill();
+            // 1. 激活高性能 W3C WebMCP 标准 Polyfill (纯编程式注册，免除声明式表单的全文档 DOM 监听)
+            initializeWebMCPPolyfill({ declarativeForms: false });
             AutopilotLogger.info('[WebMCP] document.modelContext polyfill 已就绪');
         }
         catch (e) {
@@ -64180,31 +63885,316 @@ td.has-save-error {
         }
     }
 
+    const LLM_PRESETS = {
+        gemini: {
+            provider: 'gemini',
+            endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai',
+            model: 'gemini-2.0-flash',
+            temperature: 0.3
+        },
+        deepseek: {
+            provider: 'deepseek',
+            endpoint: 'https://api.deepseek.com/v1',
+            model: 'deepseek-chat',
+            temperature: 0.3
+        },
+        openai: {
+            provider: 'openai',
+            endpoint: 'https://api.openai.com/v1',
+            model: 'gpt-4o',
+            temperature: 0.3
+        },
+        claude: {
+            provider: 'claude',
+            endpoint: 'https://openrouter.ai/api/v1',
+            model: 'anthropic/claude-3.7-sonnet',
+            temperature: 0.3
+        },
+        ollama: {
+            provider: 'ollama',
+            endpoint: 'http://localhost:11434/v1',
+            model: 'qwen2.5:7b',
+            temperature: 0.3
+        },
+        openrouter: {
+            provider: 'openrouter',
+            endpoint: 'https://openrouter.ai/api/v1',
+            model: 'anthropic/claude-3.7-sonnet',
+            temperature: 0.3
+        },
+        custom: {
+            provider: 'custom',
+            endpoint: '',
+            model: 'gpt-4o',
+            temperature: 0.3
+        }
+    };
     const STORAGE_KEY = 'autopilot_webmcp_llm_config';
+    function getDefaultModelsForProvider(provider) {
+        switch (provider) {
+            case 'gemini':
+                return [
+                    { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash (新一代极速首选)', provider: 'gemini', enabled: true },
+                    { id: 'gemini-2.0-flash-thinking-exp-01-21', name: 'Gemini 2.0 Flash Thinking (深度思考)', provider: 'gemini', enabled: true, isReasoning: true },
+                    { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro (最强综合推理旗舰)', provider: 'gemini', enabled: true, isReasoning: true },
+                    { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro (百万长上下文)', provider: 'gemini', enabled: false },
+                    { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash (轻量低延迟)', provider: 'gemini', enabled: false }
+                ];
+            case 'deepseek':
+                return [
+                    { id: 'deepseek-chat', name: 'DeepSeek-V3 (通用极速性价比之王)', provider: 'deepseek', enabled: true },
+                    { id: 'deepseek-reasoner', name: 'DeepSeek-R1 (深度慢思考长链推理)', provider: 'deepseek', enabled: true, isReasoning: true }
+                ];
+            case 'openai':
+                return [
+                    { id: 'gpt-4o', name: 'GPT-4o (全能多模态旗舰)', provider: 'openai', enabled: true, isVision: true },
+                    { id: 'gpt-4o-mini', name: 'GPT-4o-mini (轻巧极速低成本)', provider: 'openai', enabled: true },
+                    { id: 'o3-mini', name: 'o3-mini (新一代高效推理)', provider: 'openai', enabled: true, isReasoning: true },
+                    { id: 'o1', name: 'o1 (高级慢思考与规划)', provider: 'openai', enabled: false, isReasoning: true },
+                    { id: 'gpt-4-turbo', name: 'GPT-4 Turbo', provider: 'openai', enabled: false }
+                ];
+            case 'claude':
+            case 'openrouter':
+                return [
+                    { id: 'anthropic/claude-3.7-sonnet', name: 'Claude 3.7 Sonnet (混合推理新旗舰)', provider: 'openrouter', enabled: true, isReasoning: true },
+                    { id: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet (代码与逻辑标杆)', provider: 'openrouter', enabled: true },
+                    { id: 'anthropic/claude-3.5-haiku', name: 'Claude 3.5 Haiku (超轻量秒级响应)', provider: 'openrouter', enabled: false },
+                    { id: 'openai/gpt-4o', name: 'OpenAI GPT-4o (OpenRouter)', provider: 'openrouter', enabled: true },
+                    { id: 'deepseek/deepseek-r1', name: 'DeepSeek R1 (OpenRouter)', provider: 'openrouter', enabled: true, isReasoning: true }
+                ];
+            case 'ollama':
+                return [
+                    { id: 'qwen2.5:7b', name: '通义千问 Qwen 2.5 7B (本地推荐)', provider: 'ollama', enabled: true },
+                    { id: 'deepseek-r1:7b', name: 'DeepSeek R1 本地量化 7B', provider: 'ollama', enabled: true, isReasoning: true },
+                    { id: 'llama3.1:8b', name: 'Meta Llama 3.1 8B', provider: 'ollama', enabled: false }
+                ];
+            default:
+                return [
+                    { id: 'gpt-4o', name: 'GPT-4o 兼容', provider: 'custom', enabled: true },
+                    { id: 'deepseek-chat', name: 'DeepSeek-V3 兼容', provider: 'custom', enabled: true }
+                ];
+        }
+    }
     function getLlmConfig() {
         try {
             const raw = localStorage.getItem(STORAGE_KEY);
             if (raw) {
                 const parsed = JSON.parse(raw);
+                const provider = parsed.provider || 'gemini';
+                const defaultModels = getDefaultModelsForProvider(provider);
+                const models = Array.isArray(parsed.models) && parsed.models.length > 0
+                    ? parsed.models
+                    : defaultModels;
+                const model = parsed.model || models.find(m => m.enabled)?.id || defaultModels[0].id;
                 return {
-                    provider: parsed.provider || 'gemini',
-                    endpoint: parsed.endpoint || 'https://generativelanguage.googleapis.com/v1beta/openai',
+                    provider,
+                    endpoint: parsed.endpoint || LLM_PRESETS[provider]?.endpoint || 'https://generativelanguage.googleapis.com/v1beta/openai',
                     apiKey: parsed.apiKey || '',
-                    model: parsed.model || 'gemini-1.5-pro',
-                    temperature: typeof parsed.temperature === 'number' ? parsed.temperature : 0.3
+                    model,
+                    temperature: typeof parsed.temperature === 'number' ? parsed.temperature : 0.3,
+                    models
                 };
             }
         }
         catch (e) {
             AutopilotLogger.warn('[LLM] 读取配置失败，采用默认配置');
         }
+        const defaultModels = getDefaultModelsForProvider('gemini');
         return {
             provider: 'gemini',
             endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai',
             apiKey: '',
-            model: 'gemini-1.5-pro',
-            temperature: 0.3
+            model: 'gemini-2.0-flash',
+            temperature: 0.3,
+            models: defaultModels
         };
+    }
+    function saveLlmConfig(config) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+        AutopilotLogger.info('[LLM] 配置已保存');
+        try {
+            if (typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('autopilot:llm_config_changed', { detail: config }));
+            }
+        }
+        catch (e) { }
+    }
+    /**
+     * 自动探测与拉取远端 LLM 端点支持的模型列表
+     * 兼容 OpenAI /v1/models、Google Gemini API、Ollama /api/tags
+     */
+    async function fetchAvailableModels(config) {
+        const startTime = Date.now();
+        const rawEndpoint = (config.endpoint || '').trim();
+        if (!rawEndpoint) {
+            const fallbacks = getDefaultModelsForProvider(config.provider);
+            return {
+                success: false,
+                models: fallbacks,
+                message: '请先填写 API 基础地址'
+            };
+        }
+        const apiKey = (config.apiKey || '').trim();
+        // 1. Google Gemini
+        if (config.provider === 'gemini') {
+            // 优先尝试官方 OpenAI 兼容 /models 端点
+            try {
+                const openaiModelsUrl = rawEndpoint.replace(/\/chat\/completions\/?$/, '').replace(/\/+$/, '') + '/models';
+                const res = await fetch(openaiModelsUrl, {
+                    headers: apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    if (Array.isArray(data.data) && data.data.length > 0) {
+                        const list = data.data
+                            .filter((m) => m.id && !m.id.includes('embedding') && !m.id.includes('aqa') && !m.id.includes('imagen'))
+                            .map((m) => {
+                            const isReasoning = m.id.includes('thinking') || m.id.includes('pro');
+                            return {
+                                id: m.id,
+                                name: formatModelDisplayName(m.id),
+                                provider: 'gemini',
+                                enabled: isReasoning || m.id.includes('flash'),
+                                isReasoning
+                            };
+                        });
+                        if (list.length > 0) {
+                            return {
+                                success: true,
+                                models: list,
+                                message: `成功自动识别 ${list.length} 个 Gemini 模型 (${Date.now() - startTime}ms)`
+                            };
+                        }
+                    }
+                }
+            }
+            catch (e) { }
+            // 备用：Google AI Studio API
+            if (apiKey) {
+                try {
+                    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`;
+                    const res = await fetch(geminiUrl);
+                    if (res.ok) {
+                        const data = await res.json();
+                        if (Array.isArray(data.models) && data.models.length > 0) {
+                            const list = data.models
+                                .filter((m) => m.name && (m.supportedGenerationMethods?.includes('generateContent') || m.name.includes('gemini')))
+                                .map((m) => {
+                                const cleanId = m.name.replace(/^models\//, '');
+                                const isReasoning = cleanId.includes('thinking') || cleanId.includes('pro');
+                                return {
+                                    id: cleanId,
+                                    name: m.displayName || formatModelDisplayName(cleanId),
+                                    provider: 'gemini',
+                                    enabled: isReasoning || cleanId.includes('flash'),
+                                    isReasoning
+                                };
+                            });
+                            if (list.length > 0) {
+                                return {
+                                    success: true,
+                                    models: list,
+                                    message: `成功探测并载入 ${list.length} 个 Gemini 原生模型 (${Date.now() - startTime}ms)`
+                                };
+                            }
+                        }
+                    }
+                }
+                catch (e) { }
+            }
+        }
+        // 2. Ollama
+        if (config.provider === 'ollama') {
+            const base = rawEndpoint.replace(/\/v1\/?$/, '').replace(/\/+$/, '');
+            try {
+                const res = await fetch(`${base}/api/tags`);
+                if (res.ok) {
+                    const data = await res.json();
+                    if (Array.isArray(data.models) && data.models.length > 0) {
+                        const list = data.models.map((m) => ({
+                            id: m.name,
+                            name: `${m.name} (${m.details?.parameter_size || 'Local'})`,
+                            provider: 'ollama',
+                            enabled: true
+                        }));
+                        return {
+                            success: true,
+                            models: list,
+                            message: `成功检测到本地 Ollama 已运行的 ${list.length} 个模型 (${Date.now() - startTime}ms)`
+                        };
+                    }
+                }
+            }
+            catch (e) { }
+        }
+        // 3. 通用 OpenAI 兼容 /models
+        try {
+            const baseModelsUrl = rawEndpoint.replace(/\/chat\/completions\/?$/, '').replace(/\/+$/, '') + '/models';
+            const headers = { 'Content-Type': 'application/json' };
+            if (apiKey) {
+                headers['Authorization'] = `Bearer ${apiKey}`;
+            }
+            const res = await fetch(baseModelsUrl, { method: 'GET', headers });
+            if (res.ok) {
+                const data = await res.json();
+                const rawList = Array.isArray(data.data) ? data.data : (Array.isArray(data) ? data : []);
+                if (rawList.length > 0) {
+                    const list = rawList
+                        .filter((m) => m.id && !m.id.includes('embedding') && !m.id.includes('tts') && !m.id.includes('whisper') && !m.id.includes('dall-e') && !m.id.includes('moderation'))
+                        .map((m) => {
+                        const id = m.id;
+                        const isReasoning = id.includes('r1') || id.includes('reasoner') || id.includes('o1') || id.includes('o3') || id.includes('thinking');
+                        return {
+                            id,
+                            name: formatModelDisplayName(id),
+                            provider: config.provider,
+                            enabled: true,
+                            isReasoning
+                        };
+                    });
+                    if (list.length > 0) {
+                        return {
+                            success: true,
+                            models: list,
+                            message: `成功自动拉取 ${list.length} 个可用模型 (${Date.now() - startTime}ms)`
+                        };
+                    }
+                }
+            }
+        }
+        catch (e) {
+            AutopilotLogger.warn('[LLM] 远端 /models 接口探测失败或受同源策略限制: ' + (e instanceof Error ? e.message : String(e)));
+        }
+        // 兜底回退：载入官方预设推荐库
+        const defaultList = getDefaultModelsForProvider(config.provider);
+        return {
+            success: true,
+            models: defaultList,
+            message: `未能从远端自动拉取，已为您载入 ${defaultList.length} 个主流官方推荐模型（可手动增删）`
+        };
+    }
+    function formatModelDisplayName(id) {
+        if (id === 'gemini-2.0-flash')
+            return 'Gemini 2.0 Flash (新一代极速首选)';
+        if (id === 'gemini-2.0-flash-thinking-exp-01-21')
+            return 'Gemini 2.0 Flash Thinking (深度思考)';
+        if (id === 'gemini-2.5-pro')
+            return 'Gemini 2.5 Pro (最强复杂推理)';
+        if (id === 'deepseek-chat')
+            return 'DeepSeek-V3 (通用极速)';
+        if (id === 'deepseek-reasoner')
+            return 'DeepSeek-R1 (深度长链推理)';
+        if (id === 'gpt-4o')
+            return 'GPT-4o (全能旗舰)';
+        if (id === 'gpt-4o-mini')
+            return 'GPT-4o-mini (轻巧极速)';
+        if (id === 'o3-mini')
+            return 'o3-mini (高效推理)';
+        if (id.includes('claude-3-7-sonnet') || id.includes('claude-3.7-sonnet'))
+            return 'Claude 3.7 Sonnet (混合推理)';
+        if (id.includes('claude-3-5-sonnet') || id.includes('claude-3.5-sonnet'))
+            return 'Claude 3.5 Sonnet (逻辑标杆)';
+        return id;
     }
     function isLlmConfigured() {
         const cfg = getLlmConfig();
@@ -64231,6 +64221,54 @@ td.has-save-error {
             url = `${url}/chat/completions`;
         }
         return url;
+    }
+    /**
+     * 测试 LLM API 连通性
+     */
+    async function testLlmConnection(config) {
+        const startTime = Date.now();
+        const url = normalizeEndpoint(config.endpoint);
+        try {
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${config.apiKey.trim()}`
+                },
+                body: JSON.stringify({
+                    model: config.model.trim(),
+                    messages: [
+                        { role: 'system', content: 'You are a test agent.' },
+                        { role: 'user', content: 'Ping! Reply with "Pong" only.' }
+                    ],
+                    max_tokens: 10,
+                    temperature: 0.1
+                })
+            });
+            const latencyMs = Date.now() - startTime;
+            if (!res.ok) {
+                const errText = await res.text();
+                return {
+                    success: false,
+                    latencyMs,
+                    message: extractCleanErrorMessage(errText, res.status)
+                };
+            }
+            const data = await res.json();
+            const reply = data.choices?.[0]?.message?.content?.trim() || 'OK';
+            return {
+                success: true,
+                latencyMs,
+                message: `连接成功 (${latencyMs}ms): 模型回复 "${reply}"`
+            };
+        }
+        catch (err) {
+            return {
+                success: false,
+                latencyMs: Date.now() - startTime,
+                message: `网络异常: ${err.message}`
+            };
+        }
     }
     /**
      * 提取并提炼出友好的错误信息，避免向用户裸露未经格式化的 JSON 字符串
@@ -64398,15 +64436,28 @@ td.has-save-error {
      */
     function getExpenseBillFlow(typeId, typeName) {
         const s = `${typeName || ''} ${typeId || ''}`.toLowerCase();
-        // 明确属于非差旅/日常类的：市内交通费、手机通信费、交际费、会议费、福利费等
+        // 1. 明确属于差旅大类的：飞机票、火车票、住宿费、出租车(taxi)、出差、差旅
+        if (s.includes('飞机') || s.includes('航空') || s.includes('jnc') || typeId === '035671613fdde1653e55bb00bc610000')
+            return 'BC';
+        if (s.includes('火车') || s.includes('高铁') || s.includes('hcp') || typeId === '0356c4c2b14de1653e55bb00bc610000')
+            return 'BC';
+        if (s.includes('住宿') || s.includes('酒店') || s.includes('zsf') || typeId === '0356c4e2b72de1653e55bb00bc610001')
+            return 'BC';
+        if ((s.includes('出租车') && s.includes('taxi')) || typeId === '0356c4cef03345af7f1906ec05cc0000')
+            return 'BC';
+        if (s.includes('差旅'))
+            return 'BC';
+        // 2. 明确属于非差旅/日常经费类的：市内交通费、手机通信费、交际费、会议费、福利费、培训费、办公用品、快递等
         if (s.includes('市内交通') || typeId === '0356c529e72de1653e55bb00bc610001')
             return 'BJ';
         if (s.includes('手机') || s.includes('通信费-员工') || s.includes('txf') || typeId === '0356c577f8ede1653e55bb00bc610001')
             return 'BJ';
-        if (s.includes('交际') || s.includes('会议') || s.includes('福利') || s.includes('培训') || s.includes('办公'))
+        if (s.includes('交际') || s.includes('会议') || s.includes('福利') || s.includes('礼金') || s.includes('培训') || s.includes('办公') || s.includes('快递') || s.includes('耗材') || s.includes('服务'))
             return 'BJ';
-        // 差旅大类：机票、高铁、住宿、出租车（taxi）、交通费其他
-        return 'BC';
+        // 3. 其它费用/未分类日常费用：在无出差特征时默认归入日常经费 (BJ)
+        if (s.includes('其他费用') || typeId === '0356c583e17de1653e55bb00bc610000')
+            return 'BJ';
+        return 'BJ';
     }
     /**
      * 根据类型 ID 或类型名称智能识别费用主类别
@@ -64442,16 +64493,43 @@ td.has-save-error {
      * 检测出租车费用是否存在出差/日常错配嫌疑
      */
     function checkTaxiMisclassification(group, tripDateIntervals) {
+        // 核心铁律：已报销的费用已完成审批归档，严格只读展示，严禁触发错配报警或建议变更
+        if (normalizeExpenseStatus(group.status) === '已报销') {
+            return { hasMisclass: false };
+        }
         const typeId = group.newExpenseTypeId || group.expenseTypeId;
         const typeName = group.newExpenseTypeName || group.expenseTypeName;
         const date = group.newBusinessDate || group.businessDate || group.earliestInvoiceDate;
         if (!date)
             return { hasMisclass: false };
         const isLocalTaxi = typeName?.includes('市内交通') || typeId === '0356c529e72de1653e55bb00bc610001';
-        const isTripTaxi = typeName?.includes('taxi') || typeId === '0356c4cef03345af7f1906ec05cc0000';
-        if (!isLocalTaxi && !isTripTaxi)
+        const isTripTaxi = (typeName?.includes('taxi') && !typeName?.includes('市内')) || typeId === '0356c4cef03345af7f1906ec05cc0000';
+        const hasTaxiInvoice = group.invoices?.some(inv => {
+            const s = `${inv.invoiceType || ''} ${inv.salesName || ''} ${inv.fileName || ''} ${inv.remarks || ''}`.toLowerCase();
+            return s.includes('出租车') || s.includes('打车') || s.includes('滴滴') || s.includes('taxi') || Boolean(inv.timeGetOn || inv.timeGetOff);
+        });
+        if (!isLocalTaxi && !isTripTaxi && !hasTaxiInvoice)
             return { hasMisclass: false };
         const matchedTrip = tripDateIntervals.find(t => date >= t.start && date <= t.end);
+        // 1. 发票明明是出租车，但费用类型被设置成了“其他费用”或未知类型
+        if (!isLocalTaxi && !isTripTaxi && hasTaxiInvoice) {
+            if (matchedTrip) {
+                return {
+                    hasMisclass: true,
+                    suggestedTypeId: '0356c4cef03345af7f1906ec05cc0000',
+                    suggestedTypeName: '出租车（taxi）',
+                    reason: `底层发票为出租车票且发生于 Trip ${matchedTrip.tripNo} (${matchedTrip.destination}) 出差期间，建议变更为【差旅费 - 出租车(taxi)】`
+                };
+            }
+            else {
+                return {
+                    hasMisclass: true,
+                    suggestedTypeId: '0356c529e72de1653e55bb00bc610001',
+                    suggestedTypeName: '市内交通费',
+                    reason: `底层发票为出租车打车票且非出差期间，建议变更为【交通费 - 市内交通费 (日常经费)】`
+                };
+            }
+        }
         if (matchedTrip && isLocalTaxi) {
             return {
                 hasMisclass: true,
@@ -64612,6 +64690,9 @@ td.has-save-error {
         const stayTransitGroups = [];
         const unknownGroups = [];
         for (const g of groupsWithMissingFields) {
+            // 核心铁律：已报销记录严格只读，绝不分流至任何 LLM 推断通道
+            if (normalizeExpenseStatus(g.status) === '已报销')
+                continue;
             if (isUnknownTypeGroup(g)) {
                 unknownGroups.push(g);
             }
@@ -65578,6 +65659,3212 @@ JSON 输出格式：
         window.__batchEditTools = batchEditTools;
     }
 
+    function injectWebMcpStyles() {
+        const styleId = 'autopilot-webmcp-styles-v3';
+        // 彻底清除历史残留样式，确保版本热更新时样式 100% 刷新生效
+        document.querySelectorAll('style[id^="autopilot-webmcp-styles"]').forEach(el => el.remove());
+        const style = document.createElement('style');
+        style.id = styleId;
+        style.textContent = getMarkstreamCss() + '\n' + `
+        /* ====================================================
+           HeroUI Pro & CRM Agent Pop Design Tokens
+           ==================================================== */
+        :root {
+            --wm-bg: #ffffff;
+            --wm-panel: #f8fafc;
+            --wm-card: #ffffff;
+            --wm-border: rgba(226, 232, 240, 0.9);
+            --wm-border-subtle: rgba(0, 0, 0, 0.06);
+            --wm-border-hover: rgba(99, 102, 241, 0.4);
+            --wm-primary: #6366f1;
+            --wm-primary-gradient: linear-gradient(135deg, #6366f1 0%, #4f46e5 50%, #7c3aed 100%);
+            --wm-accent-purple: #7828c8;
+            --wm-text-primary: #0f172a;
+            --wm-text-secondary: #475569;
+            --wm-text-muted: #94a3b8;
+            --wm-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.05);
+            --wm-shadow-md: 0 4px 16px -2px rgba(0, 0, 0, 0.08);
+            --wm-shadow-drawer: -12px 0 40px -10px rgba(15, 23, 42, 0.22);
+            --wm-shadow-popup: 0 24px 60px -12px rgba(15, 23, 42, 0.35);
+            --wm-radius-lg: 16px;
+            --wm-radius-md: 10px;
+            --wm-radius-sm: 6px;
+        }
+
+        /* 悬浮微标 (Launcher Pill) */
+        .webmcp-copilot-pill {
+            position: fixed;
+            bottom: 135px;
+            right: 24px;
+            z-index: 99999;
+            background: var(--wm-primary-gradient);
+            color: #ffffff;
+            font-size: 13px;
+            font-weight: 600;
+            padding: 9px 18px;
+            border-radius: 30px;
+            box-shadow: 0 8px 24px rgba(99, 102, 241, 0.4);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 9px;
+            transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            user-select: none;
+            backdrop-filter: blur(8px);
+        }
+        .webmcp-copilot-pill:hover {
+            transform: translateY(-3px) scale(1.03);
+            box-shadow: 0 12px 28px rgba(99, 102, 241, 0.55);
+        }
+        .webmcp-copilot-pill:active {
+            transform: translateY(0) scale(0.98);
+        }
+        .webmcp-pill-indicator {
+            width: 8px;
+            height: 8px;
+            background: #10b981;
+            border-radius: 50%;
+            box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.3);
+            animation: webmcpPulse 2s infinite;
+        }
+        @keyframes webmcpPulse {
+            0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.5); }
+            70% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+        }
+
+        /* ====================================================
+           主容器: 支持 侧边抽屉 (Drawer) 与 悬浮视窗 (Popup)
+           ==================================================== */
+        .webmcp-container {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: var(--wm-bg);
+            color: var(--wm-text-primary);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            box-sizing: border-box;
+            user-select: text;
+        }
+
+        /* 模式 1: 侧边抽屉 (Side Drawer) - 停靠右侧，左侧留出单据操作区 */
+        .webmcp-container.mode-drawer {
+            position: fixed;
+            top: 0;
+            right: 0;
+            height: 100vh;
+            width: 620px;
+            max-width: 95vw;
+            z-index: 100000;
+            box-shadow: var(--wm-shadow-drawer);
+            border-left: 1px solid var(--wm-border);
+            transition: width 0.05s ease, transform 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .webmcp-container.mode-drawer.is-hidden {
+            transform: translateX(105%);
+            pointer-events: none;
+        }
+
+        /* 拖拽与缩放进行中: 强制关闭动画，保证绝对跟随鼠标 */
+        .webmcp-container.is-resizing {
+            transition: none !important;
+            user-select: none !important;
+        }
+
+        /* 拖拽全屏捕获遮罩 */
+        .webmcp-drag-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 999999;
+            background: transparent;
+            user-select: none;
+        }
+
+        /* 拖拽文件进入容器的高亮效果 */
+        .webmcp-container.is-dragover {
+            box-shadow: 0 0 0 3px var(--wm-primary), var(--wm-shadow-popup) !important;
+            outline: 2px dashed var(--wm-primary);
+            outline-offset: -4px;
+        }
+
+        /* 抽屉左侧可拖拽把手 (Drawer Resizer Handle) */
+        .webmcp-drawer-resizer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 8px;
+            height: 100%;
+            cursor: ew-resize;
+            z-index: 1000;
+            background: transparent;
+            transition: background-color 0.15s;
+        }
+        .webmcp-drawer-resizer:hover,
+        .webmcp-drawer-resizer.is-resizing {
+            background-color: var(--wm-primary);
+            box-shadow: 0 0 8px rgba(99, 102, 241, 0.6);
+        }
+
+        /* 模式 2: 悬浮视窗 (Pop-up Window) - 自由拖动与缩放 */
+        .webmcp-container.mode-popup {
+            position: fixed;
+            z-index: 100000;
+            width: 860px;
+            max-width: 96vw;
+            height: 86vh;
+            max-height: 96vh;
+            border-radius: var(--wm-radius-lg);
+            box-shadow: var(--wm-shadow-popup);
+            border: 1px solid var(--wm-border);
+            transition: opacity 0.2s ease, transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .webmcp-container.mode-popup.is-hidden {
+            opacity: 0;
+            transform: scale(0.95);
+            pointer-events: none;
+        }
+        .webmcp-container.mode-popup .webmcp-header {
+            cursor: grab;
+        }
+        .webmcp-container.mode-popup .webmcp-header:active {
+            cursor: grabbing;
+        }
+
+        /* 弹窗右下角缩放手柄 (Corner Resizer Handle) */
+        .webmcp-popup-resizer {
+            position: absolute;
+            right: 0;
+            bottom: 0;
+            width: 20px;
+            height: 20px;
+            cursor: nwse-resize;
+            z-index: 1000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--wm-text-muted);
+            user-select: none;
+            transition: color 0.15s;
+        }
+        .webmcp-popup-resizer:hover,
+        .webmcp-popup-resizer.is-resizing {
+            color: var(--wm-primary);
+        }
+
+        /* ====================================================
+           头部 (Header): 玻璃质感 + 分段Tab + 布局切换
+           ==================================================== */
+        .webmcp-header {
+            padding: 0 16px;
+            height: 54px;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--wm-border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            shrink-0: 0;
+            user-select: none;
+            gap: 12px;
+        }
+        .webmcp-header-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-width: 0;
+        }
+        .webmcp-logo-icon {
+            width: 28px;
+            height: 28px;
+            background: var(--wm-primary-gradient);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #ffffff;
+            font-size: 15px;
+            box-shadow: 0 2px 8px rgba(99, 102, 241, 0.35);
+            flex-shrink: 0;
+        }
+        .webmcp-header-title {
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--wm-text-primary);
+            white-space: nowrap;
+            letter-spacing: -0.2px;
+        }
+        .webmcp-badge-status {
+            background: #ecfdf5;
+            color: #059669;
+            border: 1px solid #a7f3d0;
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            white-space: nowrap;
+        }
+        .webmcp-model-badge {
+            background: #f1f5f9;
+            color: #475569;
+            border: 1px solid #cbd5e1;
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: all 0.15s;
+        }
+        .webmcp-model-badge:hover {
+            background: #e2e8f0;
+            border-color: #94a3b8;
+        }
+        .webmcp-model-badge.configured {
+            background: #ede9fe;
+            color: #6d28d9;
+            border-color: #ddd6fe;
+        }
+
+        /* 头部中心分段器 (Segmented Tabs) */
+        .webmcp-tabs {
+            display: flex;
+            background: #f1f5f9;
+            padding: 3px;
+            border-radius: 8px;
+            gap: 2px;
+        }
+        .webmcp-tab-btn {
+            background: transparent;
+            border: none;
+            color: var(--wm-text-secondary);
+            font-size: 12px;
+            font-weight: 600;
+            padding: 5px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.18s ease;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .webmcp-tab-btn:hover {
+            color: var(--wm-text-primary);
+        }
+        .webmcp-tab-btn.active {
+            background: #ffffff;
+            color: var(--wm-primary);
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+        }
+
+        /* 头部右侧操作区 */
+        .webmcp-header-right {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            position: relative;
+        }
+        .webmcp-icon-btn {
+            width: 32px;
+            height: 32px;
+            border-radius: 6px;
+            border: 1px solid transparent;
+            background: transparent;
+            color: var(--wm-text-secondary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.18s;
+        }
+        .webmcp-icon-btn:hover {
+            background: #f1f5f9;
+            color: var(--wm-text-primary);
+        }
+
+        /* 布局切换下拉菜单 (Layout Dropdown) */
+        .webmcp-layout-dropdown {
+            position: absolute;
+            top: 40px;
+            right: 36px;
+            width: 190px;
+            background: #ffffff;
+            border: 1px solid var(--wm-border);
+            border-radius: var(--wm-radius-md);
+            box-shadow: var(--wm-shadow-md);
+            padding: 6px;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            z-index: 100010;
+            animation: webmcpFadeDown 0.18s ease-out;
+        }
+        @keyframes webmcpFadeDown {
+            from { opacity: 0; transform: translateY(-6px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .webmcp-dropdown-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 10px;
+            border-radius: var(--wm-radius-sm);
+            font-size: 12.5px;
+            color: var(--wm-text-secondary);
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .webmcp-dropdown-item:hover {
+            background: #f8fafc;
+            color: var(--wm-text-primary);
+        }
+        .webmcp-dropdown-item.active {
+            background: #eef2ff;
+            color: var(--wm-primary);
+            font-weight: 600;
+        }
+
+        /* ====================================================
+           主体内容区
+           ==================================================== */
+        .webmcp-content-view {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            background: #ffffff;
+        }
+
+        /* 快捷 Prompt 栏 */
+        .webmcp-quick-prompts {
+            padding: 10px 16px;
+            background: #f8fafc;
+            border-bottom: 1px solid var(--wm-border);
+            display: flex;
+            gap: 8px;
+            overflow-x: auto;
+            align-items: center;
+            scrollbar-width: none;
+        }
+        .webmcp-quick-prompts::-webkit-scrollbar {
+            display: none;
+        }
+        .webmcp-prompt-chip {
+            background: #ffffff;
+            border: 1px solid var(--wm-border);
+            color: var(--wm-text-secondary);
+            padding: 4px 12px;
+            border-radius: 16px;
+            font-size: 11.5px;
+            font-weight: 500;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: all 0.2s;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+        }
+        .webmcp-prompt-chip:hover {
+            border-color: var(--wm-primary);
+            color: var(--wm-primary);
+            background: #eef2ff;
+            transform: translateY(-1px);
+        }
+
+        /* 对话流区 */
+        .webmcp-chat-stream {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px 18px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            background: #ffffff;
+        }
+
+        .webmcp-msg {
+            max-width: 92%;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .webmcp-msg.user {
+            align-self: flex-end;
+        }
+        .webmcp-msg.assistant {
+            align-self: flex-start;
+        }
+        .webmcp-msg-bubble {
+            padding: 12px 16px;
+            border-radius: 14px;
+            font-size: 13.5px;
+            line-height: 1.55;
+        }
+        .webmcp-msg.user .webmcp-msg-bubble {
+            background: var(--wm-primary-gradient);
+            color: #ffffff;
+            border-bottom-right-radius: 3px;
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.25);
+        }
+        .webmcp-msg.assistant .webmcp-msg-bubble {
+            background: #f8fafc;
+            color: var(--wm-text-primary);
+            border-bottom-left-radius: 3px;
+            border: 1px solid var(--wm-border);
+        }
+
+        /* ====================================================
+           Markstream React Streaming Markdown Bubble
+           ==================================================== */
+        .webmcp-msg-bubble.markstream-bubble {
+            padding: 12px 16px;
+            overflow-x: auto;
+            max-width: 100%;
+        }
+        .markstream-bubble .markstream-react {
+            font-size: 13.5px;
+            line-height: 1.65;
+            color: var(--wm-text-primary);
+        }
+        .markstream-bubble .markstream-react p {
+            margin: 6px 0;
+        }
+        .markstream-bubble .markstream-react p:first-child {
+            margin-top: 0;
+        }
+        .markstream-bubble .markstream-react p:last-child {
+            margin-bottom: 0;
+        }
+        .markstream-bubble .markstream-react ul,
+        .markstream-bubble .markstream-react ol {
+            margin: 6px 0;
+            padding-left: 20px;
+        }
+        .markstream-bubble .markstream-react li {
+            margin: 3px 0;
+        }
+        .markstream-bubble .markstream-react table {
+            margin: 10px 0;
+            font-size: 12px;
+            border-collapse: collapse;
+            width: 100%;
+            background: #ffffff;
+            border-radius: 6px;
+            overflow: hidden;
+            border: 1px solid #e2e8f0;
+        }
+        .markstream-bubble .markstream-react th,
+        .markstream-bubble .markstream-react td {
+            padding: 7px 10px;
+            border: 1px solid #e2e8f0;
+        }
+        .markstream-bubble .markstream-react th {
+            background: #f1f5f9;
+            font-weight: 600;
+            color: #334155;
+        }
+        .markstream-bubble .markstream-react pre,
+        .markstream-bubble .markstream-react .code-block-node {
+            margin: 8px 0;
+            padding: 10px 12px;
+            border-radius: 8px;
+            font-size: 12px;
+            background: #0f172a;
+            color: #f8fafc;
+        }
+        .markstream-bubble .markstream-react code {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        }
+        .markstream-bubble .markstream-react blockquote {
+            border-left: 3px solid #6366f1;
+            padding-left: 12px;
+            margin: 8px 0;
+            color: #475569;
+            background: #f8faff;
+            border-radius: 0 6px 6px 0;
+            padding: 6px 12px;
+        }
+        .markstream-bubble .markstream-react strong {
+            font-weight: 700;
+            color: #0f172a;
+        }
+
+
+        /* ====================================================
+           CRM Agent Pop 风格: 折叠式 Tool Pocket
+           ==================================================== */
+        .webmcp-tool-pocket {
+            margin: 6px 0;
+            border: 1px solid #e0e7ff;
+            border-radius: var(--wm-radius-md);
+            background: #f8faff;
+            overflow: hidden;
+            transition: all 0.2s ease;
+            box-sizing: border-box;
+            width: 100%;
+        }
+        .webmcp-pocket-header {
+            padding: 8px 12px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+            color: #4338ca;
+            user-select: none;
+            min-height: 30px;
+            line-height: 1.4;
+            box-sizing: border-box;
+        }
+        .webmcp-pocket-header:hover {
+            background: #eef2ff;
+        }
+        .webmcp-pocket-title {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .webmcp-pocket-chevron {
+            font-size: 11px;
+            transition: transform 0.2s ease;
+        }
+        .webmcp-pocket-chevron.open {
+            transform: rotate(180deg);
+        }
+        .webmcp-pocket-body {
+            padding: 8px 12px;
+            border-top: 1px solid #e0e7ff;
+            background: #ffffff;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            font-size: 11.5px;
+            box-sizing: border-box;
+        }
+        .webmcp-pocket-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 4px 0;
+            color: #334155;
+            border-bottom: 1px dashed #f1f5f9;
+        }
+        .webmcp-pocket-item:last-child {
+            border-bottom: none;
+        }
+
+        /* 优雅降级与业务告警通知卡片 */
+        .webmcp-notice-card {
+            margin: 8px 0;
+            padding: 10px 14px;
+            border-radius: var(--wm-radius-md);
+            background: #fff7ed;
+            border: 1px solid #fed7aa;
+            display: flex;
+            gap: 10px;
+            align-items: flex-start;
+            box-sizing: border-box;
+            animation: fadeIn 0.3s ease;
+        }
+
+        /* ====================================================
+           HeroUI Pro Generative UI 行程卡片
+           ==================================================== */
+        .webmcp-trip-card {
+            border: 1px solid var(--wm-border);
+            border-radius: var(--wm-radius-md);
+            padding: 12px 14px;
+            background: #ffffff;
+            box-shadow: var(--wm-shadow-sm);
+            margin: 6px 0;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .webmcp-trip-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .webmcp-trip-route {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 700;
+            font-size: 13.5px;
+            color: var(--wm-text-primary);
+        }
+        .webmcp-trip-person-badge {
+            font-size: 11px;
+            font-weight: 600;
+            padding: 2px 7px;
+            border-radius: 6px;
+        }
+        .webmcp-person-self {
+            background: #e0e7ff;
+            color: #4338ca;
+        }
+        .webmcp-person-proxy {
+            background: #fef3c7;
+            color: #b45309;
+        }
+        .webmcp-trip-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        .webmcp-trip-chip {
+            background: #f1f5f9;
+            color: var(--wm-text-secondary);
+            font-size: 11px;
+            padding: 3px 8px;
+            border-radius: 4px;
+        }
+        .webmcp-trip-chip.amount {
+            background: #ecfdf5;
+            color: #047857;
+            font-weight: 700;
+            margin-left: auto;
+            font-size: 12.5px;
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* ====================================================
+           HeroUI Pro 审批门禁 (Approval Gate)
+           ==================================================== */
+        .webmcp-approval-card {
+            background: linear-gradient(180deg, #fffbeb 0%, #ffffff 100%);
+            border: 1.5px solid #fcd34d;
+            border-radius: var(--wm-radius-md);
+            padding: 16px;
+            margin: 10px 0;
+            box-shadow: 0 6px 20px rgba(245, 158, 11, 0.12);
+        }
+        .webmcp-approval-title {
+            font-size: 13.5px;
+            font-weight: 700;
+            color: #92400e;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+        .webmcp-approval-body {
+            font-size: 12.5px;
+            color: #78350f;
+            line-height: 1.6;
+        }
+        .webmcp-approval-amount {
+            font-size: 20px;
+            font-weight: 800;
+            color: #b45309;
+            font-variant-numeric: tabular-nums;
+            margin: 6px 0;
+        }
+        .webmcp-approval-actions {
+            margin-top: 14px;
+            display: flex;
+            gap: 10px;
+        }
+        .webmcp-btn-approve {
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            color: #ffffff;
+            border: none;
+            padding: 8px 18px;
+            border-radius: 8px;
+            font-size: 12.5px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            box-shadow: 0 2px 8px rgba(16, 185, 129, 0.35);
+        }
+        .webmcp-btn-approve:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(16, 185, 129, 0.45);
+        }
+        .webmcp-btn-reject {
+            background: #ffffff;
+            color: #64748b;
+            border: 1px solid #cbd5e1;
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-size: 12.5px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .webmcp-btn-reject:hover {
+            background: #f8fafc;
+            color: var(--wm-text-primary);
+        }
+
+        /* 对话建议芯片 (Conversation Suggestions) */
+        .webmcp-suggestions-box {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            margin: 8px 0;
+            padding: 10px 14px;
+            background: #f8fafc;
+            border-radius: var(--wm-radius-md);
+            border: 1px solid var(--wm-border);
+        }
+        .webmcp-suggestions-title {
+            font-size: 11.5px;
+            font-weight: 600;
+            color: var(--wm-text-muted);
+        }
+        .webmcp-suggestions-list {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .webmcp-suggestion-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 8px;
+            border-radius: 6px;
+            background: #ffffff;
+            border: 1px solid var(--wm-border);
+            font-size: 12px;
+            color: var(--wm-text-secondary);
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .webmcp-suggestion-row:hover {
+            border-color: var(--wm-primary);
+            color: var(--wm-primary);
+            background: #f5f7ff;
+            transform: translateX(2px);
+        }
+
+        /* 底部 Composer */
+        .webmcp-composer-box {
+            padding: 12px 18px 16px;
+            background: #ffffff;
+            border-top: 1px solid var(--wm-border);
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .webmcp-input-container {
+            border: 1px solid var(--wm-border);
+            border-radius: 12px;
+            padding: 8px 12px;
+            background: #f8fafc;
+            transition: all 0.2s;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .webmcp-input-container:focus-within {
+            background: #ffffff;
+            border-color: var(--wm-primary);
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+        }
+        .webmcp-textarea {
+            width: 100%;
+            border: none;
+            background: transparent;
+            font-size: 13.5px;
+            color: var(--wm-text-primary);
+            outline: none;
+            resize: none;
+            font-family: inherit;
+            min-height: 24px;
+            max-height: 120px;
+        }
+        .webmcp-composer-footer {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 11px;
+            color: var(--wm-text-muted);
+        }
+        .webmcp-btn-send {
+            background: var(--wm-primary-gradient);
+            color: #ffffff;
+            border: none;
+            border-radius: 8px;
+            padding: 6px 16px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.18s;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .webmcp-btn-send:hover {
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.35);
+        }
+        .webmcp-btn-send:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .webmcp-btn-send.is-stopping {
+            background: linear-gradient(135deg, #ef4444 0%, #ea580c 100%) !important;
+            color: #ffffff !important;
+            box-shadow: 0 4px 14px rgba(239, 68, 68, 0.4) !important;
+            animation: webmcp-pulse-stop 1.5s infinite;
+        }
+        @keyframes webmcp-pulse-stop {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.03); }
+            100% { transform: scale(1); }
+        }
+
+        /* 消息悬浮操作浮条 */
+        .webmcp-msg {
+            position: relative;
+        }
+        .webmcp-msg-actions {
+            opacity: 0;
+            pointer-events: none;
+            position: absolute;
+            top: -12px;
+            right: 8px;
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+            border-radius: 6px;
+            padding: 2px 4px;
+            display: inline-flex;
+            align-items: center;
+            gap: 2px;
+            z-index: 10;
+            transition: opacity 0.15s ease;
+        }
+        .webmcp-msg:hover .webmcp-msg-actions {
+            opacity: 1;
+            pointer-events: auto;
+        }
+        .webmcp-msg.user .webmcp-msg-actions {
+            right: auto;
+            left: 8px;
+        }
+        .webmcp-msg-action-btn {
+            background: transparent;
+            border: none;
+            border-radius: 4px;
+            padding: 3px 6px;
+            font-size: 11px;
+            color: #64748b;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            line-height: 1;
+            transition: all 0.15s;
+        }
+        .webmcp-msg-action-btn:hover {
+            background: #f1f5f9;
+            color: #1e293b;
+        }
+
+        /* Agentic 状态卡片 (思考/工具/流式全链路呼吸指示与毫秒秒表) */
+        .webmcp-status-card {
+            border: 1px solid #e0e7ff;
+            border-radius: 12px;
+            background: linear-gradient(135deg, #f8faff 0%, #f1f5fd 100%);
+            padding: 10px 14px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            box-sizing: border-box;
+            box-shadow: 0 2px 8px rgba(99, 102, 241, 0.08);
+            animation: webmcp-status-glow 2s infinite alternate;
+        }
+        @keyframes webmcp-status-glow {
+            0% { border-color: #c7d2fe; box-shadow: 0 2px 8px rgba(99, 102, 241, 0.08); }
+            100% { border-color: #818cf8; box-shadow: 0 4px 14px rgba(99, 102, 241, 0.22); }
+        }
+        .webmcp-status-card-left {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 0;
+            flex: 1;
+        }
+        .webmcp-status-icon {
+            font-size: 14px;
+            animation: webmcp-spin-slow 3s linear infinite;
+        }
+        @keyframes webmcp-spin-slow {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .webmcp-status-text {
+            font-size: 12px;
+            color: #3730a3;
+            font-weight: 500;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .webmcp-status-timer {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 11.5px;
+            font-weight: 700;
+            color: #6366f1;
+            background: rgba(255, 255, 255, 0.85);
+            padding: 2px 6px;
+            border-radius: 6px;
+            border: 1px solid #e0e7ff;
+            letter-spacing: 0.5px;
+            flex-shrink: 0;
+        }
+
+        /* 性能与工具指标徽章 */
+        .webmcp-metrics-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 11px;
+            color: #94a3b8;
+            margin-top: 4px;
+            padding: 2px 8px;
+            border-radius: 4px;
+            background: #f8fafc;
+            border: 1px solid #f1f5f9;
+            align-self: flex-start;
+        }
+        .webmcp-metrics-badge span {
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+        }
+
+        /* 就地编辑框 */
+        .webmcp-inline-editor {
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            background: #ffffff;
+            border: 1px solid #6366f1;
+            border-radius: 10px;
+            padding: 10px;
+            box-shadow: 0 4px 14px rgba(99, 102, 241, 0.15);
+            box-sizing: border-box;
+        }
+        .webmcp-inline-textarea {
+            width: 100%;
+            min-height: 60px;
+            max-height: 200px;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 8px;
+            font-size: 13px;
+            font-family: inherit;
+            resize: vertical;
+            outline: none;
+            box-sizing: border-box;
+        }
+        .webmcp-inline-textarea:focus {
+            border-color: #6366f1;
+        }
+        .webmcp-inline-editor-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+        }
+        .webmcp-inline-btn {
+            padding: 4px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            border: none;
+            transition: all 0.15s;
+        }
+        .webmcp-inline-btn.cancel {
+            background: #f1f5f9;
+            color: #475569;
+        }
+        .webmcp-inline-btn.cancel:hover {
+            background: #e2e8f0;
+        }
+        .webmcp-inline-btn.submit {
+            background: var(--wm-primary-gradient);
+            color: #ffffff;
+        }
+        .webmcp-inline-btn.submit:hover {
+            box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
+        }
+
+        /* 附件列表区 */
+        .webmcp-attachments-bar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            padding-bottom: 4px;
+            border-bottom: 1px solid #f1f5f9;
+        }
+        .webmcp-attachment-chip {
+            background: #f8fafc;
+            border: 1px solid var(--wm-border);
+            border-radius: 6px;
+            padding: 3px 8px;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 11.5px;
+            color: var(--wm-text-secondary);
+            max-width: 220px;
+        }
+        .webmcp-attachment-thumb {
+            width: 20px;
+            height: 20px;
+            border-radius: 4px;
+            object-fit: cover;
+            border: 1px solid rgba(0,0,0,0.1);
+        }
+        .webmcp-attachment-name {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .webmcp-attachment-remove {
+            cursor: pointer;
+            color: #94a3b8;
+            font-size: 11px;
+            margin-left: 2px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            width: 14px;
+            height: 14px;
+            transition: all 0.15s;
+        }
+        .webmcp-attachment-remove:hover {
+            background: #fee2e2;
+            color: #ef4444;
+        }
+        .webmcp-btn-attach {
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: 6px;
+            color: #64748b;
+            padding: 4px 8px;
+            font-size: 11.5px;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            transition: all 0.15s;
+        }
+        .webmcp-btn-attach:hover {
+            background: #f1f5f9;
+            color: var(--wm-primary);
+        }
+
+        /* ====================================================
+           Tab 2: WebMCP 原生工具监视器 & 事件流面板
+           ==================================================== */
+        .webmcp-inspector-view {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            background: #0f172a;
+            color: #f8fafc;
+        }
+        .webmcp-inspector-tools-list {
+            padding: 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            overflow-y: auto;
+            max-height: 48%;
+            border-bottom: 1px solid #1e293b;
+        }
+        .webmcp-tool-card {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: var(--wm-radius-sm);
+            padding: 10px 12px;
+            font-size: 11.5px;
+        }
+        .webmcp-tool-name {
+            color: #38bdf8;
+            font-weight: 700;
+            font-family: monospace;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .webmcp-tool-desc {
+            color: #94a3b8;
+            margin-top: 4px;
+            line-height: 1.4;
+        }
+        .webmcp-logs-panel {
+            flex: 1;
+            overflow-y: auto;
+            padding: 12px;
+            font-family: monospace;
+            font-size: 11px;
+            background: #090d16;
+        }
+        .webmcp-log-item {
+            padding: 6px 0;
+            border-bottom: 1px solid #1e293b;
+            line-height: 1.4;
+            color: #cbd5e1;
+        }
+        .webmcp-log-time {
+            color: #64748b;
+            margin-right: 6px;
+        }
+        .webmcp-log-tool {
+            color: #a855f7;
+            font-weight: 700;
+        }
+
+        /* ====================================================
+           设置弹窗 (Settings Modal)
+           ==================================================== */
+        .webmcp-settings-backdrop {
+            position: fixed;
+            inset: 0;
+            z-index: 10000050 !important;
+            background: rgba(15, 23, 42, 0.6);
+            backdrop-filter: blur(4px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            animation: webmcpFadeIn 0.2s ease-out;
+        }
+        @keyframes webmcpFadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        .webmcp-settings-card {
+            width: 640px;
+            max-width: 94vw;
+            background: #ffffff;
+            border-radius: var(--wm-radius-lg);
+            box-shadow: 0 24px 50px -12px rgba(15, 23, 42, 0.45);
+            border: 1px solid var(--wm-border);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            animation: webmcpScaleUp 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        @keyframes webmcpScaleUp {
+            from { transform: scale(0.95); opacity: 0; }
+            to { transform: scale(1); opacity: 1; }
+        }
+        .webmcp-settings-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--wm-border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .webmcp-settings-body {
+            padding: 18px 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            overflow-y: auto;
+            max-height: 75vh;
+        }
+        .webmcp-settings-field {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        .webmcp-settings-row {
+            display: flex;
+            gap: 12px;
+        }
+        .webmcp-settings-label {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--wm-text-secondary);
+        }
+        .webmcp-settings-hint {
+            font-size: 11px;
+            color: var(--wm-text-muted);
+        }
+        .webmcp-settings-input {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid var(--wm-border);
+            border-radius: var(--wm-radius-sm);
+            font-size: 13px;
+            color: var(--wm-text-primary);
+            box-sizing: border-box;
+            outline: none;
+            transition: border-color 0.15s;
+        }
+        .webmcp-settings-input:focus {
+            border-color: var(--wm-primary);
+            box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+        }
+        .webmcp-presets-bar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        .webmcp-preset-chip {
+            background: #f8fafc;
+            border: 1px solid var(--wm-border);
+            border-radius: 6px;
+            padding: 4px 10px;
+            font-size: 11.5px;
+            font-weight: 500;
+            color: var(--wm-text-secondary);
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .webmcp-preset-chip:hover {
+            border-color: var(--wm-primary);
+            color: var(--wm-primary);
+        }
+        .webmcp-preset-chip.active {
+            background: #ede9fe;
+            border-color: #8b5cf6;
+            color: #6d28d9;
+            font-weight: 600;
+        }
+        .webmcp-models-section {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            background: #f8fafc;
+            border: 1px solid var(--wm-border);
+            border-radius: var(--wm-radius-sm);
+            padding: 12px;
+        }
+        .webmcp-models-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .webmcp-models-title-wrap {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .webmcp-models-title {
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--wm-text-primary);
+        }
+        .webmcp-models-badge {
+            font-size: 10px;
+            background: #e0f2fe;
+            color: #0369a1;
+            padding: 1px 6px;
+            border-radius: 10px;
+            font-weight: 600;
+        }
+        .webmcp-models-actions {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .webmcp-btn-detect {
+            background: #ffffff;
+            border: 1px solid #cbd5e1;
+            color: #2563eb;
+            font-size: 11px;
+            font-weight: 600;
+            padding: 4px 10px;
+            border-radius: 6px;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            transition: all 0.15s;
+        }
+        .webmcp-btn-detect:hover {
+            background: #eff6ff;
+            border-color: #3b82f6;
+        }
+        .webmcp-btn-detect:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        .webmcp-btn-add-custom {
+            background: #ffffff;
+            border: 1px solid #cbd5e1;
+            color: #475569;
+            font-size: 11px;
+            font-weight: 500;
+            padding: 4px 8px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .webmcp-btn-add-custom:hover {
+            background: #f1f5f9;
+            color: #1e293b;
+        }
+        .webmcp-models-search-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .webmcp-models-filter {
+            flex: 1;
+            padding: 5px 8px;
+            font-size: 11px;
+            border: 1px solid #cbd5e1;
+            border-radius: 4px;
+            outline: none;
+            background: #ffffff;
+            box-sizing: border-box;
+        }
+        .webmcp-models-filter:focus {
+            border-color: #3b82f6;
+        }
+        .webmcp-btn-quick-toggle {
+            background: none;
+            border: none;
+            font-size: 10.5px;
+            color: #2563eb;
+            cursor: pointer;
+            padding: 2px 4px;
+            white-space: nowrap;
+        }
+        .webmcp-btn-quick-toggle:hover {
+            text-decoration: underline;
+        }
+        .webmcp-models-list {
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+            max-height: 190px;
+            overflow-y: auto;
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 4px;
+        }
+        .webmcp-model-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 6px 8px;
+            border-radius: 4px;
+            border: 1px solid transparent;
+            transition: all 0.1s ease;
+            user-select: none;
+        }
+        .webmcp-model-item:hover {
+            background: #f8fafc;
+        }
+        .webmcp-model-item.is-active-model {
+            background: #f0fdf4;
+            border-color: #86efac;
+        }
+        .webmcp-model-left {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 0;
+            flex: 1;
+            cursor: pointer;
+        }
+        .webmcp-model-checkbox {
+            cursor: pointer;
+            accent-color: #2563eb;
+        }
+        .webmcp-model-info {
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+        }
+        .webmcp-model-title {
+            font-size: 11.5px;
+            font-weight: 600;
+            color: #1e293b;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .webmcp-model-id {
+            font-size: 10px;
+            color: #64748b;
+            font-family: ui-monospace, monospace;
+        }
+        .webmcp-model-right {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-shrink: 0;
+        }
+        .webmcp-model-badge {
+            font-size: 9.5px;
+            padding: 1px 5px;
+            border-radius: 4px;
+            background: #f1f5f9;
+            color: #475569;
+            border: 1px solid #e2e8f0;
+        }
+        .webmcp-model-badge.reasoning {
+            background: #ede9fe;
+            color: #6d28d9;
+            border-color: #ddd6fe;
+        }
+        .webmcp-model-badge.vision {
+            background: #fef3c7;
+            color: #b45309;
+            border-color: #fde68a;
+        }
+        .webmcp-model-badge.active {
+            background: #dcfce7;
+            color: #15803d;
+            border-color: #bbf7d0;
+            font-weight: 700;
+        }
+        .webmcp-model-btn-set-default {
+            background: none;
+            border: none;
+            color: #94a3b8;
+            cursor: pointer;
+            font-size: 10.5px;
+            padding: 2px 5px;
+            border-radius: 4px;
+            transition: all 0.15s;
+        }
+        .webmcp-model-btn-set-default:hover {
+            color: #16a34a;
+            background: #f0fdf4;
+        }
+        .webmcp-model-btn-del {
+            background: none;
+            border: none;
+            color: #94a3b8;
+            cursor: pointer;
+            font-size: 11px;
+            padding: 2px 4px;
+            border-radius: 4px;
+        }
+        .webmcp-model-btn-del:hover {
+            color: #ef4444;
+            background: #fef2f2;
+        }
+        .webmcp-custom-model-box {
+            display: none;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 8px;
+            background: #ffffff;
+            border: 1px dashed #cbd5e1;
+            border-radius: 6px;
+        }
+        .webmcp-custom-model-box.is-open {
+            display: flex;
+        }
+
+        .webmcp-test-box {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 14px;
+            background: #f8fafc;
+            border: 1px solid var(--wm-border);
+            border-radius: var(--wm-radius-sm);
+        }
+        .webmcp-btn-test {
+            background: #ffffff;
+            border: 1px solid var(--wm-border);
+            color: var(--wm-text-secondary);
+            padding: 5px 12px;
+            border-radius: 6px;
+            font-size: 11.5px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .webmcp-btn-test:hover {
+            border-color: var(--wm-primary);
+            color: var(--wm-primary);
+        }
+        .webmcp-test-status {
+            font-size: 11.5px;
+            max-width: 320px;
+            text-align: right;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .webmcp-settings-footer {
+            padding: 14px 20px;
+            background: #f8fafc;
+            border-top: 1px solid var(--wm-border);
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 10px;
+        }
+        .webmcp-btn-secondary {
+            background: #ffffff;
+            border: 1px solid var(--wm-border);
+            color: var(--wm-text-secondary);
+            padding: 7px 16px;
+            border-radius: 6px;
+            font-size: 12.5px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .webmcp-btn-secondary:hover {
+            background: #f1f5f9;
+            color: var(--wm-text-primary);
+        }
+        .webmcp-btn-primary {
+            background: var(--wm-primary-gradient);
+            border: none;
+            color: #ffffff;
+            padding: 7px 18px;
+            border-radius: 6px;
+            font-size: 12.5px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s;
+            box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
+        }
+        .webmcp-btn-primary:hover {
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.45);
+        }
+
+        /* ====================================================
+           WebMCP Generative Artifact 方案全景透视看板样式
+           ==================================================== */
+        .webmcp-artifact-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(15, 23, 42, 0.65);
+            backdrop-filter: blur(6px);
+            z-index: 10000002;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            box-sizing: border-box;
+            animation: webmcp-fade-in 0.2s ease-out;
+        }
+        .webmcp-artifact-modal {
+            width: 94vw;
+            max-width: 1400px;
+            height: 90vh;
+            max-height: 920px;
+            background: #ffffff;
+            border-radius: 18px;
+            box-shadow: 0 24px 60px -12px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(0, 0, 0, 0.05);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        }
+        .webmcp-artifact-header {
+            padding: 16px 24px;
+            background: #f8fafc;
+            border-bottom: 1px solid #e2e8f0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-shrink: 0;
+        }
+        .webmcp-artifact-title-group {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .webmcp-artifact-icon {
+            font-size: 26px;
+        }
+        .webmcp-artifact-title {
+            font-size: 16px;
+            font-weight: 700;
+            color: #0f172a;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .webmcp-artifact-subtitle {
+            font-size: 12px;
+            color: #64748b;
+            margin-top: 2px;
+        }
+        .webmcp-artifact-badge-count {
+            font-size: 11px;
+            font-weight: 700;
+            background: #e0e7ff;
+            color: #4338ca;
+            padding: 2px 8px;
+            border-radius: 10px;
+        }
+        .webmcp-artifact-badge-mode {
+            font-size: 11px;
+            font-weight: 700;
+            background: #dcfce7;
+            color: #15803d;
+            padding: 2px 8px;
+            border-radius: 10px;
+        }
+        .webmcp-artifact-header-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .webmcp-artifact-action-btn {
+            background: #ffffff;
+            border: 1px solid #cbd5e1;
+            color: #334155;
+            padding: 6px 14px;
+            border-radius: 8px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .webmcp-artifact-action-btn:hover {
+            background: #f1f5f9;
+            color: #0f172a;
+            border-color: #94a3b8;
+        }
+        .webmcp-artifact-close-btn {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            border: none;
+            background: #e2e8f0;
+            color: #475569;
+            font-size: 14px;
+            font-weight: 700;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.15s;
+        }
+        .webmcp-artifact-close-btn:hover {
+            background: #cbd5e1;
+            color: #0f172a;
+        }
+        .webmcp-artifact-kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 12px;
+            padding: 14px 24px;
+            background: #f1f5f9;
+            border-bottom: 1px solid #e2e8f0;
+            flex-shrink: 0;
+        }
+        .webmcp-artifact-kpi-card {
+            background: #ffffff;
+            border-radius: 10px;
+            padding: 10px 14px;
+            border: 1px solid #e2e8f0;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+        }
+        .webmcp-artifact-kpi-card.highlight {
+            border-color: #818cf8;
+            background: #eef2ff;
+        }
+        .webmcp-kpi-label {
+            font-size: 11.5px;
+            font-weight: 600;
+            color: #64748b;
+        }
+        .webmcp-kpi-val {
+            font-size: 17px;
+            font-weight: 800;
+            color: #1e293b;
+            font-family: monospace;
+            margin-top: 4px;
+        }
+        .webmcp-kpi-val.highlight {
+            color: #4338ca;
+        }
+        .webmcp-kpi-sub {
+            font-size: 10.5px;
+            color: #94a3b8;
+            margin-top: 2px;
+        }
+        .webmcp-artifact-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 18px 24px;
+        }
+        .webmcp-artifact-table-container {
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+        }
+        .webmcp-artifact-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12.5px;
+        }
+        .webmcp-artifact-table thead th {
+            background: #f8fafc;
+            color: #475569;
+            font-weight: 600;
+            padding: 10px 12px;
+            border-bottom: 1px solid #e2e8f0;
+            text-align: left;
+            position: sticky;
+            top: 0;
+            z-index: 2;
+        }
+        .webmcp-artifact-table tbody tr.art-row {
+            border-bottom: 1px solid #f1f5f9;
+            transition: background 0.1s ease;
+        }
+        .webmcp-artifact-table tbody tr.art-row:hover {
+            background: #faf5ff;
+        }
+        .webmcp-artifact-table tbody td {
+            padding: 11px 12px;
+            vertical-align: middle;
+        }
+        .art-tag {
+            font-size: 10px;
+            font-weight: 600;
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+        .art-tag.proxy {
+            background: #fef3c7;
+            color: #92400e;
+        }
+        .art-tag.self {
+            background: #e0e7ff;
+            color: #4338ca;
+        }
+        .art-tag.combined {
+            background: #dcfce7;
+            color: #15803d;
+        }
+        .art-toggle-legs-btn {
+            background: #ffffff;
+            border: 1px solid #cbd5e1;
+            color: #4338ca;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            transition: all 0.15s;
+        }
+        .art-toggle-legs-btn:hover {
+            background: #e0e7ff;
+            border-color: #818cf8;
+        }
+        .art-legs-detail-panel {
+            padding: 4px 0;
+        }
+        .art-legs-detail-title {
+            font-size: 12px;
+            font-weight: 700;
+            color: #334155;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+        .art-legs-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+            gap: 8px;
+        }
+        .art-leg-card {
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 8px 12px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .art-leg-seq {
+            font-size: 11px;
+            font-weight: 700;
+            color: #6366f1;
+            background: #e0e7ff;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+        .art-leg-date {
+            font-size: 11px;
+            color: #475569;
+            font-family: monospace;
+        }
+        .art-leg-route {
+            font-size: 12px;
+            font-weight: 600;
+            color: #0f172a;
+            margin: 2px 0;
+        }
+        .art-leg-pill {
+            font-size: 10.5px;
+            font-weight: 600;
+            background: #eff6ff;
+            color: #1d4ed8;
+            padding: 2px 6px;
+            border-radius: 4px;
+            display: inline-block;
+        }
+        .art-legs-footer {
+            margin-top: 8px;
+            font-size: 11.5px;
+            color: #64748b;
+            background: #ffffff;
+            padding: 6px 10px;
+            border-radius: 6px;
+            border: 1px dashed #cbd5e1;
+        }
+        .webmcp-artifact-footer {
+            padding: 14px 24px;
+            background: #f8fafc;
+            border-top: 1px solid #e2e8f0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-shrink: 0;
+        }
+        .webmcp-artifact-footer-info {
+            font-size: 12px;
+            color: #475569;
+        }
+        .webmcp-artifact-footer-actions {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .webmcp-artifact-btn-secondary {
+            background: #ffffff;
+            border: 1px solid #cbd5e1;
+            color: #475569;
+            padding: 8px 18px;
+            border-radius: 8px;
+            font-size: 12.5px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .webmcp-artifact-btn-secondary:hover {
+            background: #f1f5f9;
+            color: #0f172a;
+        }
+        .webmcp-artifact-btn-primary {
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            border: none;
+            color: #ffffff;
+            padding: 8px 20px;
+            border-radius: 8px;
+            font-size: 12.5px;
+            font-weight: 700;
+            cursor: pointer;
+            box-shadow: 0 2px 8px rgba(16, 185, 129, 0.35);
+            transition: all 0.15s;
+        }
+        .webmcp-artifact-btn-primary:hover {
+            box-shadow: 0 4px 14px rgba(16, 185, 129, 0.5);
+            transform: translateY(-1px);
+        }
+
+        /* 展开收起切换条与全景 Artifact 快捷按钮 */
+        .webmcp-expand-bar {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            padding: 6px 0 10px 0;
+        }
+        .webmcp-expand-toggle-btn {
+            background: #f1f5f9;
+            border: 1px solid #cbd5e1;
+            color: #4338ca;
+            padding: 6px 16px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.15s ease;
+        }
+        .webmcp-expand-toggle-btn:hover {
+            background: #e0e7ff;
+            border-color: #818cf8;
+            transform: translateY(-1px);
+        }
+        .webmcp-open-artifact-btn {
+            background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+            border: none;
+            color: #ffffff;
+            padding: 6px 16px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
+            transition: all 0.15s ease;
+        }
+        .webmcp-open-artifact-btn:hover {
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.45);
+            transform: translateY(-1px);
+        }
+
+        /* 单卡片内多行明细折叠展示 */
+        .webmcp-card-details-toggle {
+            font-size: 11px;
+            color: #4338ca;
+            font-weight: 600;
+            cursor: pointer;
+            user-select: none;
+            margin-left: auto;
+        }
+        .webmcp-card-details-box {
+            margin-top: 8px;
+            padding: 8px 10px;
+            background: #f8fafc;
+            border-radius: 8px;
+            border: 1px solid #e2e8f0;
+            font-size: 11.5px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .webmcp-card-leg-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            color: #334155;
+            font-family: monospace;
+            font-size: 11px;
+        }
+        .webmcp-card-leg-tag {
+            background: #eff6ff;
+            color: #1d4ed8;
+            padding: 1px 6px;
+            border-radius: 4px;
+            font-size: 10.5px;
+            font-weight: 600;
+        }
+
+        /* ====================================================
+           WebMCP A2UI 预算归属交互决策卡片 (Agent-to-User Interface)
+           ==================================================== */
+        .webmcp-a2ui-card {
+            margin: 10px 0;
+            padding: 14px 16px;
+            background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%);
+            border: 1.5px solid #cbd5e1;
+            border-radius: 12px;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.05);
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            position: relative;
+            box-sizing: border-box;
+        }
+        .webmcp-a2ui-header {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .webmcp-a2ui-badge {
+            display: inline-flex;
+            align-self: flex-start;
+            font-size: 10px;
+            font-weight: 700;
+            color: #4338ca;
+            background: #e0e7ff;
+            padding: 2px 8px;
+            border-radius: 10px;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }
+        .webmcp-a2ui-title {
+            font-size: 13.5px;
+            font-weight: 700;
+            color: #0f172a;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .webmcp-a2ui-desc {
+            font-size: 11.5px;
+            color: #64748b;
+            line-height: 1.5;
+        }
+        .webmcp-a2ui-mode-toggle {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-top: 2px;
+        }
+        .webmcp-a2ui-mode-btn {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 9px 12px;
+            border-radius: 8px;
+            border: 1.5px solid #e2e8f0;
+            background: #ffffff;
+            color: #475569;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+        .webmcp-a2ui-mode-btn:hover {
+            border-color: #94a3b8;
+            background: #f8fafc;
+        }
+        .webmcp-a2ui-mode-btn.active {
+            border-color: #6366f1;
+            background: #eef2ff;
+            color: #4338ca;
+            box-shadow: 0 2px 8px rgba(99, 102, 241, 0.15);
+        }
+        .webmcp-a2ui-proj-section {
+            position: relative;
+            margin-top: 2px;
+        }
+        .webmcp-a2ui-search-box {
+            position: relative;
+            display: flex;
+            align-items: center;
+        }
+        .webmcp-a2ui-search-icon {
+            position: absolute;
+            left: 10px;
+            font-size: 13px;
+            color: #94a3b8;
+            pointer-events: none;
+        }
+        .webmcp-a2ui-search-input {
+            width: 100%;
+            box-sizing: border-box;
+            padding: 8px 30px 8px 32px;
+            font-size: 12px;
+            border: 1.5px solid #cbd5e1;
+            border-radius: 8px;
+            background: #ffffff;
+            outline: none;
+            transition: all 0.15s ease;
+            color: #1e293b;
+        }
+        .webmcp-a2ui-search-input:focus {
+            border-color: #6366f1;
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+        }
+        .webmcp-a2ui-search-clear {
+            position: absolute;
+            right: 8px;
+            background: transparent;
+            border: none;
+            color: #94a3b8;
+            cursor: pointer;
+            font-size: 12px;
+            padding: 2px 6px;
+        }
+        .webmcp-a2ui-search-clear:hover {
+            color: #334155;
+        }
+        .webmcp-a2ui-dropdown {
+            position: absolute;
+            top: calc(100% + 4px);
+            left: 0;
+            right: 0;
+            background: #ffffff;
+            border: 1px solid #cbd5e1;
+            border-radius: 8px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+            max-height: 180px;
+            overflow-y: auto;
+            z-index: 1000;
+        }
+        .webmcp-a2ui-dropdown-loading, .webmcp-a2ui-dropdown-empty {
+            padding: 10px 12px;
+            font-size: 11.5px;
+            color: #64748b;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .webmcp-a2ui-dropdown-item {
+            padding: 8px 12px;
+            font-size: 12px;
+            color: #1e293b;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            border-bottom: 1px solid #f1f5f9;
+            transition: background 0.1s ease;
+        }
+        .webmcp-a2ui-dropdown-item:last-child {
+            border-bottom: none;
+        }
+        .webmcp-a2ui-dropdown-item:hover {
+            background: #f8fafc;
+            color: #4338ca;
+        }
+        .webmcp-a2ui-item-code {
+            font-family: monospace;
+            font-size: 10.5px;
+            color: #6366f1;
+            background: #eef2ff;
+            padding: 1px 5px;
+            border-radius: 4px;
+            font-weight: 600;
+        }
+        .webmcp-a2ui-item-name {
+            font-weight: 500;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .webmcp-a2ui-selected-chip {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: #ecfdf5;
+            border: 1px solid #a7f3d0;
+            border-radius: 6px;
+            padding: 5px 10px;
+            font-size: 11.5px;
+            color: #065f46;
+            margin-top: 6px;
+        }
+        .webmcp-a2ui-chip-remove {
+            margin-left: auto;
+            background: transparent;
+            border: none;
+            color: #059669;
+            font-size: 11px;
+            cursor: pointer;
+            text-decoration: underline;
+        }
+        .webmcp-a2ui-status-bar {
+            font-size: 11px;
+            color: #64748b;
+            background: #f1f5f9;
+            padding: 6px 10px;
+            border-radius: 6px;
+            border-left: 3px solid #94a3b8;
+        }
+        .webmcp-a2ui-status-bar.success {
+            color: #166534;
+            background: #f0fdf4;
+            border-left-color: #22c55e;
+        }
+        .webmcp-a2ui-status-bar.warn {
+            color: #92400e;
+            background: #fffbeb;
+            border-left-color: #f59e0b;
+        }
+        .webmcp-trip-project-badge {
+            background: #f5f3ff;
+            color: #7c3aed;
+            font-size: 11px;
+            font-weight: 600;
+            padding: 2px 7px;
+            border-radius: 6px;
+            border: 1px solid #ddd6fe;
+        }
+        .webmcp-trip-dept-badge {
+            background: #f8fafc;
+            color: #64748b;
+            font-size: 11px;
+            font-weight: 500;
+            padding: 2px 7px;
+            border-radius: 6px;
+            border: 1px solid #e2e8f0;
+        }
+
+        /* ====================================================
+           A2UI 声明式 AST 组件增强样式
+           ==================================================== */
+        .webmcp-a2ui-alert {
+            padding: 9px 12px;
+            border-radius: 8px;
+            font-size: 11.5px;
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            line-height: 1.45;
+            box-sizing: border-box;
+        }
+        .webmcp-a2ui-alert.info {
+            background: #eff6ff;
+            color: #1e40af;
+            border: 1px solid #bfdbfe;
+        }
+        .webmcp-a2ui-alert.success {
+            background: #f0fdf4;
+            color: #166534;
+            border: 1px solid #bbf7d0;
+        }
+        .webmcp-a2ui-alert.warn {
+            background: #fffbeb;
+            color: #92400e;
+            border: 1px solid #fde68a;
+        }
+        .webmcp-a2ui-alert.error {
+            background: #fef2f2;
+            color: #991b1b;
+            border: 1px solid #fecaca;
+        }
+
+        .webmcp-a2ui-timeline {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 9px 10px;
+            max-height: 200px;
+            overflow-y: auto;
+            box-sizing: border-box;
+        }
+        .webmcp-a2ui-timeline-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 6px 10px;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+            font-size: 11px;
+            transition: all 0.15s ease;
+        }
+        .webmcp-a2ui-timeline-item:hover {
+            border-color: #6366f1;
+            box-shadow: 0 2px 6px rgba(99, 102, 241, 0.1);
+        }
+        .webmcp-a2ui-wave-badge {
+            background: #e0e7ff;
+            color: #4338ca;
+            font-size: 10px;
+            font-weight: 700;
+            padding: 2px 6px;
+            border-radius: 4px;
+            white-space: nowrap;
+        }
+        .webmcp-a2ui-wave-date {
+            font-weight: 600;
+            color: #0f172a;
+            white-space: nowrap;
+            font-size: 11px;
+        }
+        .webmcp-a2ui-wave-dest {
+            background: #ecfdf5;
+            color: #059669;
+            padding: 1.5px 5px;
+            border-radius: 4px;
+            font-weight: 600;
+            white-space: nowrap;
+            font-size: 10.5px;
+        }
+        .webmcp-a2ui-wave-hotel {
+            color: #475569;
+            white-space: nowrap;
+            font-size: 11px;
+            font-weight: 500;
+        }
+        .webmcp-a2ui-wave-customer {
+            color: #64748b;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            flex: 1;
+            font-size: 11px;
+        }
+
+        .webmcp-a2ui-grid {
+            display: grid;
+            gap: 8px;
+            margin: 4px 0;
+            box-sizing: border-box;
+        }
+        .webmcp-a2ui-field {
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+            font-size: 11.5px;
+        }
+        .webmcp-a2ui-label {
+            font-weight: 600;
+            color: #475569;
+            font-size: 11.5px;
+        }
+        .webmcp-a2ui-input {
+            width: 100%;
+            box-sizing: border-box;
+            padding: 6px 10px;
+            font-size: 11.5px;
+            border: 1.5px solid #cbd5e1;
+            border-radius: 6px;
+            background: #ffffff;
+            outline: none;
+            transition: all 0.15s ease;
+            color: #1e293b;
+        }
+        .webmcp-a2ui-input:focus {
+            border-color: #6366f1;
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12);
+        }
+
+        /* ====================================================
+           会话历史抽屉 (Session History Drawer)
+           ==================================================== */
+        .webmcp-history-backdrop {
+            position: absolute;
+            inset: 0;
+            background: rgba(15, 23, 42, 0.35);
+            backdrop-filter: blur(2px);
+            z-index: 100010;
+            opacity: 0;
+            transition: opacity 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+            pointer-events: none;
+        }
+        .webmcp-history-backdrop.is-open {
+            opacity: 1;
+            pointer-events: auto;
+        }
+        .webmcp-history-drawer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            width: 320px;
+            max-width: 85%;
+            background: #ffffff;
+            box-shadow: 8px 0 28px rgba(15, 23, 42, 0.18);
+            border-right: 1px solid var(--wm-border);
+            z-index: 100015;
+            display: flex;
+            flex-direction: column;
+            transform: translateX(-102%);
+            transition: transform 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+            box-sizing: border-box;
+            user-select: none;
+        }
+        .webmcp-history-drawer.is-open {
+            transform: translateX(0);
+        }
+
+        /* 历史抽屉头部 */
+        .webmcp-history-header {
+            padding: 12px 14px;
+            border-bottom: 1px solid var(--wm-border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: #f8fafc;
+            flex-shrink: 0;
+        }
+        .webmcp-history-header-left {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .webmcp-history-title {
+            font-size: 13.5px;
+            font-weight: 700;
+            color: #0f172a;
+        }
+        .webmcp-history-badge {
+            background: #e2e8f0;
+            color: #475569;
+            font-size: 10.5px;
+            font-weight: 600;
+            padding: 1.5px 6px;
+            border-radius: 10px;
+        }
+        .webmcp-history-header-right {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .webmcp-history-btn-new {
+            background: var(--wm-primary-gradient);
+            color: #ffffff;
+            border: none;
+            padding: 4px 8px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            transition: all 0.15s;
+            box-shadow: 0 1px 4px rgba(99, 102, 241, 0.3);
+        }
+        .webmcp-history-btn-new:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 2px 6px rgba(99, 102, 241, 0.45);
+        }
+        .webmcp-history-btn-close {
+            background: transparent;
+            border: none;
+            color: #64748b;
+            font-size: 14px;
+            cursor: pointer;
+            width: 24px;
+            height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 4px;
+            transition: all 0.15s;
+        }
+        .webmcp-history-btn-close:hover {
+            background: #e2e8f0;
+            color: #0f172a;
+        }
+
+        /* 搜索与筛选栏 */
+        .webmcp-history-search-bar {
+            padding: 8px 12px;
+            background: #ffffff;
+            border-bottom: 1px solid var(--wm-border-subtle);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+        .webmcp-history-search-wrapper {
+            position: relative;
+            flex: 1;
+            display: flex;
+            align-items: center;
+        }
+        .webmcp-history-search-icon {
+            position: absolute;
+            left: 8px;
+            font-size: 11px;
+            color: #94a3b8;
+            pointer-events: none;
+        }
+        .webmcp-history-search-wrapper input {
+            width: 100%;
+            padding: 5px 24px 5px 26px;
+            font-size: 11.5px;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            background: #f8fafc;
+            outline: none;
+            transition: all 0.15s;
+            color: #1e293b;
+            box-sizing: border-box;
+        }
+        .webmcp-history-search-wrapper input:focus {
+            background: #ffffff;
+            border-color: #6366f1;
+            box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.1);
+        }
+        .webmcp-history-search-clear {
+            position: absolute;
+            right: 6px;
+            font-size: 11px;
+            color: #94a3b8;
+            cursor: pointer;
+            padding: 2px;
+        }
+        .webmcp-history-search-clear:hover {
+            color: #0f172a;
+        }
+        .webmcp-history-filter-chip {
+            background: #f1f5f9;
+            border: 1px solid #cbd5e1;
+            color: #64748b;
+            font-size: 11px;
+            font-weight: 600;
+            padding: 4px 7px;
+            border-radius: 6px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 3px;
+            white-space: nowrap;
+            transition: all 0.15s;
+        }
+        .webmcp-history-filter-chip:hover {
+            background: #e2e8f0;
+            color: #1e293b;
+        }
+        .webmcp-history-filter-chip.active {
+            background: #ede9fe;
+            color: #6366f1;
+            border-color: #a5b4fc;
+        }
+
+        /* 历史列表区 */
+        .webmcp-history-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 6px 8px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .webmcp-history-group-title {
+            padding: 6px 6px 2px 6px;
+            font-size: 10.5px;
+            font-weight: 700;
+            color: #64748b;
+            letter-spacing: 0.3px;
+            text-transform: uppercase;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        /* 历史卡片项 */
+        .webmcp-history-item {
+            padding: 8px 10px;
+            border-radius: 8px;
+            background: #ffffff;
+            border: 1px solid transparent;
+            cursor: pointer;
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            transition: all 0.15s ease;
+            position: relative;
+            gap: 6px;
+        }
+        .webmcp-history-item:hover {
+            background: #f8fafc;
+            border-color: #e2e8f0;
+        }
+        .webmcp-history-item.active {
+            background: #f5f3ff;
+            border-color: #c7d2fe;
+            box-shadow: 0 1px 4px rgba(99, 102, 241, 0.08);
+        }
+        .webmcp-history-item-main {
+            flex: 1;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .webmcp-history-item-top {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .webmcp-history-item-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: #1e293b;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            flex: 1;
+        }
+        .webmcp-history-item.active .webmcp-history-item-title {
+            color: #4f46e5;
+        }
+        .webmcp-history-active-tag {
+            background: #10b981;
+            color: #ffffff;
+            font-size: 9.5px;
+            font-weight: 700;
+            padding: 1px 4px;
+            border-radius: 4px;
+            white-space: nowrap;
+        }
+        .webmcp-history-pin-badge {
+            font-size: 10px;
+        }
+        .webmcp-history-item-preview {
+            font-size: 11px;
+            color: #64748b;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            line-height: 1.3;
+        }
+        .webmcp-history-item-meta {
+            font-size: 10px;
+            color: #94a3b8;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            margin-top: 1px;
+        }
+
+        /* 悬浮操作按钮组 */
+        .webmcp-history-item-actions {
+            display: none;
+            align-items: center;
+            gap: 2px;
+            flex-shrink: 0;
+        }
+        .webmcp-history-item:hover .webmcp-history-item-actions {
+            display: flex;
+        }
+        .webmcp-history-action-btn {
+            background: transparent;
+            border: none;
+            padding: 2px 4px;
+            font-size: 11px;
+            border-radius: 4px;
+            cursor: pointer;
+            color: #64748b;
+            transition: all 0.12s;
+        }
+        .webmcp-history-action-btn:hover {
+            background: #e2e8f0;
+            color: #0f172a;
+        }
+        .webmcp-history-action-btn.danger:hover {
+            background: #fee2e2;
+            color: #ef4444;
+        }
+        .webmcp-history-rename-input {
+            width: 100%;
+            padding: 2px 6px;
+            font-size: 12px;
+            font-weight: 600;
+            border: 1.5px solid #6366f1;
+            border-radius: 4px;
+            outline: none;
+            box-sizing: border-box;
+            background: #ffffff;
+            color: #1e293b;
+        }
+
+        .webmcp-history-empty {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 40px 10px;
+            text-align: center;
+            gap: 6px;
+        }
+
+        /* 底部工具条 */
+        .webmcp-history-footer {
+            padding: 8px 10px;
+            background: #f8fafc;
+            border-top: 1px solid var(--wm-border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 6px;
+            flex-shrink: 0;
+        }
+        .webmcp-history-footer-btn {
+            flex: 1;
+            background: #ffffff;
+            border: 1px solid #cbd5e1;
+            color: #475569;
+            font-size: 11px;
+            font-weight: 600;
+            padding: 5px 0;
+            border-radius: 6px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            transition: all 0.15s;
+        }
+        .webmcp-history-footer-btn:hover {
+            background: #f1f5f9;
+            color: #0f172a;
+            border-color: #94a3b8;
+        }
+        .webmcp-history-footer-btn.danger:hover {
+            background: #fef2f2;
+            color: #dc2626;
+            border-color: #fca5a5;
+        }
+    `;
+        document.head.appendChild(style);
+    }
+
+    function openWebMcpSettingsModal(onSaved) {
+        // 1. 确保全局样式已注入（修复副驾点击设置弹窗因缺样式而无法显示的隐蔽 BUG）
+        injectWebMcpStyles();
+        const modalId = 'autopilot-webmcp-settings-modal';
+        let modal = document.getElementById(modalId);
+        if (modal)
+            modal.remove();
+        const currentCfg = getLlmConfig();
+        modal = document.createElement('div');
+        modal.id = modalId;
+        modal.className = 'webmcp-settings-backdrop';
+        modal.innerHTML = `
+        <div class="webmcp-settings-card">
+            <div class="webmcp-settings-header">
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <span style="font-size:18px;">⚙️</span>
+                    <div>
+                        <div style="font-size:14.5px; font-weight:700; color:var(--wm-text-primary);">LLM 模型接入与智能选用配置</div>
+                        <div style="font-size:11px; color:#64748b;">支持自动探测模型列表、自定义勾选并在对话框底部快捷选用</div>
+                    </div>
+                </div>
+                <button class="webmcp-icon-btn" id="settings-btn-close" style="background:none; border:none; font-size:16px; cursor:pointer; color:#64748b; padding:4px 8px; border-radius:4px;">✕</button>
+            </div>
+
+            <div class="webmcp-settings-body">
+                <!-- 1. 服务商预设 -->
+                <div class="webmcp-settings-field">
+                    <label class="webmcp-settings-label">选择推荐服务商预设 (Quick Presets)</label>
+                    <div class="webmcp-presets-bar">
+                        <button class="webmcp-preset-chip ${currentCfg.provider === 'gemini' ? 'active' : ''}" data-provider="gemini">✦ Google Gemini (推荐首选)</button>
+                        <button class="webmcp-preset-chip ${currentCfg.provider === 'deepseek' ? 'active' : ''}" data-provider="deepseek">🐳 DeepSeek (V3/R1)</button>
+                        <button class="webmcp-preset-chip ${currentCfg.provider === 'openai' ? 'active' : ''}" data-provider="openai">🟢 OpenAI (GPT-4o/o3)</button>
+                        <button class="webmcp-preset-chip ${currentCfg.provider === 'claude' || currentCfg.provider === 'openrouter' ? 'active' : ''}" data-provider="claude">⚡ Claude 3.7 / OpenRouter</button>
+                        <button class="webmcp-preset-chip ${currentCfg.provider === 'ollama' ? 'active' : ''}" data-provider="ollama">🦙 Ollama (本地私有)</button>
+                        <button class="webmcp-preset-chip ${currentCfg.provider === 'custom' ? 'active' : ''}" data-provider="custom">⚙️ 自定义 (Custom)</button>
+                    </div>
+                </div>
+
+                <!-- 2. API 端点与 Key -->
+                <div class="webmcp-settings-row">
+                    <div class="webmcp-settings-field" style="flex:2;">
+                        <label class="webmcp-settings-label">API 基础地址 (Base URL)</label>
+                        <input type="text" class="webmcp-settings-input" id="cfg-endpoint" placeholder="例如: https://generativelanguage.googleapis.com/v1beta/openai" value="${currentCfg.endpoint}" />
+                        <span class="webmcp-settings-hint" id="cfg-endpoint-hint">Google AI Studio 端点原生兼容 OpenAI 协议。</span>
+                    </div>
+                    <div class="webmcp-settings-field" style="flex:1;">
+                        <label class="webmcp-settings-label">发散度 (Temp): <span id="temp-val">${currentCfg.temperature}</span></label>
+                        <input type="range" min="0" max="1" step="0.05" value="${currentCfg.temperature}" id="cfg-temp" style="margin-top:10px; width:100%; cursor:pointer;" />
+                    </div>
+                </div>
+
+                <div class="webmcp-settings-field">
+                    <label class="webmcp-settings-label">API 密钥 (API Key)</label>
+                    <div style="position:relative; display:flex; align-items:center;">
+                        <input type="password" class="webmcp-settings-input" id="cfg-apikey" placeholder="AIzaSy... 或 sk-..." value="${currentCfg.apiKey}" style="padding-right:40px; font-family:ui-monospace,monospace;" />
+                        <button type="button" id="cfg-toggle-key" style="position:absolute; right:8px; background:none; border:none; cursor:pointer; font-size:13px; color:#64748b;" title="显示/隐藏密钥">👁️</button>
+                    </div>
+                    <span class="webmcp-settings-hint" id="cfg-apikey-hint">Google AI Studio Key 请从 <a href="https://aistudio.google.com/app/apikey" target="_blank" style="color:#2563eb; text-decoration: underline;">aistudio.google.com</a> 免费获取。</span>
+                </div>
+
+                <!-- 3. 模型自动识别与勾选管理区 -->
+                <div class="webmcp-models-section">
+                    <div class="webmcp-models-header">
+                        <div class="webmcp-models-title-wrap">
+                            <span class="webmcp-models-title">可用模型清单与对话框展示配置</span>
+                            <span class="webmcp-models-badge" id="models-count-badge">已选用 0 个</span>
+                        </div>
+                        <div class="webmcp-models-actions">
+                            <button type="button" class="webmcp-btn-detect" id="btn-detect-models" title="向当前 API 发起 /models 探测，自动拉取最新支持的模型列表">
+                                <span class="btn-detect-icon">🔍</span>
+                                <span>自动识别模型</span>
+                            </button>
+                            <button type="button" class="webmcp-btn-add-custom" id="btn-show-add-custom">
+                                <span>＋ 添加自定义</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- 自定义模型新增框 -->
+                    <div class="webmcp-custom-model-box" id="custom-model-box">
+                        <input type="text" id="custom-model-input" class="webmcp-models-filter" placeholder="输入模型 ID (如 gpt-4o-2024-11-20、qwen-max 或私有模型)" />
+                        <button type="button" class="webmcp-btn-detect" id="btn-confirm-add-custom" style="white-space:nowrap;">确认添加</button>
+                    </div>
+
+                    <!-- 搜索与快捷操作 -->
+                    <div class="webmcp-models-search-row">
+                        <input type="text" id="models-search-filter" class="webmcp-models-filter" placeholder="快速过滤模型 ID 或名称..." />
+                        <button type="button" class="webmcp-btn-quick-toggle" id="btn-toggle-all">全选</button>
+                        <button type="button" class="webmcp-btn-quick-toggle" id="btn-toggle-none">清空</button>
+                    </div>
+
+                    <!-- 模型条目滚动列表 -->
+                    <div class="webmcp-models-list" id="models-checklist-container">
+                        <!-- 动态渲染 -->
+                    </div>
+                    <div style="font-size:10.5px; color:#64748b; display:flex; align-items:center; justify-content:space-between;">
+                        <span>提示：勾选 <input type="checkbox" checked disabled style="vertical-align:middle;" /> 的模型将呈现在副驾底部快捷下拉框中供即时切换。点击“设为当前”锁定为当前生效模型。</span>
+                    </div>
+                </div>
+
+                <!-- 4. 连通性测试区域 -->
+                <div class="webmcp-test-box" id="webmcp-test-box">
+                    <button class="webmcp-btn-test" id="cfg-btn-test">
+                        <span>🧪 测试连通性 (Ping Test)</span>
+                    </button>
+                    <div class="webmcp-test-status" id="cfg-test-status">
+                        <span style="color:#94a3b8;">尚未测试</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="webmcp-settings-footer">
+                <button class="webmcp-btn-secondary" id="settings-btn-cancel">取消</button>
+                <button class="webmcp-btn-primary" id="settings-btn-save">💾 保存并生效</button>
+            </div>
+        </div>
+    `;
+        document.body.appendChild(modal);
+        // DOM 引用
+        const closeBtn = modal.querySelector('#settings-btn-close');
+        const cancelBtn = modal.querySelector('#settings-btn-cancel');
+        const saveBtn = modal.querySelector('#settings-btn-save');
+        const testBtn = modal.querySelector('#cfg-btn-test');
+        const testStatus = modal.querySelector('#cfg-test-status');
+        const endpointInput = modal.querySelector('#cfg-endpoint');
+        const apiKeyInput = modal.querySelector('#cfg-apikey');
+        const tempInput = modal.querySelector('#cfg-temp');
+        const tempVal = modal.querySelector('#temp-val');
+        const toggleKeyBtn = modal.querySelector('#cfg-toggle-key');
+        const endpointHint = modal.querySelector('#cfg-endpoint-hint');
+        const apikeyHint = modal.querySelector('#cfg-apikey-hint');
+        const btnDetectModels = modal.querySelector('#btn-detect-models');
+        const btnShowAddCustom = modal.querySelector('#btn-show-add-custom');
+        const customModelBox = modal.querySelector('#custom-model-box');
+        const customModelInput = modal.querySelector('#custom-model-input');
+        const btnConfirmAddCustom = modal.querySelector('#btn-confirm-add-custom');
+        const searchFilterInput = modal.querySelector('#models-search-filter');
+        const btnToggleAll = modal.querySelector('#btn-toggle-all');
+        const btnToggleNone = modal.querySelector('#btn-toggle-none');
+        const modelsContainer = modal.querySelector('#models-checklist-container');
+        const modelsCountBadge = modal.querySelector('#models-count-badge');
+        let currentSelectedProvider = currentCfg.provider || 'gemini';
+        let modelsList = Array.isArray(currentCfg.models) && currentCfg.models.length > 0
+            ? [...currentCfg.models]
+            : getDefaultModelsForProvider(currentSelectedProvider);
+        let currentActiveModel = currentCfg.model || modelsList.find(m => m.enabled)?.id || modelsList[0]?.id || 'gemini-2.0-flash';
+        // 渲染模型勾选列表
+        const renderModelsList = (keyword = '') => {
+            const filterKey = keyword.trim().toLowerCase();
+            const displayList = modelsList.filter(m => {
+                if (!filterKey)
+                    return true;
+                return m.id.toLowerCase().includes(filterKey) || (m.name && m.name.toLowerCase().includes(filterKey));
+            });
+            const enabledCount = modelsList.filter(m => m.enabled).length;
+            modelsCountBadge.textContent = `已选用 ${enabledCount} 个`;
+            if (displayList.length === 0) {
+                modelsContainer.innerHTML = `
+                <div style="padding:16px; text-align:center; color:#94a3b8; font-size:11.5px;">
+                    未匹配到相关模型。可点击上方“自动识别”拉取或“添加自定义”补充。
+                </div>
+            `;
+                return;
+            }
+            modelsContainer.innerHTML = displayList.map(m => {
+                const isActive = m.id === currentActiveModel;
+                return `
+                <div class="webmcp-model-item ${isActive ? 'is-active-model' : ''}" data-model-id="${m.id}">
+                    <div class="webmcp-model-left">
+                        <input type="checkbox" class="webmcp-model-checkbox" data-model-id="${m.id}" ${m.enabled ? 'checked' : ''} title="勾选以在对话框底部选用" />
+                        <div class="webmcp-model-info">
+                            <div class="webmcp-model-title">${m.name || m.id}</div>
+                            <div class="webmcp-model-id">${m.id}</div>
+                        </div>
+                    </div>
+                    <div class="webmcp-model-right">
+                        ${m.isReasoning ? '<span class="webmcp-model-badge reasoning">🧠 深度思考</span>' : ''}
+                        ${m.isVision ? '<span class="webmcp-model-badge vision">👁️ 视觉多模态</span>' : ''}
+                        ${isActive
+                ? '<span class="webmcp-model-badge active">★ 当前生效</span>'
+                : `<button type="button" class="webmcp-model-btn-set-default" data-set-default="${m.id}">设为当前</button>`}
+                        ${m.custom ? `<button type="button" class="webmcp-model-btn-del" data-del-model="${m.id}" title="删除自定义模型">✕</button>` : ''}
+                    </div>
+                </div>
+            `;
+            }).join('');
+            // 绑定勾选与切换事件
+            modelsContainer.querySelectorAll('.webmcp-model-checkbox').forEach(cb => {
+                cb.addEventListener('change', (e) => {
+                    const target = e.target;
+                    const targetId = target.getAttribute('data-model-id');
+                    const found = modelsList.find(m => m.id === targetId);
+                    if (found) {
+                        found.enabled = target.checked;
+                        // 如果取消了当前生效模型，自动迁移到下一个启用的模型
+                        if (!found.enabled && currentActiveModel === found.id) {
+                            const nextActive = modelsList.find(m => m.enabled);
+                            if (nextActive)
+                                currentActiveModel = nextActive.id;
+                        }
+                        renderModelsList(searchFilterInput.value);
+                    }
+                });
+            });
+            // 绑定设为当前事件
+            modelsContainer.querySelectorAll('[data-set-default]').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const targetId = btn.getAttribute('data-set-default');
+                    if (targetId) {
+                        currentActiveModel = targetId;
+                        const found = modelsList.find(m => m.id === targetId);
+                        if (found)
+                            found.enabled = true; // 设为当前自动激活勾选
+                        renderModelsList(searchFilterInput.value);
+                    }
+                });
+            });
+            // 绑定删除自定义模型
+            modelsContainer.querySelectorAll('[data-del-model]').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const targetId = btn.getAttribute('data-del-model');
+                    modelsList = modelsList.filter(m => m.id !== targetId);
+                    if (currentActiveModel === targetId) {
+                        currentActiveModel = modelsList.find(m => m.enabled)?.id || modelsList[0]?.id || 'gemini-2.0-flash';
+                    }
+                    renderModelsList(searchFilterInput.value);
+                });
+            });
+        };
+        renderModelsList();
+        // 搜索过滤
+        searchFilterInput?.addEventListener('input', () => {
+            renderModelsList(searchFilterInput.value);
+        });
+        // 全选与清空
+        btnToggleAll?.addEventListener('click', () => {
+            modelsList.forEach(m => m.enabled = true);
+            renderModelsList(searchFilterInput.value);
+        });
+        btnToggleNone?.addEventListener('click', () => {
+            modelsList.forEach(m => m.enabled = false);
+            // 至少保留当前生效模型勾选
+            const active = modelsList.find(m => m.id === currentActiveModel);
+            if (active)
+                active.enabled = true;
+            renderModelsList(searchFilterInput.value);
+        });
+        // 自动识别模型
+        btnDetectModels?.addEventListener('click', async () => {
+            btnDetectModels.disabled = true;
+            const origText = btnDetectModels.innerHTML;
+            btnDetectModels.innerHTML = '<span class="aui-tool-spinner" style="width:12px;height:12px;border-width:2px;display:inline-block;vertical-align:middle;"></span> 正在识别...';
+            const configToDetect = {
+                provider: currentSelectedProvider,
+                endpoint: endpointInput.value.trim(),
+                apiKey: apiKeyInput.value.trim(),
+                model: currentActiveModel,
+                temperature: parseFloat(tempInput.value) || 0.3
+            };
+            try {
+                const res = await fetchAvailableModels(configToDetect);
+                if (res.success && res.models.length > 0) {
+                    // 合并新拉取的模型与现存自定义模型，保留已勾选状态
+                    const currentEnabledMap = new Map(modelsList.map(m => [m.id, m.enabled]));
+                    const merged = res.models.map(m => ({
+                        ...m,
+                        enabled: currentEnabledMap.has(m.id) ? (currentEnabledMap.get(m.id) ?? true) : m.enabled
+                    }));
+                    // 保留用户此前手动添加的 custom 模型
+                    const customModels = modelsList.filter(m => m.custom);
+                    for (const cm of customModels) {
+                        if (!merged.some(m => m.id === cm.id)) {
+                            merged.push(cm);
+                        }
+                    }
+                    modelsList = merged;
+                    if (!modelsList.some(m => m.id === currentActiveModel)) {
+                        currentActiveModel = modelsList.find(m => m.enabled)?.id || modelsList[0].id;
+                    }
+                    renderModelsList();
+                    showToast('success', res.message);
+                }
+                else {
+                    showToast('warning', res.message || '未获取到模型列表，已保留当前预设');
+                }
+            }
+            catch (err) {
+                showToast('error', `识别异常: ${err.message}`);
+            }
+            finally {
+                btnDetectModels.disabled = false;
+                btnDetectModels.innerHTML = origText;
+            }
+        });
+        // 显示添加自定义输入框
+        btnShowAddCustom?.addEventListener('click', () => {
+            customModelBox.classList.toggle('is-open');
+            if (customModelBox.classList.contains('is-open')) {
+                customModelInput.focus();
+            }
+        });
+        // 确认添加自定义模型
+        const handleAddCustomModel = () => {
+            const val = customModelInput.value.trim();
+            if (!val)
+                return;
+            if (modelsList.some(m => m.id === val)) {
+                showToast('warning', '该模型 ID 已存在列表中');
+                return;
+            }
+            const newModel = {
+                id: val,
+                name: `${val} (自定义)`,
+                provider: currentSelectedProvider,
+                enabled: true,
+                custom: true
+            };
+            modelsList.unshift(newModel);
+            currentActiveModel = val;
+            customModelInput.value = '';
+            customModelBox.classList.remove('is-open');
+            renderModelsList();
+            showToast('success', `已添加自定义模型 ${val}`);
+        };
+        btnConfirmAddCustom?.addEventListener('click', handleAddCustomModel);
+        customModelInput?.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                handleAddCustomModel();
+            }
+        });
+        // 预设切换
+        modal.querySelectorAll('.webmcp-preset-chip').forEach(chip => {
+            chip.addEventListener('click', () => {
+                modal.querySelectorAll('.webmcp-preset-chip').forEach(c => c.classList.remove('active'));
+                chip.classList.add('active');
+                const p = chip.getAttribute('data-provider');
+                currentSelectedProvider = p;
+                const preset = LLM_PRESETS[p];
+                if (preset) {
+                    if (preset.endpoint !== undefined)
+                        endpointInput.value = preset.endpoint;
+                    if (preset.temperature !== undefined) {
+                        tempInput.value = String(preset.temperature);
+                        tempVal.textContent = String(preset.temperature);
+                    }
+                }
+                // 更新提示文案
+                if (p === 'gemini') {
+                    endpointHint.textContent = 'Google AI Studio 端点原生兼容 OpenAI 协议。';
+                    apikeyHint.innerHTML = 'Google AI Studio Key 请从 <a href="https://aistudio.google.com/app/apikey" target="_blank" style="color:#2563eb; text-decoration: underline;">aistudio.google.com</a> 免费获取。';
+                }
+                else if (p === 'deepseek') {
+                    endpointHint.textContent = 'DeepSeek 官方开放平台端点 (标准 OpenAI 协议兼容)。';
+                    apikeyHint.innerHTML = 'DeepSeek API Key 请从 <a href="https://platform.deepseek.com/api_keys" target="_blank" style="color:#2563eb; text-decoration: underline;">platform.deepseek.com</a> 获取。';
+                }
+                else if (p === 'openai') {
+                    endpointHint.textContent = 'OpenAI 官方 API 端点。';
+                    apikeyHint.innerHTML = 'OpenAI API Key 请从 <a href="https://platform.openai.com/api-keys" target="_blank" style="color:#2563eb; text-decoration: underline;">platform.openai.com</a> 获取。';
+                }
+                else if (p === 'claude' || p === 'openrouter') {
+                    endpointHint.textContent = 'OpenRouter 聚合平台端点，一键访问全系 Claude 与全球顶级开源模型。';
+                    apikeyHint.innerHTML = 'API Key 请从 <a href="https://openrouter.ai/keys" target="_blank" style="color:#2563eb; text-decoration: underline;">openrouter.ai</a> 获取。';
+                }
+                else if (p === 'ollama') {
+                    endpointHint.textContent = '本地私有化 Ollama 运行地址，默认 http://localhost:11434/v1。';
+                    apikeyHint.textContent = '本地部署通常无需填写 API Key。';
+                }
+                else {
+                    endpointHint.textContent = '支持任何标准 OpenAI 格式的兼容端点 (如 SiliconFlow、Kimi、GLM、vLLM 等)。';
+                    apikeyHint.textContent = '请填写对应服务商下发的 API 密钥。';
+                }
+                // 切换服务商后加载对应预设模型库
+                modelsList = getDefaultModelsForProvider(p);
+                currentActiveModel = preset?.model || modelsList.find(m => m.enabled)?.id || modelsList[0].id;
+                renderModelsList();
+            });
+        });
+        // 切换密码可见性
+        toggleKeyBtn?.addEventListener('click', () => {
+            apiKeyInput.type = apiKeyInput.type === 'password' ? 'text' : 'password';
+        });
+        // 滑块联动
+        tempInput?.addEventListener('input', () => {
+            if (tempVal)
+                tempVal.textContent = tempInput.value;
+        });
+        // 连通性测试
+        testBtn?.addEventListener('click', async () => {
+            testBtn.disabled = true;
+            testStatus.innerHTML = '<span style="color:#f59e0b;"><span class="aui-tool-spinner" style="width:12px;height:12px;border-width:2px;display:inline-block;vertical-align:middle;"></span> 正在发起 Ping 测试...</span>';
+            const configToTest = {
+                provider: currentSelectedProvider,
+                endpoint: endpointInput.value.trim(),
+                apiKey: apiKeyInput.value.trim(),
+                model: currentActiveModel,
+                temperature: parseFloat(tempInput.value) || 0.3
+            };
+            const result = await testLlmConnection(configToTest);
+            testBtn.disabled = false;
+            if (result.success) {
+                testStatus.innerHTML = `<span style="color:#10b981; font-weight:600;">✓ ${result.message}</span>`;
+            }
+            else {
+                testStatus.innerHTML = `<span style="color:#ef4444; font-weight:600;">✕ ${result.message}</span>`;
+            }
+        });
+        // 关闭逻辑
+        const closeModal = () => modal?.remove();
+        closeBtn?.addEventListener('click', closeModal);
+        cancelBtn?.addEventListener('click', closeModal);
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal)
+                closeModal();
+        });
+        const handleEsc = (e) => {
+            if (e.key === 'Escape') {
+                closeModal();
+                window.removeEventListener('keydown', handleEsc);
+            }
+        };
+        window.addEventListener('keydown', handleEsc);
+        // 保存逻辑
+        saveBtn?.addEventListener('click', () => {
+            // 保证至少有 1 个模型被选中且激活
+            if (!modelsList.some(m => m.enabled)) {
+                const target = modelsList.find(m => m.id === currentActiveModel) || modelsList[0];
+                if (target)
+                    target.enabled = true;
+            }
+            const newCfg = {
+                provider: currentSelectedProvider,
+                endpoint: endpointInput.value.trim(),
+                apiKey: apiKeyInput.value.trim(),
+                model: currentActiveModel,
+                temperature: parseFloat(tempInput.value) || 0.3,
+                models: modelsList
+            };
+            saveLlmConfig(newCfg);
+            showToast('success', `🎉 LLM 配置已保存！当前默认模型: ${currentActiveModel}`);
+            onSaved?.(newCfg);
+            closeModal();
+        });
+    }
+
     /**
      * 1. ThinkingAccordion: 思考链手风琴折叠组件 (assistant-ui 标准范式)
      */
@@ -65618,7 +68905,7 @@ JSON 输出格式：
     const MarkdownContent = ({ content, isStreaming = false }) => {
         if (!content)
             return null;
-        return (jsxRuntimeExports.jsx("div", { className: "aui-markdown", children: jsxRuntimeExports.jsx(Hr, { content: content, final: !isStreaming, typewriter: isStreaming, fade: true, smoothStreaming: true, customHtmlTags: ['think', 'thinking'] }) }));
+        return (jsxRuntimeExports.jsx("div", { className: "aui-markdown", children: jsxRuntimeExports.jsx(Hr, { content: content, final: !isStreaming, typewriter: isStreaming, fade: isStreaming, smoothStreaming: isStreaming ? 'auto' : false, batchRendering: isStreaming, deferNodesUntilVisible: false, viewportPriority: false, maxLiveNodes: 0, customHtmlTags: ['think', 'thinking'] }) }));
     };
     /**
      * 4. AssistantThread: 对话流与空白欢迎态组件
@@ -65647,7 +68934,7 @@ JSON 输出格式：
     /**
      * 5. AssistantComposer: assistant-ui 标准复合输入框
      */
-    const AssistantComposer = ({ onSendMessage, selectedCount, selectedAmount, contextEnabled, onToggleContext, activeSkill, onDismissSkill, onCopyPromptTemplate, skills, onApplySkill, isExecuting = false, selectedModel = 'gemini-3.8-flash-low', onSelectModel }) => {
+    const AssistantComposer = ({ onSendMessage, selectedCount, selectedAmount, contextEnabled, onToggleContext, activeSkill, onDismissSkill, onCopyPromptTemplate, skills, onApplySkill, isExecuting = false, selectedModel = 'gemini-2.0-flash', onSelectModel, onOpenSettings, llmConfig }) => {
         const [inputText, setInputText] = reactExports.useState('');
         const [attachments, setAttachments] = reactExports.useState([]);
         const [isDragOver, setIsDragOver] = reactExports.useState(false);
@@ -65657,12 +68944,38 @@ JSON 输出格式：
         const [slashSelectedIndex, setSlashSelectedIndex] = reactExports.useState(0);
         const textareaRef = reactExports.useRef(null);
         const fileInputRef = reactExports.useRef(null);
-        // Auto-resize textarea
-        reactExports.useEffect(() => {
-            if (textareaRef.current) {
-                textareaRef.current.style.height = 'auto';
-                textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 180)}px`;
+        // 动态计算已勾选启用的模型列表
+        const enabledModels = reactExports.useMemo(() => {
+            const activeCfg = llmConfig || getLlmConfig();
+            const rawModels = activeCfg?.models && activeCfg.models.length > 0
+                ? activeCfg.models
+                : getDefaultModelsForProvider(activeCfg?.provider || 'gemini');
+            const list = rawModels.filter(m => m.enabled);
+            if (list.length === 0) {
+                const cur = activeCfg?.model || selectedModel || 'gemini-2.0-flash';
+                list.push({ id: cur, name: cur, enabled: true });
             }
+            if (selectedModel && !list.some(m => m.id === selectedModel)) {
+                const found = rawModels.find(m => m.id === selectedModel);
+                if (found) {
+                    list.unshift(found);
+                }
+                else {
+                    list.unshift({ id: selectedModel, name: selectedModel, enabled: true });
+                }
+            }
+            return list;
+        }, [llmConfig, selectedModel]);
+        // Auto-resize textarea (async rAF to eliminate forced synchronous reflow)
+        reactExports.useEffect(() => {
+            const el = textareaRef.current;
+            if (!el)
+                return;
+            const rafId = requestAnimationFrame(() => {
+                el.style.height = 'auto';
+                el.style.height = `${Math.min(el.scrollHeight, 180)}px`;
+            });
+            return () => cancelAnimationFrame(rafId);
         }, [inputText]);
         // Matching skills for slash menu
         const slashMatchingSkills = reactExports.useMemo(() => {
@@ -65779,14 +69092,65 @@ JSON 输出格式：
                                     }, children: [jsxRuntimeExports.jsx("span", { children: s.icon }), jsxRuntimeExports.jsx("span", { style: { fontFamily: 'monospace', fontWeight: 600, color: '#2563eb', fontSize: '11px' }, children: s.command }), jsxRuntimeExports.jsx("span", { style: { fontWeight: 600, fontSize: '11.5px', color: '#1e293b' }, children: s.name }), jsxRuntimeExports.jsx("span", { style: { fontSize: '10.5px', color: '#64748b', marginLeft: 'auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: s.summary })] }, s.id))) })] })), jsxRuntimeExports.jsx("textarea", { ref: textareaRef, className: "aui-composer-textarea", placeholder: "\u8F93\u5165\u6307\u4EE4\u6216\u5411\u526F\u9A7E\u63D0\u95EE\uFF08\u952E\u5165 '/' \u5524\u51FA\u6280\u80FD\uFF0C\u652F\u6301\u62D6\u62FD\u53D1\u7968/\u6392\u671F\u622A\u56FE\u6216\u9644\u4EF6\uFF09...", rows: 1, value: inputText, onChange: handleTextChange, onKeyDown: handleKeyDown }), jsxRuntimeExports.jsxs("div", { className: "aui-composer-toolbar", children: [jsxRuntimeExports.jsx("input", { type: "file", ref: fileInputRef, style: { display: 'none' }, multiple: true, accept: "image/*,.pdf,.doc,.docx,.xlsx,.xls,.txt,.csv", onChange: (e) => handleFiles(e.target.files) }), jsxRuntimeExports.jsxs("div", { className: "aui-toolbar-left", children: [jsxRuntimeExports.jsx("button", { type: "button", className: "aui-btn-tool", onClick: () => fileInputRef.current?.click(), title: "\u6DFB\u52A0\u53D1\u7968\u56FE\u7247\u3001\u6392\u671F\u6216\u9644\u4EF6\u6587\u4EF6", children: jsxRuntimeExports.jsx("span", { children: "\uFF0B" }) }), jsxRuntimeExports.jsxs("div", { style: { position: 'relative' }, children: [jsxRuntimeExports.jsxs("button", { type: "button", className: `aui-btn-tool ${skillMenuOpen ? 'active' : ''}`, onClick: () => setSkillMenuOpen(!skillMenuOpen), title: "\u9009\u62E9\u526F\u9A7E\u5FEB\u6377\u6280\u80FD (\u6216\u5728\u8F93\u5165\u6846\u952E\u5165 '/')", children: [jsxRuntimeExports.jsx("span", { children: "\u26A1 \u6280\u80FD" }), jsxRuntimeExports.jsx("span", { style: { fontSize: '8px', opacity: 0.7 }, children: "\u25BE" })] }), skillMenuOpen && (jsxRuntimeExports.jsxs("div", { style: { position: 'absolute', bottom: '100%', left: 0, width: '260px', background: '#fff', border: '1px solid #cbd5e1', borderRadius: '12px', boxShadow: '0 8px 24px rgba(0,0,0,0.12)', marginBottom: '8px', zIndex: 100, overflow: 'hidden' }, children: [jsxRuntimeExports.jsx("div", { style: { padding: '6px 12px', background: '#f8fafc', borderBottom: '1px solid #e2e8f0', fontSize: '10.5px', fontWeight: 600, color: '#475569' }, children: "\u9009\u62E9\u526F\u9A7E\u6280\u80FD (Skills)" }), jsxRuntimeExports.jsx("div", { style: { maxHeight: '200px', overflowY: 'auto' }, children: skills.map((s) => (jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', cursor: 'pointer', borderBottom: '1px solid #f1f5f9' }, onClick: () => {
                                                                 setSkillMenuOpen(false);
                                                                 onApplySkill(s.id);
-                                                            }, children: [jsxRuntimeExports.jsx("span", { children: s.icon }), jsxRuntimeExports.jsxs("div", { style: { display: 'flex', flexDirection: 'column', overflow: 'hidden' }, children: [jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: '4px' }, children: [jsxRuntimeExports.jsx("span", { style: { fontSize: '11.5px', fontWeight: 600, color: '#1e293b' }, children: s.name }), jsxRuntimeExports.jsx("span", { style: { fontSize: '10px', color: '#2563eb', fontFamily: 'monospace' }, children: s.command })] }), jsxRuntimeExports.jsx("div", { style: { fontSize: '10px', color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: s.summary })] })] }, s.id))) })] }))] }), onSelectModel && (jsxRuntimeExports.jsxs("select", { value: selectedModel, onChange: (e) => onSelectModel(e.target.value), style: { background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '8px', fontSize: '10.5px', color: '#475569', padding: '3px 6px', outline: 'none' }, children: [jsxRuntimeExports.jsx("option", { value: "gemini-3.8-flash-low", children: "Gemini 3.8 Flash (\u6781\u901F)" }), jsxRuntimeExports.jsx("option", { value: "gemini-3.8-pro", children: "Gemini 3.8 Pro (\u6DF1\u5EA6\u8BA4\u77E5)" }), jsxRuntimeExports.jsx("option", { value: "local-rule-engine", children: "\u672C\u5730\u89C4\u5219\u5F15\u64CE (\u79BB\u7EBF)" })] }))] }), jsxRuntimeExports.jsx("button", { type: "button", className: "aui-btn-send", onClick: handleSend, disabled: isExecuting || (!inputText.trim() && attachments.length === 0), title: "\u53D1\u9001\u6D88\u606F (Enter)", children: isExecuting ? jsxRuntimeExports.jsx("span", { className: "aui-tool-spinner", style: { borderColor: '#fff', borderTopColor: 'transparent' } }) : '▲' })] })] }) }));
+                                                            }, children: [jsxRuntimeExports.jsx("span", { children: s.icon }), jsxRuntimeExports.jsxs("div", { style: { display: 'flex', flexDirection: 'column', overflow: 'hidden' }, children: [jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: '4px' }, children: [jsxRuntimeExports.jsx("span", { style: { fontSize: '11.5px', fontWeight: 600, color: '#1e293b' }, children: s.name }), jsxRuntimeExports.jsx("span", { style: { fontSize: '10px', color: '#2563eb', fontFamily: 'monospace' }, children: s.command })] }), jsxRuntimeExports.jsx("div", { style: { fontSize: '10px', color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: s.summary })] })] }, s.id))) })] }))] }), onSelectModel && (jsxRuntimeExports.jsxs("select", { value: selectedModel, onChange: (e) => {
+                                            const val = e.target.value;
+                                            if (val === '__manage_models__') {
+                                                onOpenSettings?.();
+                                                return;
+                                            }
+                                            onSelectModel(val);
+                                        }, title: "\u5207\u6362\u5F53\u524D\u751F\u6548\u6A21\u578B (\u53EF\u5728\u8BBE\u7F6E\u4E2D\u81EA\u52A8\u8BC6\u522B\u4E0E\u52FE\u9009\u5C55\u793A\u7684\u6A21\u578B)", style: {
+                                            background: '#ffffff',
+                                            border: '1px solid #e2e8f0',
+                                            borderRadius: '8px',
+                                            fontSize: '11px',
+                                            fontWeight: 500,
+                                            color: '#334155',
+                                            padding: '3px 6px',
+                                            outline: 'none',
+                                            cursor: 'pointer',
+                                            maxWidth: '180px',
+                                            height: '24px'
+                                        }, children: [enabledModels.map(m => (jsxRuntimeExports.jsxs("option", { value: m.id, children: [m.isReasoning ? '🧠 ' : (m.isVision ? '👁️ ' : ''), m.name || m.id] }, m.id))), jsxRuntimeExports.jsx("option", { disabled: true, style: { color: '#cbd5e1' }, children: "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500" }), jsxRuntimeExports.jsx("option", { value: "__manage_models__", children: "\u2699\uFE0F \u63A2\u6D4B\u4E0E\u914D\u7F6E\u66F4\u591A\u6A21\u578B..." })] }))] }), jsxRuntimeExports.jsx("button", { type: "button", className: "aui-btn-send", onClick: handleSend, disabled: isExecuting || (!inputText.trim() && attachments.length === 0), title: "\u53D1\u9001\u6D88\u606F (Enter)", children: isExecuting ? jsxRuntimeExports.jsx("span", { className: "aui-tool-spinner", style: { borderColor: '#fff', borderTopColor: 'transparent' } }) : '▲' })] })] }) }));
     };
     /**
      * 6. AssistantChatPanel: 主交互顶层组件，包含会话切换 Header、Thread 视口与 Composer
      */
-    const AssistantChatPanel = ({ sessions, currentSessionId, onSelectSession, onNewSession, onDeleteSession, onSendMessage, onApplySkill, onSuggestionClick, onApplyTripPlans, onApplyTravelReports, selectedExpenseCount, selectedExpenseAmount, attachedExpenseContextEnabled, onToggleExpenseContext, employeeName, isExecuting = false, onClose, skills, activeSkillId, onDismissSkill, onCopyPromptTemplate, selectedModel, onSelectModel }) => {
+    const AssistantChatPanel = ({ sessions, currentSessionId, onSelectSession, onNewSession, onDeleteSession, onSendMessage, onApplySkill, onSuggestionClick, onApplyTripPlans, onApplyTravelReports, selectedExpenseCount, selectedExpenseAmount, attachedExpenseContextEnabled, onToggleExpenseContext, employeeName, isExecuting = false, onClose, onOpenSettings, skills, activeSkillId, onDismissSkill, onCopyPromptTemplate, selectedModel, onSelectModel, llmConfig: llmConfigProp }) => {
         const [historyMenuOpen, setHistoryMenuOpen] = reactExports.useState(false);
         const [previewImageUrl, setPreviewImageUrl] = reactExports.useState(null);
+        const [llmConfig, setLlmConfig] = reactExports.useState(() => llmConfigProp || getLlmConfig());
+        // 保持与外部 llmConfigProp 变更、selectedModel 变更及 localStorage 同步
+        reactExports.useEffect(() => {
+            if (llmConfigProp) {
+                setLlmConfig(llmConfigProp);
+            }
+            else {
+                setLlmConfig(getLlmConfig());
+            }
+        }, [llmConfigProp, selectedModel]);
+        // 监听全局配置变更事件，即使 React 没有重新传参也能毫秒级无感响应
+        reactExports.useEffect(() => {
+            const handleConfigChange = (e) => {
+                const updated = e?.detail || getLlmConfig();
+                setLlmConfig(updated);
+            };
+            window.addEventListener('autopilot:llm_config_changed', handleConfigChange);
+            return () => window.removeEventListener('autopilot:llm_config_changed', handleConfigChange);
+        }, []);
+        // 点击外部区域自动收起历史会话浮层
+        reactExports.useEffect(() => {
+            if (!historyMenuOpen)
+                return;
+            const handleOutsideClick = (e) => {
+                const target = e.target;
+                if (!target.closest('.yn-gemini-history-dropdown') && !target.closest('.aui-history-trigger-btn')) {
+                    setHistoryMenuOpen(false);
+                }
+            };
+            document.addEventListener('click', handleOutsideClick);
+            return () => document.removeEventListener('click', handleOutsideClick);
+        }, [historyMenuOpen]);
         const currentSession = reactExports.useMemo(() => {
             return sessions.find(s => s.id === currentSessionId) || sessions[0] || {
                 id: 'session_init',
@@ -65799,19 +69163,40 @@ JSON 输出格式：
         const activeSkill = reactExports.useMemo(() => {
             return skills.find(s => s.id === activeSkillId) || null;
         }, [skills, activeSkillId]);
-        return (jsxRuntimeExports.jsxs("div", { className: "aui-root", children: [jsxRuntimeExports.jsxs("div", { className: "yn-bem-ai-panel-header", children: [jsxRuntimeExports.jsxs("div", { className: "yn-bem-ai-title-wrap", children: [jsxRuntimeExports.jsx("span", { className: "yn-gemini-sparkle-icon", children: "\u2726" }), jsxRuntimeExports.jsx("span", { style: { fontWeight: 600, fontSize: '13px' }, children: "AI \u667A\u80FD\u526F\u9A7E" })] }), jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: '8px', position: 'relative' }, children: [jsxRuntimeExports.jsxs("button", { type: "button", className: "yn-gemini-menu-trigger", onClick: (e) => {
+        const handleOpenSettings = reactExports.useCallback(() => {
+            setHistoryMenuOpen(false);
+            if (onOpenSettings) {
+                onOpenSettings();
+            }
+            else {
+                openWebMcpSettingsModal((savedCfg) => {
+                    setLlmConfig(savedCfg);
+                    onSelectModel?.(savedCfg.model);
+                });
+            }
+        }, [onOpenSettings, onSelectModel]);
+        return (jsxRuntimeExports.jsxs("div", { className: "aui-root", children: [jsxRuntimeExports.jsxs("div", { className: "yn-bem-ai-panel-header", children: [jsxRuntimeExports.jsxs("div", { className: "yn-bem-ai-title-wrap", children: [jsxRuntimeExports.jsx("span", { className: "yn-gemini-sparkle-icon", children: "\u2726" }), jsxRuntimeExports.jsx("span", { style: { fontWeight: 600, fontSize: '13px' }, children: "AI \u667A\u80FD\u526F\u9A7E" }), currentSession.title && (jsxRuntimeExports.jsxs("span", { style: { fontSize: '11px', color: '#64748b', fontWeight: 400, maxWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: currentSession.title, children: ["\u00B7 ", currentSession.title] }))] }), jsxRuntimeExports.jsxs("div", { className: "aui-header-actions", children: [jsxRuntimeExports.jsx("button", { type: "button", className: "aui-header-action-btn", onClick: () => {
+                                        setHistoryMenuOpen(false);
+                                        onNewSession();
+                                    }, title: "\u5F00\u542F\u65B0\u4F1A\u8BDD (Start new chat)", "aria-label": "\u65B0\u4F1A\u8BDD", children: jsxRuntimeExports.jsx("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", width: "16", height: "16", fill: "none", children: jsxRuntimeExports.jsxs("g", { fill: "transparent", stroke: "currentColor", strokeLinejoin: "round", strokeWidth: "2", children: [jsxRuntimeExports.jsx("path", { d: "M11 4H7.2c-1.12 0-1.68 0-2.108.218-.376.192-.682.498-.874.874C4 5.52 4 6.08 4 7.2v9.6c0 1.12 0 1.68.218 2.108.192.376.498.682.874.874C5.52 20 6.08 20 7.2 20h9.6c1.12 0 1.68 0 2.108-.218.376-.192.682-.498.874-.874C20 18.48 20 17.92 20 16.8V13", strokeLinecap: "round" }), jsxRuntimeExports.jsx("path", { d: "M9 15v-2.586c0-.265.105-.52.293-.707l8.043-8.043c.78-.78 2.047-.78 2.828 0l.172.172c.78.78.78 2.047 0 2.828l-8.043 8.043c-.188.188-.442.293-.707.293H9z", strokeLinecap: "square" })] }) }) }), jsxRuntimeExports.jsx("button", { type: "button", className: `aui-header-action-btn aui-history-trigger-btn ${historyMenuOpen ? 'is-active' : ''}`, onClick: (e) => {
                                         e.stopPropagation();
                                         setHistoryMenuOpen(!historyMenuOpen);
-                                    }, title: "\u5207\u6362\u5386\u53F2\u4F1A\u8BDD\u6216\u65B0\u5EFA\u5BF9\u8BDD", children: [jsxRuntimeExports.jsx("span", { children: "\u2261" }), jsxRuntimeExports.jsx("span", { style: { maxWidth: '96px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '11px' }, children: currentSession.title || '会话' }), jsxRuntimeExports.jsx("span", { style: { fontSize: '9px', color: '#94a3b8' }, children: "\u25BE" })] }), historyMenuOpen && (jsxRuntimeExports.jsxs("div", { className: "yn-gemini-history-dropdown", style: { display: 'flex' }, onClick: (e) => e.stopPropagation(), children: [jsxRuntimeExports.jsxs("div", { className: "yn-gemini-menu-item", onClick: () => {
+                                    }, title: "\u5386\u53F2\u4F1A\u8BDD", "aria-label": "\u5386\u53F2\u4F1A\u8BDD", children: jsxRuntimeExports.jsx("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", width: "16", height: "16", fill: "currentColor", children: jsxRuntimeExports.jsx("path", { d: "M12 4C9.25 4 6.83 5.39 5.38 7.5H8v2H2v-6h2V6c1.82-2.43 4.73-4 8-4 5.52 0 10 4.48 10 10s-4.48 10-10 10c-4.76 0-8.74-3.33-9.75-7.78l1.95-.44C5.01 17.34 8.19 20 12 20c4.42 0 8-3.58 8-8s-3.58-8-8-8zm-1 4h2v3.59l3.21 3.2-1.42 1.42-3.79-3.8V8z" }) }) }), jsxRuntimeExports.jsx("button", { type: "button", className: "aui-header-action-btn", onClick: handleOpenSettings, title: "\u8BBE\u7F6E\u4E0E\u6A21\u578B\u53C2\u6570 (Settings)", "aria-label": "\u8BBE\u7F6E", children: jsxRuntimeExports.jsx("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", width: "16", height: "16", fill: "currentColor", children: jsxRuntimeExports.jsx("path", { d: "M10.54 1.75h2.92l1.57 2.36c.11.17.32.25.53.21l2.53-.59 2.17 2.17-.58 2.54c-.05.2.04.41.21.53l2.36 1.57v2.92l-2.36 1.57c-.17.12-.26.33-.21.53l.58 2.54-2.17 2.17-2.53-.59c-.21-.04-.42.04-.53.21l-1.57 2.36h-2.92l-1.58-2.36c-.11-.17-.32-.25-.52-.21l-2.54.59-2.17-2.17.58-2.54c.05-.2-.03-.41-.21-.53l-2.35-1.57v-2.92L4.1 8.97c.18-.12.26-.33.21-.53L3.73 5.9 5.9 3.73l2.54.59c.2.04.41-.04.52-.21l1.58-2.36zm1.07 2l-.98 1.47C10.05 6.08 9 6.5 7.99 6.27l-1.46-.34-.6.6.33 1.46c.24 1.01-.18 2.07-1.05 2.64l-1.46.98v.78l1.46.98c.87.57 1.29 1.63 1.05 2.64l-.33 1.46.6.6 1.46-.34c1.01-.23 2.06.19 2.64 1.05l.98 1.47h.78l.97-1.47c.58-.86 1.63-1.28 2.65-1.05l1.45.34.61-.6-.34-1.46c-.23-1.01.18-2.07 1.05-2.64l1.47-.98v-.78l-1.47-.98c-.87-.57-1.28-1.63-1.05-2.64l.34-1.46-.61-.6-1.45.34c-1.02.23-2.07-.19-2.65-1.05l-.97-1.47h-.78zM12 10.5c-.83 0-1.5.67-1.5 1.5s.67 1.5 1.5 1.5c.82 0 1.5-.67 1.5-1.5s-.68-1.5-1.5-1.5zM8.5 12c0-1.93 1.56-3.5 3.5-3.5 1.93 0 3.5 1.57 3.5 3.5s-1.57 3.5-3.5 3.5c-1.94 0-3.5-1.57-3.5-3.5z" }) }) }), onClose && (jsxRuntimeExports.jsx("button", { type: "button", className: "aui-header-action-btn", onClick: onClose, title: "\u5173\u95ED", "aria-label": "\u5173\u95ED", children: jsxRuntimeExports.jsx("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", width: "16", height: "16", fill: "currentColor", children: jsxRuntimeExports.jsx("path", { d: "M10.59 12L4.54 5.96l1.42-1.42L12 10.59l6.04-6.05 1.42 1.42L13.41 12l6.05 6.04-1.42 1.42L12 13.41l-6.04 6.05-1.42-1.42L10.59 12z" }) }) })), historyMenuOpen && (jsxRuntimeExports.jsxs("div", { className: "yn-gemini-history-dropdown", style: { display: 'flex' }, onClick: (e) => e.stopPropagation(), children: [jsxRuntimeExports.jsxs("div", { className: "yn-gemini-menu-item", onClick: () => {
                                                 setHistoryMenuOpen(false);
                                                 onNewSession();
-                                            }, children: [jsxRuntimeExports.jsx("span", { children: "\uD83D\uDCDD" }), jsxRuntimeExports.jsx("span", { children: "\u5F00\u542F\u65B0\u5BF9\u8BDD (Start new chat)" })] }), jsxRuntimeExports.jsx("div", { className: "yn-gemini-menu-divider" }), jsxRuntimeExports.jsx("div", { className: "yn-gemini-menu-header", children: "\u6700\u8FD1\u4F1A\u8BDD" }), jsxRuntimeExports.jsx("div", { className: "yn-gemini-history-list", children: sessions.map((s) => (jsxRuntimeExports.jsxs("div", { className: `yn-gemini-menu-item ${s.id === currentSession.id ? 'is-active' : ''}`, style: { justifyContent: 'space-between' }, onClick: () => {
+                                            }, children: [jsxRuntimeExports.jsx("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", width: "15", height: "15", fill: "none", style: { color: '#475569', flexShrink: 0 }, children: jsxRuntimeExports.jsxs("g", { fill: "transparent", stroke: "currentColor", strokeLinejoin: "round", strokeWidth: "2", children: [jsxRuntimeExports.jsx("path", { d: "M11 4H7.2c-1.12 0-1.68 0-2.108.218-.376.192-.682.498-.874.874C4 5.52 4 6.08 4 7.2v9.6c0 1.12 0 1.68.218 2.108.192.376.498.682.874.874C5.52 20 6.08 20 7.2 20h9.6c1.12 0 1.68 0 2.108-.218.376-.192.682-.498.874-.874C20 18.48 20 17.92 20 16.8V13", strokeLinecap: "round" }), jsxRuntimeExports.jsx("path", { d: "M9 15v-2.586c0-.265.105-.52.293-.707l8.043-8.043c.78-.78 2.047-.78 2.828 0l.172.172c.78.78.78 2.047 0 2.828l-8.043 8.043c-.188.188-.442.293-.707.293H9z", strokeLinecap: "square" })] }) }), jsxRuntimeExports.jsx("span", { style: { fontSize: '12px', fontWeight: 500, color: '#0f172a' }, children: "Start new chat" })] }), jsxRuntimeExports.jsx("div", { className: "yn-gemini-menu-divider" }), jsxRuntimeExports.jsx("div", { className: "yn-gemini-history-list", children: sessions.map((s) => (jsxRuntimeExports.jsxs("div", { className: `yn-gemini-menu-item ${s.id === currentSession.id ? 'is-active' : ''}`, style: { justifyContent: 'space-between' }, onClick: () => {
                                                     setHistoryMenuOpen(false);
                                                     onSelectSession(s.id);
-                                                }, children: [jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: '6px', overflow: 'hidden' }, children: [jsxRuntimeExports.jsx("span", { children: "\uD83D\uDCAC" }), jsxRuntimeExports.jsx("span", { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: s.title || '未命名会话' })] }), sessions.length > 1 && (jsxRuntimeExports.jsx("span", { className: "yn-gemini-session-del", onClick: (e) => {
+                                                }, children: [jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden', minWidth: 0 }, children: [jsxRuntimeExports.jsx("span", { style: { fontSize: '13px', color: '#64748b', flexShrink: 0, fontFamily: 'monospace' }, children: "\u2261" }), jsxRuntimeExports.jsx("span", { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '12px' }, children: s.title || '未命名会话' })] }), sessions.length > 1 && (jsxRuntimeExports.jsx("span", { className: "yn-gemini-session-del", onClick: (e) => {
                                                             e.stopPropagation();
                                                             onDeleteSession(s.id);
-                                                        }, title: "\u5220\u9664\u4F1A\u8BDD", children: "\u2715" }))] }, s.id))) })] })), onClose && (jsxRuntimeExports.jsx("button", { type: "button", className: "yn-bem-close-x", onClick: onClose, title: "\u6536\u8D77 AI \u52A9\u624B", children: "\u2715" }))] })] }), jsxRuntimeExports.jsx(AssistantThread, { messages: currentSession.messages, employeeName: employeeName, onSuggestionClick: onSuggestionClick, onImagePreview: (url) => setPreviewImageUrl(url), onApplyTripPlans: onApplyTripPlans, onApplyTravelReports: onApplyTravelReports, isExecuting: isExecuting }), jsxRuntimeExports.jsx(AssistantComposer, { onSendMessage: onSendMessage, selectedCount: selectedExpenseCount, selectedAmount: selectedExpenseAmount, contextEnabled: attachedExpenseContextEnabled, onToggleContext: onToggleExpenseContext, activeSkill: activeSkill, onDismissSkill: onDismissSkill, onCopyPromptTemplate: onCopyPromptTemplate, skills: skills, onApplySkill: (sid) => onApplySkill?.(sid), isExecuting: isExecuting, selectedModel: selectedModel, onSelectModel: onSelectModel }), previewImageUrl && (jsxRuntimeExports.jsxs("div", { style: {
+                                                        }, title: "\u5220\u9664\u4F1A\u8BDD", children: "\u2715" }))] }, s.id))) }), jsxRuntimeExports.jsx("div", { className: "yn-gemini-menu-divider" }), jsxRuntimeExports.jsxs("div", { className: "yn-gemini-menu-item", style: { justifyContent: 'space-between' }, onClick: handleOpenSettings, children: [jsxRuntimeExports.jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: '8px' }, children: [jsxRuntimeExports.jsx("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", width: "15", height: "15", fill: "currentColor", style: { color: '#64748b', flexShrink: 0 }, children: jsxRuntimeExports.jsx("path", { d: "M10.54 1.75h2.92l1.57 2.36c.11.17.32.25.53.21l2.53-.59 2.17 2.17-.58 2.54c-.05.2.04.41.21.53l2.36 1.57v2.92l-2.36 1.57c-.17.12-.26.33-.21.53l.58 2.54-2.17 2.17-2.53-.59c-.21-.04-.42.04-.53.21l-1.57 2.36h-2.92l-1.58-2.36c-.11-.17-.32-.25-.52-.21l-2.54.59-2.17-2.17.58-2.54c.05-.2-.03-.41-.21-.53l-2.35-1.57v-2.92L4.1 8.97c.18-.12.26-.33.21-.53L3.73 5.9 5.9 3.73l2.54.59c.2.04.41-.04.52-.21l1.58-2.36zm1.07 2l-.98 1.47C10.05 6.08 9 6.5 7.99 6.27l-1.46-.34-.6.6.33 1.46c.24 1.01-.18 2.07-1.05 2.64l-1.46.98v.78l1.46.98c.87.57 1.29 1.63 1.05 2.64l-.33 1.46.6.6 1.46-.34c1.01-.23 2.06.19 2.64 1.05l.98 1.47h.78l.97-1.47c.58-.86 1.63-1.28 2.65-1.05l1.45.34.61-.6-.34-1.46c-.23-1.01.18-2.07 1.05-2.64l1.47-.98v-.78l-1.47-.98c-.87-.57-1.28-1.63-1.05-2.64l.34-1.46-.61-.6-1.45.34c-1.02.23-2.07-.19-2.65-1.05l-.97-1.47h-.78zM12 10.5c-.83 0-1.5.67-1.5 1.5s.67 1.5 1.5 1.5c.82 0 1.5-.67 1.5-1.5s-.68-1.5-1.5-1.5zM8.5 12c0-1.93 1.56-3.5 3.5-3.5 1.93 0 3.5 1.57 3.5 3.5s-1.57 3.5-3.5 3.5c-1.94 0-3.5-1.57-3.5-3.5z" }) }), jsxRuntimeExports.jsx("span", { style: { fontSize: '12px', color: '#475569' }, children: "Settings & Help" })] }), jsxRuntimeExports.jsx("span", { style: { fontSize: '11px', color: '#94a3b8' }, children: "\u203A" })] })] }))] })] }), jsxRuntimeExports.jsx(AssistantThread, { messages: currentSession.messages, employeeName: employeeName, onSuggestionClick: onSuggestionClick, onImagePreview: (url) => setPreviewImageUrl(url), onApplyTripPlans: onApplyTripPlans, onApplyTravelReports: onApplyTravelReports, isExecuting: isExecuting }), jsxRuntimeExports.jsx(AssistantComposer, { onSendMessage: onSendMessage, selectedCount: selectedExpenseCount, selectedAmount: selectedExpenseAmount, contextEnabled: attachedExpenseContextEnabled, onToggleContext: onToggleExpenseContext, activeSkill: activeSkill, onDismissSkill: onDismissSkill, onCopyPromptTemplate: onCopyPromptTemplate, skills: skills, onApplySkill: (sid) => onApplySkill?.(sid), isExecuting: isExecuting, selectedModel: selectedModel || llmConfig.model, onSelectModel: (newModel) => {
+                        const cfg = getLlmConfig();
+                        cfg.model = newModel;
+                        saveLlmConfig(cfg);
+                        setLlmConfig(cfg);
+                        onSelectModel?.(newModel);
+                    }, onOpenSettings: handleOpenSettings, llmConfig: llmConfig }), previewImageUrl && (jsxRuntimeExports.jsxs("div", { style: {
                         position: 'fixed',
                         top: 0,
                         left: 0,
@@ -67262,6 +70647,7 @@ ${legsText}
         syncBusinessDate: true,
         fillAddresses: true,
         lastSelectedRecordId: null,
+        activeRecordId: null,
         batchSettingsDialogOpen: false,
         batchSettingsPanelOpen: false,
         aiPanelOpen: false,
@@ -67270,7 +70656,7 @@ ${legsText}
         currentSessionId: initialSessions[0]?.id || 'session_init',
         currentAttachments: [],
         attachedExpenseContextEnabled: true,
-        selectedModel: 'flash',
+        selectedModel: getLlmConfig().model || 'gemini-2.0-flash',
         historyMenuOpen: false,
         previewImageUrl: null,
         aiPanelWidth: (typeof localStorage !== 'undefined' && Number(localStorage.getItem('yn_fssc_ai_panel_width'))) || 440,
@@ -67280,6 +70666,14 @@ ${legsText}
         slashQuery: '',
         slashSelectedIndex: 0,
         isAssistantExecuting: false
+    };
+    let virtualTableState = {
+        renderUnits: [],
+        unitOffsets: [0],
+        totalHeight: 0,
+        startIndex: 0,
+        endIndex: 0,
+        scrollTop: 0
     };
     /**
      * 将平铺的发票导出数据聚合为按 expenseRecordId 分组的层次结构
@@ -67305,7 +70699,7 @@ ${legsText}
                     createDate: r.createDate || '',
                     earliestInvoiceDate: '',
                     hasWarn: false,
-                    status: r.status || '未报销',
+                    status: normalizeExpenseStatus(r.status),
                     invoices: [],
                     inferredFields: {},
                     dynamicFields: r.savedDynamicFields ? { ...r.savedDynamicFields } : {}
@@ -67313,8 +70707,8 @@ ${legsText}
                 groupMap.set(r.expenseRecordId, g);
             }
             else {
-                if (r.status && !g.status) {
-                    g.status = r.status;
+                if (r.status) {
+                    g.status = normalizeExpenseStatus(r.status);
                 }
                 if (r.savedDynamicFields && Object.keys(r.savedDynamicFields).length > 0) {
                     g.dynamicFields = { ...r.savedDynamicFields, ...(g.dynamicFields || {}) };
@@ -67356,7 +70750,10 @@ ${legsText}
                     salesName: r.salesName,
                     fileName: r.fileName,
                     remarks: r.remarks,
-                    reconciliationNote: r.reconciliationNote
+                    reconciliationNote: r.reconciliationNote,
+                    attachmentId: r.attachmentId || '',
+                    rawAttachmentId: r.rawAttachmentId || r.attachmentId || '',
+                    invoiceDataId: r.invoiceDataId || ''
                 });
             }
         }
@@ -67368,35 +70765,74 @@ ${legsText}
             if (g.invoices.length > g.invoiceCount) {
                 g.invoiceCount = g.invoices.length;
             }
-            // 针对未分类 (UNIDENTIFIED) 记录，优先从底层挂载发票票种与关键特征智能推导报销类型
-            const isUnknown = !g.expenseTypeId || g.expenseTypeId === 'UNIDENTIFIED' || g.expenseTypeName === '未知类型';
-            if (isUnknown && g.invoices.length > 0) {
-                for (const inv of g.invoices) {
-                    const s = `${inv.invoiceType || ''} ${inv.salesName || ''} ${inv.fileName || ''} ${inv.remarks || ''}`.toLowerCase();
-                    if (s.includes('飞机') || s.includes('航空') || s.includes('机票') || s.includes('flight')) {
-                        g.newExpenseTypeId = '035671613fdde1653e55bb00bc610000';
-                        g.newExpenseTypeName = '飞机票（航空券）';
-                        break;
+            // 核心铁律：已报销的费用不需要纳入任何推断逻辑，而是严格只读其原始信息
+            if (normalizeExpenseStatus(g.status) === '已报销') {
+                continue;
+            }
+            // 针对未分类 (UNIDENTIFIED) 或 标为“其他费用”但实际含有明确发票/业务说明的记录，进行智能推导
+            const isUnknown = !g.expenseTypeId || g.expenseTypeId === 'UNIDENTIFIED' || g.expenseTypeName === '未知类型' || g.expenseTypeName === '其他费用' || g.expenseTypeId === '0356c583e17de1653e55bb00bc610000';
+            if (isUnknown) {
+                if (g.invoices.length > 0) {
+                    for (const inv of g.invoices) {
+                        const s = `${inv.invoiceType || ''} ${inv.salesName || ''} ${inv.fileName || ''} ${inv.remarks || ''}`.toLowerCase();
+                        if (s.includes('飞机') || s.includes('航空') || s.includes('机票') || s.includes('flight')) {
+                            if (!g.newExpenseTypeId || isUnknown) {
+                                g.newExpenseTypeId = '035671613fdde1653e55bb00bc610000';
+                                g.newExpenseTypeName = '飞机票（航空券）';
+                            }
+                            break;
+                        }
+                        else if (s.includes('火车') || s.includes('高铁') || s.includes('铁路') || inv.trainNo) {
+                            if (!g.newExpenseTypeId || isUnknown) {
+                                g.newExpenseTypeId = '0356c4c2b14de1653e55bb00bc610000';
+                                g.newExpenseTypeName = '火车公交车票 （電車Bus代）';
+                            }
+                            break;
+                        }
+                        else if (s.includes('酒店') || s.includes('客房') || s.includes('宾馆') || s.includes('住宿') || s.includes('hotel')) {
+                            if (!g.newExpenseTypeId || isUnknown) {
+                                g.newExpenseTypeId = '0356c4e2b72de1653e55bb00bc610001';
+                                g.newExpenseTypeName = '住宿费（宿泊代）';
+                            }
+                            break;
+                        }
+                        else if (s.includes('出租车') || s.includes('打车') || s.includes('滴滴') || s.includes('taxi') || Boolean(inv.timeGetOn || inv.timeGetOff)) {
+                            // 若当前不在出差中，打车票优先识别为市内交通费
+                            if (!g.newExpenseTypeId || isUnknown) {
+                                g.newExpenseTypeId = '0356c529e72de1653e55bb00bc610001';
+                                g.newExpenseTypeName = '市内交通费';
+                            }
+                            break;
+                        }
+                        else if (s.includes('通信') || s.includes('话费') || s.includes('手机')) {
+                            if (!g.newExpenseTypeId || isUnknown) {
+                                g.newExpenseTypeId = '0356c4f6701345af7f1906ec05cc0000';
+                                g.newExpenseTypeName = '通信传真费（通信代）';
+                            }
+                            break;
+                        }
                     }
-                    else if (s.includes('火车') || s.includes('高铁') || s.includes('铁路') || inv.trainNo) {
-                        g.newExpenseTypeId = '0356c4c2b14de1653e55bb00bc610000';
-                        g.newExpenseTypeName = '火车公交车票 （電車Bus代）';
-                        break;
+                }
+                else if (g.description) {
+                    // 无发票记录：根据费用说明做常识语义推断
+                    const desc = g.description.toLowerCase();
+                    if (desc.includes('礼金') || desc.includes('慰问') || desc.includes('福利') || desc.includes('生子') || desc.includes('结婚') || desc.includes('团建')) {
+                        if (!g.newExpenseTypeId || isUnknown) {
+                            g.newExpenseTypeId = '0356c56b795de1653e55bb00bc610001';
+                            g.newExpenseTypeName = '一般福利费-部门团建';
+                        }
                     }
-                    else if (s.includes('酒店') || s.includes('客房') || s.includes('宾馆') || s.includes('住宿') || s.includes('hotel')) {
-                        g.newExpenseTypeId = '0356c4e2b72de1653e55bb00bc610001';
-                        g.newExpenseTypeName = '住宿费（宿泊代）';
-                        break;
+                    else if (desc.includes('打车') || desc.includes('出租') || desc.includes('taxi') || desc.includes('市内交通')) {
+                        if (!g.newExpenseTypeId || isUnknown) {
+                            g.newExpenseTypeId = '0356c529e72de1653e55bb00bc610001';
+                            g.newExpenseTypeName = '市内交通费';
+                        }
                     }
-                    else if (s.includes('出租车') || s.includes('打车') || s.includes('滴滴') || s.includes('taxi')) {
-                        g.newExpenseTypeId = '0356c4cef03345af7f1906ec05cc0000';
-                        g.newExpenseTypeName = '出租车（taxi）';
-                        break;
-                    }
-                    else if (s.includes('通信') || s.includes('话费') || s.includes('手机')) {
-                        g.newExpenseTypeId = '0356c4f6701345af7f1906ec05cc0000';
-                        g.newExpenseTypeName = '通信传真费（通信代）';
-                        break;
+                    else if (desc.includes('手机') || desc.includes('话费') || desc.includes('通信')) {
+                        if (!g.newExpenseTypeId || isUnknown) {
+                            g.newExpenseTypeId = '0356c577f8ede1653e55bb00bc610001';
+                            g.newExpenseTypeName = '通信费-员工手机费';
+                        }
                     }
                 }
             }
@@ -67664,6 +71100,15 @@ ${legsText}
             modal = targetDoc.createElement('div');
             modal.id = 'yn-batch-edit-modal';
             targetDoc.body.appendChild(modal);
+            // 彻底隔绝宿主页面 (vendors_index.js 等) 对弹窗内部点击与手势的全局冒泡监听，杜绝 392ms 的 get offsetY 强迫回流
+            const isolateModalEvents = (e) => {
+                e.stopPropagation();
+            };
+            modal.addEventListener('pointerdown', isolateModalEvents);
+            modal.addEventListener('mousedown', isolateModalEvents);
+            modal.addEventListener('pointerup', isolateModalEvents);
+            modal.addEventListener('mouseup', isolateModalEvents);
+            modal.addEventListener('click', isolateModalEvents);
         }
         let isCancelled = false;
         const handleCancel = () => {
@@ -67734,6 +71179,7 @@ ${legsText}
             }
             // 1. 初始化费用类型树与选区与筛选状态
             modalState.expenseTypeTree = typeTree || [];
+            clearTypeTreeOptionsCache();
             modalState.targetExpenseTypeId = '';
             modalState.targetExpenseTypeName = '';
             modalState.dynamicFields = {};
@@ -67854,8 +71300,17 @@ ${legsText}
             return [group.earliestInvoiceDate || '-'];
         if (key === 'businessDate')
             return [group.newBusinessDate || group.businessDate || '-'];
-        if (key === 'expenseTypeName')
-            return [group.newExpenseTypeName || group.expenseTypeName || '-'];
+        if (key === 'expenseTypeName') {
+            const typeName = group.newExpenseTypeName || group.expenseTypeName || '未分类';
+            const status = normalizeExpenseStatus(group.status);
+            const flow = getGroupBillFlow(group);
+            const flowName = flow === 'BC' ? '差旅·BC' : '经费·BJ';
+            return [
+                typeName,
+                `状态: ${status}`,
+                `单据: ${flowName}`
+            ];
+        }
         if (key === 'expenseAmount')
             return [`¥${Number(group.expenseAmount || 0).toFixed(2)}`];
         if (key === 'description')
@@ -68016,6 +71471,19 @@ ${legsText}
             // 2. 列字段值精准筛选 (Column-Level Distinct Value Filters)
             for (const [colKey, selectedVals] of Object.entries(state.columnFilters)) {
                 if (selectedVals && selectedVals.length > 0) {
+                    if (colKey === 'expenseTypeName') {
+                        const statusVals = selectedVals.filter(sv => sv.startsWith('状态: '));
+                        const flowVals = selectedVals.filter(sv => sv.startsWith('单据: '));
+                        const typeVals = selectedVals.filter(sv => !sv.startsWith('状态: ') && !sv.startsWith('单据: '));
+                        const gVals = getGroupColumnValues(g, colKey);
+                        if (statusVals.length > 0 && !statusVals.some(sv => gVals.includes(sv)))
+                            return false;
+                        if (flowVals.length > 0 && !flowVals.some(sv => gVals.includes(sv)))
+                            return false;
+                        if (typeVals.length > 0 && !typeVals.some(sv => gVals.includes(sv)))
+                            return false;
+                        continue;
+                    }
                     const gVals = getGroupColumnValues(g, colKey);
                     const hasMatch = selectedVals.some(sv => gVals.includes(sv));
                     if (!hasMatch)
@@ -68559,6 +72027,42 @@ ${legsText}
         return [];
     }
     /**
+     * 渲染列筛选弹窗内部候选项列表 (费用类型列支持 报销状态/单据类型/费用类型 多维分段展示)
+     */
+    function renderFilterValListHtml(colKey, filteredVals, selected) {
+        if (filteredVals.length === 0) {
+            return `<div style="color:#a3a3a3; font-size:11px; padding:6px;">未匹配到值</div>`;
+        }
+        const renderItems = (items) => items.map(item => {
+            const isChecked = selected.has(item.value);
+            const safeVal = item.value.replace(/"/g, '&quot;');
+            return `
+            <label class="yn-bem-filter-val-item">
+                <input type="checkbox" class="yn-bem-col-val-cb" data-col="${colKey}" data-val="${safeVal}" ${isChecked ? 'checked' : ''} />
+                <span class="yn-bem-filter-val-text" title="${safeVal}">${item.value}</span>
+                <span class="yn-bem-filter-val-count">${item.count}</span>
+            </label>
+        `;
+        }).join('');
+        if (colKey === 'expenseTypeName') {
+            const statusItems = filteredVals.filter(d => d.value.startsWith('状态: '));
+            const flowItems = filteredVals.filter(d => d.value.startsWith('单据: '));
+            const typeItems = filteredVals.filter(d => !d.value.startsWith('状态: ') && !d.value.startsWith('单据: '));
+            let html = '';
+            if (statusItems.length > 0) {
+                html += `<div class="yn-bem-filter-group-header">📋 报销状态</div>` + renderItems(statusItems);
+            }
+            if (flowItems.length > 0) {
+                html += `<div class="yn-bem-filter-group-header">📑 报销单类型</div>` + renderItems(flowItems);
+            }
+            if (typeItems.length > 0) {
+                html += `<div class="yn-bem-filter-group-header">🏷️ 费用类型</div>` + renderItems(typeItems);
+            }
+            return html || `<div style="color:#a3a3a3; font-size:11px; padding:6px;">未匹配到值</div>`;
+        }
+        return renderItems(filteredVals);
+    }
+    /**
      * 渲染列头筛选 Popover 浮层 HTML
      */
     function renderColumnFilterPopoverHtml(colKey) {
@@ -68575,21 +72079,51 @@ ${legsText}
                 <span class="yn-bem-filter-popover-link" id="yn-bem-popover-clear">清空筛选</span>
             </div>
             <div class="yn-bem-filter-val-list">
-                ${filteredVals.length === 0 ? `<div style="color:#a3a3a3; font-size:11px; padding:6px;">未匹配到值</div>` : ''}
-                ${filteredVals.map(item => {
-        const isChecked = selected.has(item.value);
-        const safeVal = item.value.replace(/"/g, '&quot;');
-        return `
-                        <label class="yn-bem-filter-val-item">
-                            <input type="checkbox" class="yn-bem-col-val-cb" data-col="${colKey}" data-val="${safeVal}" ${isChecked ? 'checked' : ''} />
-                            <span class="yn-bem-filter-val-text" title="${safeVal}">${item.value}</span>
-                            <span class="yn-bem-filter-val-count">${item.count}</span>
-                        </label>
-                    `;
-    }).join('')}
+                ${renderFilterValListHtml(colKey, filteredVals, selected)}
             </div>
         </div>
     `;
+    }
+    /**
+     * 局部关闭列头筛选 Popover，避免触发全表无意义重绘 (INP < 1ms)
+     */
+    function closeColumnFilterPopover(container) {
+        if (!modalState.activePopoverCol)
+            return;
+        const oldPopover = container.querySelector('#yn-bem-filter-popover');
+        if (oldPopover) {
+            oldPopover.remove();
+        }
+        const openThs = container.querySelectorAll('.yn-bem-th-popover-open');
+        openThs.forEach(th => th.classList.remove('yn-bem-th-popover-open'));
+        modalState.activePopoverCol = null;
+        modalState.popoverKeyword = '';
+    }
+    /**
+     * 局部展开/切换列头筛选 Popover，零 DOM 销毁与零全表重刷 (INP < 1ms)
+     */
+    function toggleColumnFilterPopover(container, colKey) {
+        const isSameCol = modalState.activePopoverCol === colKey;
+        closeColumnFilterPopover(container);
+        if (isSameCol) {
+            return;
+        }
+        modalState.activePopoverCol = colKey;
+        modalState.popoverKeyword = '';
+        const triggerBtn = container.querySelector(`.yn-bem-th-filter-trigger[data-filter-col="${colKey}"]`);
+        if (triggerBtn) {
+            const parentTh = triggerBtn.closest('th');
+            if (parentTh) {
+                parentTh.classList.add('yn-bem-th-popover-open');
+            }
+            const topRow = triggerBtn.closest('.yn-bem-th-top-row');
+            if (topRow) {
+                topRow.insertAdjacentHTML('beforeend', renderColumnFilterPopoverHtml(colKey));
+                setTimeout(() => {
+                    container.querySelector('#yn-bem-popover-search')?.focus();
+                }, 10);
+            }
+        }
     }
     /**
      * 渲染顶部生效中的列筛选条件标签栏
@@ -68885,11 +72419,7 @@ ${legsText}
         const cat = getGroupCategory(group);
         const isApp = isDynamicColumnApplicable(col.key, cat);
         if (!isApp) {
-            return `
-            <td class="yn-bem-group-cell yn-bem-dyn-cell-na" rowspan="${span}">
-                <span>-</span>
-            </td>
-        `;
+            return `<td class="yn-bem-group-cell yn-bem-dyn-cell-na" rowspan="${span}">-</td>`;
         }
         const isOverStandardCol = col.key === 'dynOverStandard';
         const isHotelOver = isOverStandardCol && isHotelGroupOverStandard(group);
@@ -68965,12 +72495,21 @@ ${legsText}
         </td>
     `;
     }
+    // 内存缓存各报销类型生成的 <option> HTML，消除每行重复递归遍历的严重开销
+    const typeTreeOptionsCache = new Map();
+    function clearTypeTreeOptionsCache() {
+        typeTreeOptionsCache.clear();
+    }
     function renderTypeTreeOptionsHtml(tree, selectedId) {
+        const cacheKey = `${selectedId || ''}_${(tree && tree.length) || 0}`;
+        if (typeTreeOptionsCache.has(cacheKey)) {
+            return typeTreeOptionsCache.get(cacheKey);
+        }
         const isUnselected = !selectedId || selectedId === 'UNIDENTIFIED';
         const unselectedHtml = isUnselected ? `<option value="" disabled selected>-- 请选择费用类型 --</option>` : '';
         if (!tree || tree.length === 0) {
             // 基于系统元数据兜底 (零延迟秒级响应)
-            return unselectedHtml + `
+            const fallbackRes = unselectedHtml + `
             <optgroup label="差旅费">
                 <option value="0356c4cef03345af7f1906ec05cc0000" data-name="出租车（taxi）" ${selectedId === '0356c4cef03345af7f1906ec05cc0000' ? 'selected' : ''}>出租车（taxi）</option>
                 <option value="0356c4e2b72de1653e55bb00bc610001" data-name="住宿费（宿泊代）" ${selectedId === '0356c4e2b72de1653e55bb00bc610001' ? 'selected' : ''}>住宿费（宿泊代）</option>
@@ -68995,6 +72534,8 @@ ${legsText}
                 <option value="0356c583e17de1653e55bb00bc610000" data-name="其他费用" ${selectedId === '0356c583e17de1653e55bb00bc610000' ? 'selected' : ''}>其他费用</option>
             </optgroup>
         `;
+            typeTreeOptionsCache.set(cacheKey, fallbackRes);
+            return fallbackRes;
         }
         const treeOptions = tree.map(cat => {
             if (!cat.children || cat.children.length === 0) {
@@ -69007,7 +72548,9 @@ ${legsText}
             }).join('');
             return `<optgroup label="${cat.name}">${options}</optgroup>`;
         }).join('');
-        return unselectedHtml + treeOptions;
+        const result = unselectedHtml + treeOptions;
+        typeTreeOptionsCache.set(cacheKey, result);
+        return result;
     }
     function renderDynamicFieldsCardHtml() {
         const targetId = modalState.targetExpenseTypeId;
@@ -69632,6 +73175,12 @@ ${legsText}
             onClose: () => {
                 closeAiPanel(container);
             },
+            onOpenSettings: () => {
+                openWebMcpSettingsModal((savedCfg) => {
+                    modalState.selectedModel = savedCfg.model;
+                    renderAssistantChat(container);
+                });
+            },
             skills: AI_SKILLS,
             activeSkillId: modalState.activeSkillId,
             onDismissSkill: () => {
@@ -69644,8 +73193,12 @@ ${legsText}
             selectedModel: modalState.selectedModel,
             onSelectModel: (model) => {
                 modalState.selectedModel = model;
+                const cfg = getLlmConfig();
+                cfg.model = model;
+                saveLlmConfig(cfg);
                 renderAssistantChat(container);
-            }
+            },
+            llmConfig: getLlmConfig()
         }));
     }
     /**
@@ -69967,17 +73520,18 @@ ${legsText}
      * 渲染单笔费用记录（含发票明细行）的 HTML 结构
      */
     function renderGroupRowsHtml(group) {
+        const isReimbursed = normalizeExpenseStatus(group.status) === '已报销';
         const isSelected = modalState.selectedRecordIds.has(group.expenseRecordId);
-        const isDescChanged = group.newDescription !== undefined && group.newDescription !== group.description;
-        const isDateChanged = group.newBusinessDate !== undefined && group.newBusinessDate !== group.businessDate;
-        const isTypeChanged = Boolean(group.newExpenseTypeId && group.newExpenseTypeId !== group.expenseTypeId);
-        const isAiDateInferred = Boolean(group.inferredFields?.['businessDate']);
+        const isDescChanged = !isReimbursed && group.newDescription !== undefined && group.newDescription !== group.description;
+        const isDateChanged = !isReimbursed && group.newBusinessDate !== undefined && group.newBusinessDate !== group.businessDate;
+        const isTypeChanged = !isReimbursed && Boolean(group.newExpenseTypeId && group.newExpenseTypeId !== group.expenseTypeId);
+        const isAiDateInferred = !isReimbursed && Boolean(group.inferredFields?.['businessDate']);
         const flow = getGroupBillFlow(group);
         const saveError = modalState.saveErrors ? modalState.saveErrors.get(group.expenseRecordId) : undefined;
         const isSaveError = Boolean(saveError);
-        // 智能错配检测
+        // 智能错配检测 (已报销记录免除错配提示)
         const tripIntervals = modalState.tripPlans.map(t => ({ tripNo: t.tripNo, destination: t.destination, start: t.startDate, end: t.endDate }));
-        const misclass = checkTaxiMisclassification(group, tripIntervals);
+        const misclass = isReimbursed ? { hasMisclass: false } : checkTaxiMisclassification(group, tripIntervals);
         let misclassHtml = '';
         if (misclass.hasMisclass) {
             const isToTripTaxi = misclass.suggestedTypeId === '0356c4cef03345af7f1906ec05cc0000';
@@ -69987,11 +73541,14 @@ ${legsText}
         const invList = group.invoices;
         const span = Math.max(1, invList.length);
         const inv0 = invList[0];
+        const isActive = modalState.activeRecordId === group.expenseRecordId;
+        const currentTypeId = group.newExpenseTypeId || group.expenseTypeId || '';
+        const currentTypeName = group.newExpenseTypeName || group.expenseTypeName || '请选择费用类型';
         let rowsHtml = `
-        <tr class="${isSelected ? 'is-selected' : ''} ${isSaveError ? 'is-save-error' : ''} yn-bem-group-first yn-bem-data-row" data-recordid="${group.expenseRecordId}">
+        <tr class="${isSelected ? 'is-selected' : ''} ${isActive ? 'is-active-row' : ''} ${isSaveError ? 'is-save-error' : ''} yn-bem-group-first yn-bem-data-row ${isReimbursed ? 'yn-bem-row-reimbursed' : ''}" data-recordid="${group.expenseRecordId}">
             <!-- 费用主体聚合列 1: 复选框 -->
             <td class="yn-bem-col-sticky-cb yn-bem-group-cell" rowspan="${span}">
-                <input type="checkbox" class="yn-bem-record-cb" data-recordid="${group.expenseRecordId}" ${isSelected ? 'checked' : ''} />
+                <input type="checkbox" class="yn-bem-record-cb" data-recordid="${group.expenseRecordId}" ${isSelected ? 'checked' : ''} ${isReimbursed ? 'disabled title="该笔费用已报销归档，无需再次提交保存"' : ''} />
                 ${isSaveError ? `<span class="yn-bem-save-error-badge" title="${escapeHtml(saveError || '')}">❌ 失败</span>` : ''}
             </td>
 
@@ -70006,22 +73563,24 @@ ${legsText}
                     <input type="date" class="yn-bem-cell-date-input ${isAiDateInferred ? 'is-ai-inferred' : (isDateChanged ? 'has-changed' : '')}"
                            data-recordid="${group.expenseRecordId}"
                            value="${group.newBusinessDate || group.businessDate || ''}"
-                           title="${isAiDateInferred ? `✨ AI已自动同步为实际入住日期 (原开票日: ${group.businessDate})` : (isDateChanged ? `业务日期已修改 (原业务日期: ${group.businessDate})` : '点击直接修改业务日期')}" />
+                           ${isReimbursed ? 'readonly disabled' : ''}
+                           title="${isReimbursed ? '该笔费用已报销归档，业务日期仅供查阅' : (isAiDateInferred ? `✨ AI已自动同步为实际入住日期 (原开票日: ${group.businessDate})` : (isDateChanged ? `业务日期已修改 (原业务日期: ${group.businessDate})` : '点击直接修改业务日期'))}" />
                     ${isAiDateInferred ? `<span class="yn-bem-ai-sparkle-dot" title="✨ AI已自动同步为实际入住日 (原开票日: ${group.businessDate})">✨</span>` : ''}
                 </div>
             </td>
 
-            <!-- 费用主体聚合列 4: 费用类型 (就地直接修改下拉 + 专属字段微按钮 + 流向 Tag + 错配纠错) -->
+            <!-- 费用主体聚合列 4: 费用类型 (就地直接修改下拉 + 专属字段微按钮 + 流向 Tag + 错配纠错，按需懒加载完整类型树) -->
             <td class="yn-bem-group-cell yn-bem-cell-interactive" rowspan="${span}">
                 <div class="yn-bem-cell-type-wrapper">
                     <div style="display:flex; align-items:center; gap:4px;">
                         <select class="yn-bem-cell-type-select ${isTypeChanged ? 'has-type-changed' : ''}"
                                 data-recordid="${group.expenseRecordId}"
-                                title="点击直接修改此笔费用的报销类型">
-                            ${renderTypeTreeOptionsHtml(modalState.expenseTypeTree, group.newExpenseTypeId || group.expenseTypeId)}
+                                ${isReimbursed ? 'disabled' : ''}
+                                title="${isReimbursed ? '该笔费用已报销归档，报销类型仅供查阅' : '点击直接修改此笔费用的报销类型'}">
+                            <option value="${escapeHtml(currentTypeId)}" selected>${escapeHtml(currentTypeName)}</option>
                         </select>
-                        <span class="yn-bem-status-tag ${group.status === '报销中' ? 'is-reimbursing' : (group.status === '已报销' ? 'is-reimbursed' : 'is-no-reimburse')}" title="当前报销状态: ${escapeHtml(group.status || '未报销')}">
-                            ${escapeHtml(group.status || '未报销')}
+                        <span class="yn-bem-status-tag ${normalizeExpenseStatus(group.status) === '报销中' ? 'is-reimbursing' : (normalizeExpenseStatus(group.status) === '已报销' ? 'is-reimbursed' : 'is-no-reimburse')}" title="当前报销状态: ${escapeHtml(normalizeExpenseStatus(group.status))}">
+                            ${escapeHtml(normalizeExpenseStatus(group.status))}
                         </span>
                         <span class="yn-bem-tag-${flow.toLowerCase()}" style="font-size:10px; padding:1px 4px; border-radius:3px; white-space:nowrap;">
                             ${flow === 'BC' ? '差旅·BC' : '经费·BJ'}
@@ -70044,7 +73603,8 @@ ${legsText}
                 <input type="text" class="yn-bem-desc-input ${isDescChanged ? 'has-changed' : ''} ${isSaveError ? 'has-save-error' : ''}"
                        data-recordid="${group.expenseRecordId}"
                        value="${escapeHtml(group.newDescription !== undefined ? group.newDescription : group.description)}"
-                       placeholder="输入或修改费用说明..." title="直接就地编辑费用说明" />
+                       ${isReimbursed ? 'readonly' : ''}
+                       placeholder="输入或修改费用说明..." title="${isReimbursed ? '该笔费用已报销归档，说明仅供查阅' : '直接就地编辑费用说明'}" />
                 ${isSaveError ? `<div class="yn-bem-row-error-hint" title="${escapeHtml(saveError || '')}">❌ ${escapeHtml(saveError || '')}</div>` : ''}
             </td>
 
@@ -70065,7 +73625,7 @@ ${legsText}
             for (let k = 1; k < invList.length; k++) {
                 const invK = invList[k];
                 rowsHtml += `
-                <tr class="${isSelected ? 'is-selected' : ''} ${isSaveError ? 'is-save-error' : ''} yn-bem-data-row" data-recordid="${group.expenseRecordId}">
+                <tr class="${isSelected ? 'is-selected' : ''} ${isActive ? 'is-active-row' : ''} ${isSaveError ? 'is-save-error' : ''} yn-bem-data-row" data-recordid="${group.expenseRecordId}">
                     ${renderInvoiceDetailCells(invK, group.invoiceCount, group)}
                 </tr>
             `;
@@ -70073,73 +73633,101 @@ ${legsText}
         }
         return rowsHtml;
     }
-    /**
-     * 渲染聚合多行明细表格 (Vercel Clean Table & Tabular Figures，多级分组与折叠架构)
-     */
-    function renderTableHtml() {
-        const filteredGroups = getFilteredGroups(modalState);
-        const selectedInFiltered = filteredGroups.filter(g => modalState.selectedRecordIds.has(g.expenseRecordId));
-        const isAllChecked = filteredGroups.length > 0 && selectedInFiltered.length === filteredGroups.length;
-        const activeCols = COLUMN_DEFINITIONS;
-        const totalColSpan = activeCols.length + 1;
-        const getColumnCategoryPill = (key) => {
-            if (['dynFrom', 'dynTo', 'dynTransitNo', 'dynStartDate', 'dynEndDate'].includes(key)) {
-                return `<span class="yn-bem-th-cat-pill yn-th-cat-transit" title="差旅交通专属必填">交通</span>`;
-            }
-            if (['dynCheckIn', 'dynCheckOut', 'dynCity', 'dynCityType', 'dynHotel', 'dynRoomNum', 'dynOverStandard'].includes(key)) {
-                return `<span class="yn-bem-th-cat-pill yn-th-cat-hotel" title="住宿费专属必填">住宿</span>`;
-            }
-            if (['dynAddrFrom', 'dynAddrTo'].includes(key)) {
-                return `<span class="yn-bem-th-cat-pill yn-th-cat-taxi" title="出租车专属必填">打车</span>`;
-            }
-            if (key === 'dynBillMonth') {
-                return `<span class="yn-bem-th-cat-pill yn-th-cat-mobile" title="通信费专属必填">通信</span>`;
-            }
-            if (key.startsWith('invoice') || ['totalAmount', 'departureTime', 'timeGetOff', 'stationGetOn', 'stationGetOff', 'salesName', 'fileName', 'remarks', 'reconciliationNote'].includes(key)) {
-                return `<span class="yn-bem-th-cat-pill yn-th-cat-invoice" title="原始发票票面明细">发票</span>`;
-            }
-            if (['earliestInvoiceDate', 'businessDate', 'expenseTypeName', 'expenseAmount', 'description', 'invoiceCount'].includes(key)) {
-                return `<span class="yn-bem-th-cat-pill yn-th-cat-base" title="费用记录基础属性">基础</span>`;
-            }
-            return '';
-        };
-        const colGroupHtml = `
+    const getColumnCategoryPill = (key) => {
+        if (['dynFrom', 'dynTo', 'dynTransitNo', 'dynStartDate', 'dynEndDate'].includes(key)) {
+            return `<span class="yn-bem-th-cat-pill yn-th-cat-transit" title="差旅交通专属必填">交通</span>`;
+        }
+        if (['dynCheckIn', 'dynCheckOut', 'dynCity', 'dynCityType', 'dynHotel', 'dynRoomNum', 'dynOverStandard'].includes(key)) {
+            return `<span class="yn-bem-th-cat-pill yn-th-cat-hotel" title="住宿费专属必填">住宿</span>`;
+        }
+        if (['dynAddrFrom', 'dynAddrTo'].includes(key)) {
+            return `<span class="yn-bem-th-cat-pill yn-th-cat-taxi" title="出租车专属必填">打车</span>`;
+        }
+        if (key === 'dynBillMonth') {
+            return `<span class="yn-bem-th-cat-pill yn-th-cat-mobile" title="通信费专属必填">通信</span>`;
+        }
+        if (key.startsWith('invoice') || ['totalAmount', 'departureTime', 'timeGetOff', 'stationGetOn', 'stationGetOff', 'salesName', 'fileName', 'remarks', 'reconciliationNote'].includes(key)) {
+            return `<span class="yn-bem-th-cat-pill yn-th-cat-invoice" title="原始发票票面明细">发票</span>`;
+        }
+        if (['earliestInvoiceDate', 'businessDate', 'expenseTypeName', 'expenseAmount', 'description', 'invoiceCount'].includes(key)) {
+            return `<span class="yn-bem-th-cat-pill yn-th-cat-base" title="费用记录基础属性">基础</span>`;
+        }
+        return '';
+    };
+    function renderTableColGroupHtml(activeCols) {
+        return `
         <colgroup>
             <col style="width: 34px; min-width: 34px;" />
             ${activeCols.map(col => `<col style="width: ${col.width || '80px'}; min-width: ${col.width || '80px'};" />`).join('')}
         </colgroup>
     `;
-        const renderThCellHtml = (col) => {
-            const isSorted = modalState.sortKey === col.key;
-            const arrow = isSorted ? (modalState.sortAsc ? ' ↑' : ' ↓') : '';
-            const isFiltered = Boolean(modalState.columnFilters[col.key] && modalState.columnFilters[col.key].length > 0);
-            const isPopoverOpen = modalState.activePopoverCol === col.key;
-            const stickyClass = col.sticky === 'date' ? 'yn-bem-col-sticky-date' : '';
-            const alignStyle = col.align === 'right' ? 'text-align:right;' : (col.align === 'center' ? 'text-align:center;' : '');
-            const justifyStyle = col.align === 'right' ? 'justify-content:flex-end;' : (col.align === 'center' ? 'justify-content:center;' : '');
-            const catPill = getColumnCategoryPill(col.key);
-            return `
-            <th class="${stickyClass} ${isSorted ? 'sorted-active' : ''}" style="${alignStyle} ${col.width ? `min-width:${col.width}; width:${col.width};` : ''}">
-                <div class="yn-bem-th-cell-stack">
-                    <div class="yn-bem-th-top-row">
-                        ${catPill || '<span class="yn-bem-th-pill-spacer"></span>'}
-                        ${col.key !== 'actions' && col.key !== 'routeDetails' ? `
-                            <button type="button" class="yn-bem-th-filter-trigger ${isFiltered ? 'is-active' : ''}" data-filter-col="${col.key}" title="按 ${col.label} 筛选">▾</button>
-                            ${isPopoverOpen ? renderColumnFilterPopoverHtml(col.key) : ''}
-                        ` : ''}
-                    </div>
-                    <div class="yn-bem-th-bottom-row" style="${justifyStyle}">
-                        <span class="yn-bem-th-title" data-sort="${col.key}" title="${col.label}">
-                            <span class="yn-bem-th-label-text">${col.label}</span>
-                            ${arrow ? `<span class="yn-bem-th-sort-arrow">${arrow}</span>` : ''}
-                        </span>
-                    </div>
+    }
+    function renderThCellHtml(col) {
+        const isSorted = modalState.sortKey === col.key;
+        const arrow = isSorted ? (modalState.sortAsc ? ' ↑' : ' ↓') : '';
+        const isFiltered = Boolean(modalState.columnFilters[col.key] && modalState.columnFilters[col.key].length > 0);
+        const isPopoverOpen = modalState.activePopoverCol === col.key;
+        const stickyClass = col.sticky === 'date' ? 'yn-bem-col-sticky-date' : '';
+        const popoverOpenClass = isPopoverOpen ? 'yn-bem-th-popover-open' : '';
+        const alignStyle = col.align === 'right' ? 'text-align:right;' : (col.align === 'center' ? 'text-align:center;' : '');
+        const justifyStyle = col.align === 'right' ? 'justify-content:flex-end;' : (col.align === 'center' ? 'justify-content:center;' : '');
+        const catPill = getColumnCategoryPill(col.key);
+        return `
+        <th class="${stickyClass} ${isSorted ? 'sorted-active' : ''} ${popoverOpenClass}" style="${alignStyle} ${col.width ? `min-width:${col.width}; width:${col.width};` : ''}">
+            <div class="yn-bem-th-cell-stack">
+                <div class="yn-bem-th-top-row">
+                    ${catPill || '<span class="yn-bem-th-pill-spacer"></span>'}
+                    ${col.key !== 'actions' && col.key !== 'routeDetails' ? `
+                        <button type="button" class="yn-bem-th-filter-trigger ${isFiltered ? 'is-active' : ''}" data-filter-col="${col.key}" title="按 ${col.label} 筛选">▾</button>
+                        ${isPopoverOpen ? renderColumnFilterPopoverHtml(col.key) : ''}
+                    ` : ''}
                 </div>
-            </th>
-        `;
-        };
-        if (filteredGroups.length === 0) {
-            return `
+                <div class="yn-bem-th-bottom-row" style="${justifyStyle}">
+                    <span class="yn-bem-th-title" data-sort="${col.key}" title="${col.label}">
+                        <span class="yn-bem-th-label-text">${col.label}</span>
+                        ${arrow ? `<span class="yn-bem-th-sort-arrow">${arrow}</span>` : ''}
+                    </span>
+                </div>
+            </div>
+        </th>
+    `;
+    }
+    function renderTableTheadHtml(activeCols, isAllChecked) {
+        return `
+        <thead>
+            <tr>
+                <th class="yn-bem-col-sticky-cb">
+                    <input type="checkbox" id="yn-bem-th-select-all" ${isAllChecked ? 'checked' : ''} />
+                </th>
+                ${activeCols.map(col => renderThCellHtml(col)).join('')}
+            </tr>
+        </thead>
+    `;
+    }
+    function renderSectionHeaderRowHtml(sec, totalColSpan) {
+        const isCollapsed = modalState.collapsedGroupKeys.has(sec.key);
+        const selectedCount = sec.items.filter((g) => modalState.selectedRecordIds.has(g.expenseRecordId)).length;
+        const totalCount = sec.items.length;
+        const isChecked = totalCount > 0 && selectedCount === totalCount;
+        const isIndeterminate = selectedCount > 0 && selectedCount < totalCount;
+        return `
+        <tr class="yn-bem-group-header-row ${isCollapsed ? 'is-collapsed' : ''}" data-group-key="${sec.key}">
+            <td colspan="${totalColSpan}" class="yn-bem-group-header-cell">
+                <div class="yn-bem-group-header-inner">
+                    <button type="button" class="yn-bem-group-toggle-btn ${isCollapsed ? 'is-collapsed' : ''}" data-group-key="${sec.key}" title="${isCollapsed ? '点击展开' : '点击折叠'}">
+                        ${isCollapsed ? '▶' : '▼'}
+                    </button>
+                    <input type="checkbox" class="yn-bem-group-cb" data-group-key="${sec.key}" ${isChecked ? 'checked' : ''} ${isIndeterminate ? 'data-indeterminate="true"' : ''} title="全选/反选本分组" />
+                    <span class="yn-bem-group-title">${sec.title}</span>
+                    <span class="yn-bem-group-flow-tag yn-bem-tag-${sec.flow.toLowerCase()}">${sec.flowTag}</span>
+                    <span class="yn-bem-group-summary-badge">${sec.items.length} 笔费用 (${sec.totalInvoices} 张发票) · 小计 ¥${sec.totalAmount.toFixed(2)}</span>
+                </div>
+            </td>
+        </tr>
+    `;
+    }
+    function renderTableEmptyStateHtml(totalColSpan, colGroupHtml, theadHtml) {
+        return `
         <table class="yn-bem-table">
             ${colGroupHtml}
             <thead>
@@ -70147,7 +73735,7 @@ ${legsText}
                     <th class="yn-bem-col-sticky-cb">
                         <input type="checkbox" id="yn-bem-th-select-all" disabled />
                     </th>
-                    ${activeCols.map(col => renderThCellHtml(col)).join('')}
+                    ${COLUMN_DEFINITIONS.map(col => renderThCellHtml(col)).join('')}
                 </tr>
             </thead>
             <tbody>
@@ -70162,56 +73750,211 @@ ${legsText}
                 </tr>
             </tbody>
         </table>
-        `;
+    `;
+    }
+    /**
+     * 渲染聚合多行明细表格初始容器 (Vercel Clean Table & Tabular Figures，虚拟视口容器)
+     */
+    function renderTableHtml() {
+        const filteredGroups = getFilteredGroups(modalState);
+        const selectedInFiltered = filteredGroups.filter(g => modalState.selectedRecordIds.has(g.expenseRecordId));
+        const isAllChecked = filteredGroups.length > 0 && selectedInFiltered.length === filteredGroups.length;
+        const activeCols = COLUMN_DEFINITIONS;
+        const totalColSpan = activeCols.length + 1;
+        const colGroupHtml = renderTableColGroupHtml(activeCols);
+        const theadHtml = renderTableTheadHtml(activeCols, isAllChecked);
+        if (filteredGroups.length === 0) {
+            return renderTableEmptyStateHtml(totalColSpan, colGroupHtml);
         }
         return `
-        <table class="yn-bem-table">
+        <table class="yn-bem-table" id="yn-bem-main-table">
             ${colGroupHtml}
-            <thead>
-                <tr>
-                    <th class="yn-bem-col-sticky-cb">
-                        <input type="checkbox" id="yn-bem-th-select-all" ${isAllChecked ? 'checked' : ''} />
-                    </th>
-                    ${activeCols.map(col => renderThCellHtml(col)).join('')}
-                </tr>
-            </thead>
-            ${(() => {
-        if (modalState.groupingMode === 'NONE') {
-            return `
-                        <tbody>
-                            ${filteredGroups.map(group => renderGroupRowsHtml(group)).join('')}
-                        </tbody>
-                    `;
-        }
-        const sections = groupFilteredExpenses(filteredGroups, modalState.groupingMode, modalState.tripPlans);
-        return sections.map(sec => {
-            const isCollapsed = modalState.collapsedGroupKeys.has(sec.key);
-            const selectedCount = sec.items.filter(g => modalState.selectedRecordIds.has(g.expenseRecordId)).length;
-            const totalCount = sec.items.length;
-            const isChecked = totalCount > 0 && selectedCount === totalCount;
-            const isIndeterminate = selectedCount > 0 && selectedCount < totalCount;
-            return `
-                        <tbody class="yn-bem-group-tbody ${isCollapsed ? 'is-collapsed' : ''}" data-group-key="${sec.key}">
-                            <tr class="yn-bem-group-header-row" data-group-key="${sec.key}">
-                                <td colspan="${totalColSpan}" class="yn-bem-group-header-cell">
-                                    <div class="yn-bem-group-header-inner">
-                                        <button type="button" class="yn-bem-group-toggle-btn" data-group-key="${sec.key}" title="${isCollapsed ? '点击展开' : '点击折叠'}">
-                                            ${isCollapsed ? '▶' : '▼'}
-                                        </button>
-                                        <input type="checkbox" class="yn-bem-group-cb" data-group-key="${sec.key}" ${isChecked ? 'checked' : ''} ${isIndeterminate ? 'data-indeterminate="true"' : ''} title="全选/反选本分组" />
-                                        <span class="yn-bem-group-title">${sec.title}</span>
-                                        <span class="yn-bem-group-flow-tag yn-bem-tag-${sec.flow.toLowerCase()}">${sec.flowTag}</span>
-                                        <span class="yn-bem-group-summary-badge">${sec.items.length} 笔费用 (${sec.totalInvoices} 张发票) · 小计 ¥${sec.totalAmount.toFixed(2)}</span>
-                                    </div>
-                                </td>
-                            </tr>
-                            ${sec.items.map(group => renderGroupRowsHtml(group)).join('')}
-                        </tbody>
-                    `;
-        }).join('');
-    })()}
+            ${theadHtml}
+            <tbody id="yn-bem-virtual-tbody" class="yn-bem-virtual-tbody"></tbody>
         </table>
     `;
+    }
+    function abortPendingTableRenders() {
+    }
+    /**
+     * 依据当前分组模式与折叠状态，将过滤后的费用数据线性映射为扁平轻量级的 RenderUnits 数组
+     */
+    function buildVirtualRenderUnits() {
+        const filteredGroups = getFilteredGroups(modalState);
+        const units = [];
+        if (filteredGroups.length === 0) {
+            return { units: [], offsets: [0], totalHeight: 0 };
+        }
+        if (modalState.groupingMode === 'NONE') {
+            for (const g of filteredGroups) {
+                const rowHeight = 38 + Math.max(0, g.invoices.length - 1) * 34;
+                units.push({
+                    type: 'GROUP_ROW',
+                    id: `grp_${g.expenseRecordId}`,
+                    height: rowHeight,
+                    group: g
+                });
+            }
+        }
+        else {
+            const sections = groupFilteredExpenses(filteredGroups, modalState.groupingMode, modalState.tripPlans);
+            for (const sec of sections) {
+                units.push({
+                    type: 'SECTION_HEADER',
+                    id: `sec_${sec.key}`,
+                    height: 38,
+                    section: sec
+                });
+                if (!modalState.collapsedGroupKeys.has(sec.key)) {
+                    for (const g of sec.items) {
+                        const rowHeight = 38 + Math.max(0, g.invoices.length - 1) * 34;
+                        units.push({
+                            type: 'GROUP_ROW',
+                            id: `grp_${g.expenseRecordId}`,
+                            height: rowHeight,
+                            group: g
+                        });
+                    }
+                }
+            }
+        }
+        const offsets = new Array(units.length + 1);
+        offsets[0] = 0;
+        for (let i = 0; i < units.length; i++) {
+            offsets[i + 1] = offsets[i] + units[i].height;
+        }
+        const totalHeight = offsets[units.length];
+        return { units, offsets, totalHeight };
+    }
+    function binarySearchOffset(offsets, target) {
+        let low = 0;
+        let high = offsets.length - 1;
+        while (low <= high) {
+            const mid = (low + high) >> 1;
+            if (offsets[mid] < target) {
+                low = mid + 1;
+            }
+            else {
+                high = mid - 1;
+            }
+        }
+        return Math.max(0, low - 1);
+    }
+    function calculateVirtualSlice(offsets, totalUnits, scrollTop, viewportHeight) {
+        if (totalUnits === 0) {
+            return { startIndex: 0, endIndex: 0 };
+        }
+        const OVERSCAN_PX = 350; // 上下缓冲 350px (~8行)，保证高速滚动零白屏
+        const minVisibleY = Math.max(0, scrollTop - OVERSCAN_PX);
+        const maxVisibleY = scrollTop + viewportHeight + OVERSCAN_PX;
+        let startIndex = binarySearchOffset(offsets, minVisibleY);
+        let endIndex = binarySearchOffset(offsets, maxVisibleY) + 1;
+        startIndex = Math.max(0, Math.min(startIndex, totalUnits));
+        endIndex = Math.max(startIndex, Math.min(endIndex, totalUnits));
+        return { startIndex, endIndex };
+    }
+    let cachedViewportHeight = 0;
+    /**
+     * 局部切片渲染器 (Window Slice Renderer)
+     * 仅向 #yn-bem-virtual-tbody 注入首尾 spacer 及可视区 ~25 行，耗时 < 3ms
+     */
+    function updateVirtualSlice(container, wrap, force = false) {
+        const tbody = wrap.querySelector('#yn-bem-virtual-tbody');
+        if (!tbody)
+            return;
+        const scrollTop = wrap.scrollTop;
+        if (!cachedViewportHeight) {
+            cachedViewportHeight = wrap.clientHeight || (window.innerHeight - 220);
+        }
+        const viewportHeight = cachedViewportHeight;
+        const { startIndex, endIndex } = calculateVirtualSlice(virtualTableState.unitOffsets, virtualTableState.renderUnits.length, scrollTop, viewportHeight);
+        if (!force && startIndex === virtualTableState.startIndex && endIndex === virtualTableState.endIndex) {
+            return;
+        }
+        virtualTableState.startIndex = startIndex;
+        virtualTableState.endIndex = endIndex;
+        virtualTableState.scrollTop = scrollTop;
+        const totalColSpan = COLUMN_DEFINITIONS.length + 1;
+        const topSpacerHeight = virtualTableState.unitOffsets[startIndex] || 0;
+        const bottomSpacerHeight = Math.max(0, virtualTableState.totalHeight - (virtualTableState.unitOffsets[endIndex] || 0));
+        const visibleUnits = virtualTableState.renderUnits.slice(startIndex, endIndex);
+        const rowsHtml = visibleUnits.map(unit => {
+            if (unit.type === 'SECTION_HEADER' && unit.section) {
+                return renderSectionHeaderRowHtml(unit.section, totalColSpan);
+            }
+            else if (unit.type === 'GROUP_ROW' && unit.group) {
+                return renderGroupRowsHtml(unit.group);
+            }
+            return '';
+        }).join('');
+        tbody.innerHTML = `
+        <tr class="yn-bem-vscroll-spacer" style="height:${topSpacerHeight}px;"><td colspan="${totalColSpan}"></td></tr>
+        ${rowsHtml}
+        <tr class="yn-bem-vscroll-spacer" style="height:${bottomSpacerHeight}px;"><td colspan="${totalColSpan}"></td></tr>
+    `;
+        updateAllCheckboxStates(container);
+    }
+    let isScrollTicking = false;
+    function bindVirtualScrollListener(container, wrap) {
+        if (wrap.__virtualScrollBound)
+            return;
+        wrap.__virtualScrollBound = true;
+        cachedViewportHeight = wrap.clientHeight || (window.innerHeight - 220);
+        window.addEventListener('resize', () => {
+            cachedViewportHeight = wrap.clientHeight || (window.innerHeight - 220);
+            updateVirtualSlice(container, wrap, true);
+        }, { passive: true });
+        wrap.addEventListener('scroll', () => {
+            if (!isScrollTicking) {
+                isScrollTicking = true;
+                requestAnimationFrame(() => {
+                    isScrollTicking = false;
+                    updateVirtualSlice(container, wrap);
+                });
+            }
+        }, { passive: true });
+    }
+    /**
+     * 零依赖原生视口虚拟表格装配器 (Native Virtual Table Assembler - INP 终极优化核心)
+     * 彻底终结 20,000+ DOM 节点与 200+ 粘性列导致的 17.4s Commit / 11.3s Layerize 性能崩塌
+     */
+    function renderVirtualTable(container, wrap) {
+        const filteredGroups = getFilteredGroups(modalState);
+        const selectedInFiltered = filteredGroups.filter(g => modalState.selectedRecordIds.has(g.expenseRecordId));
+        const isAllChecked = filteredGroups.length > 0 && selectedInFiltered.length === filteredGroups.length;
+        const activeCols = COLUMN_DEFINITIONS;
+        const totalColSpan = activeCols.length + 1;
+        const colGroupHtml = renderTableColGroupHtml(activeCols);
+        const theadHtml = renderTableTheadHtml(activeCols, isAllChecked);
+        if (filteredGroups.length === 0) {
+            wrap.innerHTML = renderTableEmptyStateHtml(totalColSpan, colGroupHtml);
+            updateAllCheckboxStates(container);
+            return;
+        }
+        // 重构 RenderUnits 线性映射与前缀高度和
+        const { units, offsets, totalHeight } = buildVirtualRenderUnits();
+        virtualTableState.renderUnits = units;
+        virtualTableState.unitOffsets = offsets;
+        virtualTableState.totalHeight = totalHeight;
+        let table = wrap.querySelector('.yn-bem-table');
+        let tbody = wrap.querySelector('#yn-bem-virtual-tbody');
+        if (!table || !tbody) {
+            wrap.innerHTML = `
+            <table class="yn-bem-table" id="yn-bem-main-table">
+                ${colGroupHtml}
+                ${theadHtml}
+                <tbody id="yn-bem-virtual-tbody" class="yn-bem-virtual-tbody"></tbody>
+            </table>
+        `;
+        }
+        else {
+            const thCb = table.querySelector('#yn-bem-th-select-all');
+            if (thCb) {
+                thCb.checked = isAllChecked;
+            }
+        }
+        bindVirtualScrollListener(container, wrap);
+        updateVirtualSlice(container, wrap, true);
     }
     /**
      * 渲染单张发票的 14 个明细单元格 (Vercel 等宽数字与精确对齐，支持始发地/目的地/销售方就地直接编辑)
@@ -70220,7 +73963,22 @@ ${legsText}
         const isWarn = inv.reconciliationNote && inv.reconciliationNote.includes('⚠️');
         return `
         <td style="text-align:center; font-family:ui-monospace, monospace; font-size:11px; color:#737373;">${inv.invoiceIndex}/${totalCount}</td>
-        <td><span style="background:#f5f5f5; border:1px solid #eaeaea; padding:1px 5px; border-radius:3px; font-size:11px; color:#525252;">${inv.invoiceType || '-'}</span></td>
+        <td>
+            <div style="display:flex; align-items:center; gap:4px;">
+                <span style="background:#f5f5f5; border:1px solid #eaeaea; padding:1px 5px; border-radius:3px; font-size:11px; color:#525252; white-space:nowrap;">${inv.invoiceType || '-'}</span>
+                <button type="button" 
+                        class="yn-bem-invoice-photo-btn ${(inv.attachmentId || inv.rawAttachmentId || inv.invoiceDataId) ? 'has-attachment' : 'no-attachment'}" 
+                        data-attachment-id="${escapeHtml(inv.attachmentId || '')}"
+                        data-raw-attachment-id="${escapeHtml(inv.rawAttachmentId || inv.attachmentId || '')}"
+                        data-invoice-data-id="${escapeHtml(inv.invoiceDataId || '')}"
+                        data-invoice-no="${escapeHtml(inv.invoiceNo || '')}"
+                        data-invoice-type="${escapeHtml(inv.invoiceType || '')}"
+                        data-total-amount="${escapeHtml(String(inv.totalAmount || inv.amountTax || ''))}"
+                        title="${(inv.attachmentId || inv.rawAttachmentId || inv.invoiceDataId) ? '悬浮预览发票照片 (默认显示 OCR 单票裁切特写)' : '暂无发票照片'}">
+                    🖼️
+                </button>
+            </div>
+        </td>
         <td style="font-family:ui-monospace, monospace; font-size:11px; color:#737373;">${inv.invoiceCode || '-'}</td>
         <td style="font-family:ui-monospace, monospace; font-size:11px; font-weight:500; color:#171717;">${inv.invoiceNo || '-'}</td>
         <td style="font-family:ui-monospace, monospace; font-variant-numeric:tabular-nums; font-weight:600; text-align:right; color:#171717;">¥${Number(inv.totalAmount || inv.amountTax || 0).toFixed(2)}</td>
@@ -70323,9 +74081,16 @@ ${legsText}
             <div class="yn-bem-ai-resizer" id="yn-bem-ai-resizer" title="左右拖动调整 AI 助手面板宽度"></div>
             <div class="yn-bem-ai-panel" id="yn-bem-ai-panel-react-root"></div>
         </div>
+
+        <!-- 7. 发票照片悬浮预览浮窗 (全局单例，智能防遮挡) -->
+        <div id="yn-bem-invoice-preview-popover" class="yn-bem-invoice-preview-popover" style="display:none;"></div>
     `;
         bindEvents$1(container, doc);
         updateFloatingIsland(container);
+        const wrap = container.querySelector('#yn-bem-table-wrap');
+        if (wrap) {
+            renderVirtualTable(container, wrap);
+        }
     }
     const ITINERARY_PROMPT_TEMPLATE = `请帮我将以下原始出差/行程信息整理为标准的精简 Markdown 表格，仅保留以下必要列（无需多余解释）：
 | 类型 | 目标省市 | 客户据点/公司名 | 起始日 | 结束日 | 出发地 | 目的地 | 交通工具 | 住宿酒店 |
@@ -71359,9 +75124,12 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
      */
     async function handleAiInference(container, itineraryText, onProgress) {
         // 1. 获取推断目标行：有筛选时严格限定在筛选范围内；优先已勾选，若未勾选则以当前筛选视图全部行作为目标
-        const filtered = getFilteredGroups(modalState);
+        // 核心铁律：已报销记录严格只读，绝对不参与任何智能推断与字段改写
+        const filtered = getFilteredGroups(modalState).filter(g => normalizeExpenseStatus(g.status) !== '已报销');
         const isFiltering = filtered.length < modalState.groups.length;
         let targetGroups = modalState.groups.filter(g => {
+            if (normalizeExpenseStatus(g.status) === '已报销')
+                return false;
             if (!modalState.selectedRecordIds.has(g.expenseRecordId))
                 return false;
             if (isFiltering && !filtered.some(f => f.expenseRecordId === g.expenseRecordId))
@@ -71371,8 +75139,8 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
         if (targetGroups.length === 0) {
             targetGroups = filtered;
             if (targetGroups.length === 0) {
-                showToast('warning', isFiltering ? '当前筛选视图中无任何费用记录可供推断' : '当前列表无任何费用记录可供推断');
-                return '当前筛选视图中无任何费用记录可供推断';
+                showToast('info', '当前视图中无可推断的未报销费用（已报销记录为只读归档状态）');
+                return '当前视图中无可推断的未报销费用';
             }
             targetGroups.forEach(g => modalState.selectedRecordIds.add(g.expenseRecordId));
         }
@@ -71664,6 +75432,8 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
             // 第二层：若存在未识别类型或空缺专属必填字段，且配置了大模型 API，则启动深度推断
             const hasTransitOrHotel = modalState.groups.some(other => ['FLIGHT', 'TRAIN', 'HOTEL'].includes(getGroupCategory(other)));
             const groupsWithMissingFields = targetGroups.filter(g => {
+                if (normalizeExpenseStatus(g.status) === '已报销')
+                    return false;
                 if (isUnknownTypeGroup(g))
                     return true; // 未识别类型记录必须启动推断
                 const cat = getGroupCategory(g);
@@ -71780,17 +75550,20 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
                 tr.classList.toggle('is-selected', modalState.selectedRecordIds.has(rid));
             }
         });
-        // 2. 同步分组 Checkbox
+        // 2. 同步分组 Checkbox (数据层精准计算，无视非视口行卸载)
+        const sections = modalState.groupingMode === 'NONE'
+            ? []
+            : groupFilteredExpenses(filtered, modalState.groupingMode, modalState.tripPlans);
+        const sectionMap = new Map(sections.map(s => [s.key, s]));
         container.querySelectorAll('.yn-bem-group-cb').forEach(cb => {
             const groupKey = cb.dataset.groupKey;
             if (!groupKey)
                 return;
-            const tbody = container.querySelector(`tbody[data-group-key="${groupKey}"]`);
-            if (!tbody)
+            const sec = sectionMap.get(groupKey);
+            if (!sec)
                 return;
-            const rowCbs = Array.from(tbody.querySelectorAll('.yn-bem-record-cb'));
-            const total = rowCbs.length;
-            const checkedCount = rowCbs.filter(c => c.checked).length;
+            const total = sec.items.length;
+            const checkedCount = sec.items.filter(g => modalState.selectedRecordIds.has(g.expenseRecordId)).length;
             cb.checked = total > 0 && checkedCount === total;
             cb.indeterminate = checkedCount > 0 && checkedCount < total;
         });
@@ -71946,8 +75719,7 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
         // Default 'ROWS' mode:
         const wrap = container.querySelector('#yn-bem-table-wrap');
         if (wrap) {
-            wrap.innerHTML = renderTableHtml();
-            updateAllCheckboxStates(container);
+            renderVirtualTable(container, wrap);
         }
         updateStatsAndFooter(container);
         updateAiContextPill(container);
@@ -72425,74 +76197,116 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
         bindDynamicCardEvents(container);
     }
     /**
-     * 绑定 AI 侧边栏拖拽调整宽度把手
+     * 绑定 AI 侧边栏拖拽调整宽度把手 (遵循现代 IDE / 开发者工具侧边栏拖拽面板最佳实践)
      */
     function bindAiPanelResizer(container) {
         const aiWrap = container.querySelector('#yn-bem-ai-panel-wrap');
         const resizer = container.querySelector('#yn-bem-ai-resizer');
-        if (resizer && aiWrap) {
-            let isResizing = false;
-            let rafId = null;
-            let pendingWidth = null;
-            const onMouseDown = (e) => {
+        if (!resizer || !aiWrap)
+            return;
+        let isResizing = false;
+        let startX = 0;
+        let startWidth = 0;
+        let rafId = null;
+        let pendingWidth = null;
+        let dragOverlay = null;
+        const cleanup = () => {
+            isResizing = false;
+            if (dragOverlay && dragOverlay.parentNode) {
+                dragOverlay.parentNode.removeChild(dragOverlay);
+                dragOverlay = null;
+            }
+            if (rafId) {
+                cancelAnimationFrame(rafId);
+                rafId = null;
+            }
+            resizer.classList.remove('is-resizing');
+            aiWrap.classList.remove('is-resizing');
+            document.body.classList.remove('yn-resizing-active');
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+            window.removeEventListener('pointermove', onMove, true);
+            window.removeEventListener('pointerup', onEnd, true);
+            window.removeEventListener('pointercancel', onEnd, true);
+            window.removeEventListener('mousemove', onMove, true);
+            window.removeEventListener('mouseup', onEnd, true);
+            window.removeEventListener('blur', onEnd, true);
+        };
+        const onMove = (e) => {
+            if (!isResizing)
+                return;
+            e.preventDefault();
+            e.stopPropagation();
+            const deltaX = startX - e.clientX; // 向左拖拽展开侧栏
+            const winWidth = window.innerWidth;
+            let newWidth = Math.round(startWidth + deltaX);
+            const minWidth = 360;
+            const maxWidth = Math.round(winWidth * 0.85);
+            if (newWidth < minWidth)
+                newWidth = minWidth;
+            if (newWidth > maxWidth)
+                newWidth = maxWidth;
+            pendingWidth = newWidth;
+            if (!rafId) {
+                rafId = requestAnimationFrame(() => {
+                    if (pendingWidth !== null && aiWrap) {
+                        aiWrap.style.width = `${pendingWidth}px`;
+                        modalState.aiPanelWidth = pendingWidth;
+                    }
+                    rafId = null;
+                });
+            }
+        };
+        const onEnd = (e) => {
+            if (!isResizing)
+                return;
+            if (e) {
                 e.preventDefault();
                 e.stopPropagation();
-                isResizing = true;
-                resizer.classList.add('is-resizing');
-                aiWrap.classList.add('is-resizing');
-                document.body.classList.add('yn-resizing-active');
-                document.body.style.cursor = 'col-resize';
-                document.body.style.userSelect = 'none';
-                const onMouseMove = (moveEv) => {
-                    if (!isResizing)
-                        return;
-                    const winWidth = window.innerWidth;
-                    let newWidth = winWidth - moveEv.clientX;
-                    const minWidth = 360;
-                    const maxWidth = Math.round(winWidth * 0.85);
-                    if (newWidth < minWidth)
-                        newWidth = minWidth;
-                    if (newWidth > maxWidth)
-                        newWidth = maxWidth;
-                    pendingWidth = newWidth;
-                    if (!rafId) {
-                        rafId = requestAnimationFrame(() => {
-                            if (pendingWidth !== null && aiWrap) {
-                                aiWrap.style.width = `${pendingWidth}px`;
-                                modalState.aiPanelWidth = pendingWidth;
-                            }
-                            rafId = null;
-                        });
-                    }
-                };
-                const onMouseUp = () => {
-                    if (isResizing) {
-                        isResizing = false;
-                        if (rafId) {
-                            cancelAnimationFrame(rafId);
-                            rafId = null;
-                        }
-                        if (pendingWidth !== null && aiWrap) {
-                            aiWrap.style.width = `${pendingWidth}px`;
-                            modalState.aiPanelWidth = pendingWidth;
-                        }
-                        resizer.classList.remove('is-resizing');
-                        aiWrap.classList.remove('is-resizing');
-                        document.body.classList.remove('yn-resizing-active');
-                        document.body.style.cursor = '';
-                        document.body.style.userSelect = '';
-                        try {
-                            localStorage.setItem('yn_fssc_ai_panel_width', String(modalState.aiPanelWidth));
-                        }
-                        catch (err) { }
-                    }
-                    window.removeEventListener('mousemove', onMouseMove);
-                    window.removeEventListener('mouseup', onMouseUp);
-                };
-                window.addEventListener('mousemove', onMouseMove, { passive: true });
-                window.addEventListener('mouseup', onMouseUp);
-            };
-            resizer.addEventListener('mousedown', onMouseDown);
+            }
+            if (pendingWidth !== null && aiWrap) {
+                aiWrap.style.width = `${pendingWidth}px`;
+                modalState.aiPanelWidth = pendingWidth;
+            }
+            cleanup();
+            try {
+                localStorage.setItem('yn_fssc_ai_panel_width', String(modalState.aiPanelWidth));
+            }
+            catch (err) { }
+        };
+        const onStartResize = (e) => {
+            if (e.button !== 0)
+                return; // 仅响应鼠标左键或触控
+            e.preventDefault();
+            e.stopPropagation();
+            isResizing = true;
+            startX = e.clientX;
+            startWidth = aiWrap.getBoundingClientRect().width;
+            pendingWidth = startWidth;
+            resizer.classList.add('is-resizing');
+            aiWrap.classList.add('is-resizing');
+            document.body.classList.add('yn-resizing-active');
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+            // 创建全屏透明拖拽遮罩，杜绝拖拽过程中鼠标移至下方表格、输入框、下拉框被截获或丢帧
+            dragOverlay = document.createElement('div');
+            dragOverlay.id = 'yn-resizer-drag-overlay';
+            dragOverlay.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:9999999;cursor:col-resize;user-select:none;-webkit-user-select:none;background:transparent;';
+            document.body.appendChild(dragOverlay);
+            // 使用 capture: true 顶级捕获，确保无论是任何元素都无法阻止释放事件
+            window.addEventListener('pointermove', onMove, { capture: true, passive: false });
+            window.addEventListener('pointerup', onEnd, { capture: true });
+            window.addEventListener('pointercancel', onEnd, { capture: true });
+            window.addEventListener('mousemove', onMove, { capture: true, passive: false });
+            window.addEventListener('mouseup', onEnd, { capture: true });
+            window.addEventListener('blur', onEnd, { capture: true });
+        };
+        // 优先使用现代化 PointerEvent，避免双重注册
+        if (window.PointerEvent) {
+            resizer.addEventListener('pointerdown', onStartResize);
+        }
+        else {
+            resizer.addEventListener('mousedown', onStartResize);
         }
     }
     /**
@@ -72514,7 +76328,7 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
      * 全流程智能规划 (行程与日常)
      */
     async function runAutopilotPlan(container) {
-        const cmdText = ('').trim();
+        const cmdText = (modalState.autopilotCommandText || '').trim();
         let detectedTrips = [];
         if (cmdText) {
             const prjMatch = cmdText.match(/(X\d{4}-\d{3}|[A-Z0-9]{2,8}-\d{3,4}|PRJ-[A-Z0-9\-]+)/i);
@@ -73256,15 +77070,21 @@ ${contextDataMarkdown}
         // 3. 面板展开切换：【✨ AI 助手】(右侧悬浮抽屉面板，零布局抖动)
         bindAiPanelResizer(container);
         const btnToggleAi = container.querySelector('#yn-bem-btn-toggle-ai');
-        btnToggleAi?.addEventListener('click', () => {
+        btnToggleAi?.addEventListener('pointerdown', (e) => e.stopPropagation());
+        btnToggleAi?.addEventListener('mousedown', (e) => e.stopPropagation());
+        btnToggleAi?.addEventListener('click', (e) => {
+            e.stopPropagation();
             modalState.aiPanelOpen = !modalState.aiPanelOpen;
             const aiWrap = container.querySelector('#yn-bem-ai-panel-wrap');
             const w = modalState.aiPanelWidth || 440;
             if (aiWrap) {
                 aiWrap.style.width = `${w}px`;
                 if (modalState.aiPanelOpen) {
-                    renderAssistantChat(container);
                     aiWrap.classList.add('is-open');
+                    // 关键优化：使用 requestAnimationFrame 延迟挂载 React 渲染树，切断 click 事件单帧重度拥堵 (INP < 16ms)
+                    requestAnimationFrame(() => {
+                        renderAssistantChat(container);
+                    });
                 }
                 else {
                     aiWrap.classList.remove('is-open');
@@ -73277,17 +77097,15 @@ ${contextDataMarkdown}
         if (modalState.aiPanelOpen) {
             renderAssistantChat(container);
         }
-        // 4. 点击外部时自动收起项目下拉与列筛选浮层
-        doc.addEventListener('click', (e) => {
+        // 4. 点击外部时自动收起项目下拉与列筛选浮层 (监听在 container 根节点，杜绝向外冒泡至 doc)
+        container.addEventListener('click', (e) => {
             const target = e.target;
             const dropdownProject = container.querySelector('#yn-bem-project-dropdown');
             if (dropdownProject && !target.closest('#yn-bem-project-wrapper')) {
                 dropdownProject.style.display = 'none';
             }
             if (modalState.activePopoverCol && !target.closest('#yn-bem-filter-popover') && !target.closest('.yn-bem-th-filter-trigger')) {
-                modalState.activePopoverCol = null;
-                modalState.popoverKeyword = '';
-                refreshTableView(container, 'ROWS');
+                closeColumnFilterPopover(container);
             }
         });
         // 5. 活跃筛选条件微标签移除与全部清除
@@ -73419,35 +77237,22 @@ ${contextDataMarkdown}
         toggleAllBtn?.addEventListener('click', () => {
             if (modalState.groupingMode === 'NONE')
                 return;
-            const tbodies = container.querySelectorAll('.yn-bem-group-tbody');
             const shouldExpand = modalState.collapsedGroupKeys.size > 0;
             if (shouldExpand) {
                 modalState.collapsedGroupKeys.clear();
-                tbodies.forEach(tb => {
-                    tb.classList.remove('is-collapsed');
-                    const btn = tb.querySelector('.yn-bem-group-toggle-btn');
-                    if (btn) {
-                        btn.innerText = '▼';
-                        btn.title = '点击折叠';
-                    }
-                });
                 toggleAllBtn.innerText = '折叠';
                 toggleAllBtn.title = '折叠所有分组';
             }
             else {
-                tbodies.forEach(tb => {
-                    tb.classList.add('is-collapsed');
-                    const key = tb.dataset.groupKey;
-                    if (key)
-                        modalState.collapsedGroupKeys.add(key);
-                    const btn = tb.querySelector('.yn-bem-group-toggle-btn');
-                    if (btn) {
-                        btn.innerText = '▶';
-                        btn.title = '点击展开';
-                    }
-                });
+                const filteredGroups = getFilteredGroups(modalState);
+                const sections = groupFilteredExpenses(filteredGroups, modalState.groupingMode, modalState.tripPlans);
+                sections.forEach(sec => modalState.collapsedGroupKeys.add(sec.key));
                 toggleAllBtn.innerText = '展开';
                 toggleAllBtn.title = '展开所有分组';
+            }
+            const wrap = container.querySelector('#yn-bem-table-wrap');
+            if (wrap) {
+                renderVirtualTable(container, wrap);
             }
         });
         // 11. 绑定 EventBus 监听：当异步推断完成时追加 feed card
@@ -73476,26 +77281,24 @@ ${contextDataMarkdown}
         // 14. 表格委托事件：表头全选、行选择、就地修改说明、表头排序与列筛选
         container.querySelector('#yn-bem-table-wrap')?.addEventListener('click', (e) => {
             const target = e.target;
-            // 折叠 / 展开分组 (纯 CSS 切换 is-collapsed，0ms 零 DOM 重建，保留所有输入态)
+            // 折叠 / 展开分组 (虚拟表格瞬时重绘，0ms 零 DOM 重建，保留所有输入态)
             const toggleBtn = target.closest('.yn-bem-group-toggle-btn');
             if (toggleBtn && toggleBtn.dataset.groupKey) {
                 e.stopPropagation();
                 const groupKey = toggleBtn.dataset.groupKey;
-                const tbody = container.querySelector(`tbody.yn-bem-group-tbody[data-group-key="${groupKey}"]`);
-                if (tbody) {
-                    const willCollapse = !tbody.classList.contains('is-collapsed');
-                    tbody.classList.toggle('is-collapsed', willCollapse);
-                    toggleBtn.innerText = willCollapse ? '▶' : '▼';
-                    toggleBtn.title = willCollapse ? '点击展开' : '点击折叠';
-                    if (willCollapse) {
-                        modalState.collapsedGroupKeys.add(groupKey);
-                    }
-                    else {
-                        modalState.collapsedGroupKeys.delete(groupKey);
-                    }
-                    if (toggleAllBtn) {
-                        toggleAllBtn.innerText = modalState.collapsedGroupKeys.size > 0 ? '展开' : '折叠';
-                    }
+                if (modalState.collapsedGroupKeys.has(groupKey)) {
+                    modalState.collapsedGroupKeys.delete(groupKey);
+                }
+                else {
+                    modalState.collapsedGroupKeys.add(groupKey);
+                }
+                if (toggleAllBtn) {
+                    toggleAllBtn.innerText = modalState.collapsedGroupKeys.size > 0 ? '展开' : '折叠';
+                    toggleAllBtn.title = modalState.collapsedGroupKeys.size > 0 ? '展开所有分组' : '折叠所有分组';
+                }
+                const wrap = container.querySelector('#yn-bem-table-wrap');
+                if (wrap) {
+                    renderVirtualTable(container, wrap);
                 }
                 return;
             }
@@ -73504,18 +77307,16 @@ ${contextDataMarkdown}
                 const gcb = target;
                 const groupKey = gcb.dataset.groupKey;
                 if (groupKey) {
-                    const tbody = container.querySelector(`tbody.yn-bem-group-tbody[data-group-key="${groupKey}"]`);
-                    if (tbody) {
-                        const rowCbs = tbody.querySelectorAll('.yn-bem-record-cb');
+                    const filteredGroups = getFilteredGroups(modalState);
+                    const sections = groupFilteredExpenses(filteredGroups, modalState.groupingMode, modalState.tripPlans);
+                    const sec = sections.find(s => s.key === groupKey);
+                    if (sec) {
                         const isChecked = gcb.checked;
-                        rowCbs.forEach(rcb => {
-                            const rid = rcb.dataset.recordid;
-                            if (rid) {
-                                if (isChecked)
-                                    modalState.selectedRecordIds.add(rid);
-                                else
-                                    modalState.selectedRecordIds.delete(rid);
-                            }
+                        sec.items.forEach(g => {
+                            if (isChecked)
+                                modalState.selectedRecordIds.add(g.expenseRecordId);
+                            else
+                                modalState.selectedRecordIds.delete(g.expenseRecordId);
                         });
                         refreshTableView(container, 'CHECKBOXES');
                     }
@@ -73590,6 +77391,7 @@ ${contextDataMarkdown}
             const clickedTr = target.closest('tr');
             if (clickedTr && clickedTr.dataset.recordid) {
                 const recId = clickedTr.dataset.recordid;
+                modalState.activeRecordId = recId;
                 container.querySelectorAll('#yn-bem-table-wrap tbody tr.is-active-row').forEach(r => r.classList.remove('is-active-row'));
                 container.querySelectorAll(`#yn-bem-table-wrap tbody tr[data-recordid="${recId}"]`).forEach(r => r.classList.add('is-active-row'));
             }
@@ -73652,24 +77454,12 @@ ${contextDataMarkdown}
                 openRowDynamicModal(dynTrigger.dataset.recordid, container);
                 return;
             }
-            // 列筛选触发按钮 (▾)
+            // 列筛选触发按钮 (▾) - 局部渲染浮层，彻底规避 2,149ms 全表重绘
             const filterBtn = target.closest('.yn-bem-th-filter-trigger');
             if (filterBtn && filterBtn.dataset.filterCol) {
                 e.stopPropagation();
                 const col = filterBtn.dataset.filterCol;
-                if (modalState.activePopoverCol === col) {
-                    modalState.activePopoverCol = null;
-                }
-                else {
-                    modalState.activePopoverCol = col;
-                    modalState.popoverKeyword = '';
-                }
-                refreshTableView(container);
-                if (modalState.activePopoverCol) {
-                    setTimeout(() => {
-                        container.querySelector('#yn-bem-popover-search')?.focus();
-                    }, 50);
-                }
+                toggleColumnFilterPopover(container, col);
                 return;
             }
             // Popover 内部全选本列值
@@ -73716,8 +77506,29 @@ ${contextDataMarkdown}
                 return;
             }
         });
+        // 14.0 费用类型下拉选单按需懒加载 (Option Lazy Loading):
+        // 仅在用户交互 (mousedown / focusin) 聚焦到 select 时，才动态将 50+ 项树状 options 注入
+        // 表格虚拟切片渲染时仅渲染当前选中的单条 option，彻底压降 90% ParseHTML 与 DOM 节点开销
+        const handleTypeSelectLazyLoad = (e) => {
+            const target = e.target;
+            if (target && target.classList.contains('yn-bem-cell-type-select')) {
+                const selectEl = target;
+                if (selectEl.options.length <= 1) {
+                    const recordId = selectEl.dataset.recordid;
+                    if (recordId) {
+                        const group = modalState.groups.find(g => g.expenseRecordId === recordId);
+                        const currTypeId = group?.newExpenseTypeId || group?.expenseTypeId || selectEl.value;
+                        selectEl.innerHTML = renderTypeTreeOptionsHtml(modalState.expenseTypeTree, currTypeId);
+                        selectEl.value = currTypeId;
+                    }
+                }
+            }
+        };
+        const tableWrap = container.querySelector('#yn-bem-table-wrap');
+        tableWrap?.addEventListener('mousedown', handleTypeSelectLazyLoad);
+        tableWrap?.addEventListener('focusin', handleTypeSelectLazyLoad);
         // 14.1 列头筛选复选框值勾选变更监听 & 单元格就地直接修改监听
-        container.querySelector('#yn-bem-table-wrap')?.addEventListener('change', (e) => {
+        tableWrap?.addEventListener('change', (e) => {
             const target = e.target;
             // 列筛选值复选框
             if (target && target.classList.contains('yn-bem-col-val-cb')) {
@@ -73861,19 +77672,7 @@ ${contextDataMarkdown}
                     const filteredVals = kw ? distinctVals.filter(d => d.value.toLowerCase().includes(kw)) : distinctVals;
                     const listEl = popoverEl.querySelector('.yn-bem-filter-val-list');
                     if (listEl) {
-                        listEl.innerHTML = filteredVals.length === 0
-                            ? `<div style="color:#a3a3a3; font-size:11px; padding:6px;">未匹配到值</div>`
-                            : filteredVals.map(item => {
-                                const isChecked = selected.has(item.value);
-                                const safeVal = item.value.replace(/"/g, '&quot;');
-                                return `
-                                <label class="yn-bem-filter-val-item">
-                                    <input type="checkbox" class="yn-bem-col-val-cb" data-col="${col}" data-val="${safeVal}" ${isChecked ? 'checked' : ''} />
-                                    <span class="yn-bem-filter-val-text" title="${safeVal}">${item.value}</span>
-                                    <span class="yn-bem-filter-val-count">${item.count}</span>
-                                </label>
-                            `;
-                            }).join('');
+                        listEl.innerHTML = renderFilterValListHtml(col, filteredVals, selected);
                     }
                 }
                 return;
@@ -74053,6 +77852,354 @@ ${contextDataMarkdown}
         container.querySelector('#yn-bem-btn-ai-infer')?.addEventListener('click', () => {
             openAiAssistantWithSkill(container, 'infer');
         });
+        // 16. 发票照片原件悬浮预览 (全局单例，智能视口碰撞与鼠标防遮挡检测，高度放大且宽度自适应，支持平滑移入与延迟关闭)
+        let hoverPopoverTimer = null;
+        let closePopoverTimer = null;
+        let isMouseOverPopover = false;
+        let isMouseOverBtn = false;
+        let lastClientX = 0;
+        let lastClientY = 0;
+        let activePopoverBtn = null;
+        const invoicePopover = container.querySelector('#yn-bem-invoice-preview-popover');
+        const hideInvoicePopover = () => {
+            if (hoverPopoverTimer) {
+                clearTimeout(hoverPopoverTimer);
+                hoverPopoverTimer = null;
+            }
+            if (closePopoverTimer) {
+                clearTimeout(closePopoverTimer);
+                closePopoverTimer = null;
+            }
+            if (invoicePopover) {
+                invoicePopover.style.display = 'none';
+                invoicePopover.innerHTML = '';
+            }
+            activePopoverBtn = null;
+            isMouseOverPopover = false;
+            isMouseOverBtn = false;
+        };
+        const scheduleDelayedClose = (delayMs = 280) => {
+            if (closePopoverTimer)
+                clearTimeout(closePopoverTimer);
+            closePopoverTimer = setTimeout(() => {
+                if (!isMouseOverPopover && !isMouseOverBtn) {
+                    hideInvoicePopover();
+                }
+            }, delayMs);
+        };
+        let cachedPopWidth = 420;
+        let cachedPopHeight = 520;
+        const measurePopoverDimensions = () => {
+            if (!invoicePopover)
+                return;
+            const w = invoicePopover.offsetWidth;
+            const h = invoicePopover.offsetHeight;
+            if (w > 100)
+                cachedPopWidth = w;
+            if (h > 100)
+                cachedPopHeight = h;
+        };
+        let isPositionRafPending = false;
+        const updatePopoverPosition = (clientX, clientY) => {
+            if (!invoicePopover)
+                return;
+            lastClientX = clientX;
+            lastClientY = clientY;
+            if (isPositionRafPending)
+                return;
+            isPositionRafPending = true;
+            requestAnimationFrame(() => {
+                isPositionRafPending = false;
+                if (!invoicePopover || invoicePopover.style.display === 'none')
+                    return;
+                measurePopoverDimensions();
+                const popWidth = cachedPopWidth;
+                const popHeight = cachedPopHeight;
+                let left = lastClientX + 24; // 默认在光标右侧 24px，保证绝对不遮挡鼠标
+                if (left + popWidth > window.innerWidth - 16) {
+                    left = lastClientX - popWidth - 24; // 若右侧超界，平滑定位在光标左侧 24px
+                }
+                if (left < 16)
+                    left = 16;
+                let top = Math.max(16, Math.min(window.innerHeight - popHeight - 16, lastClientY - 140));
+                invoicePopover.style.left = `${left}px`;
+                invoicePopover.style.top = `${top}px`;
+            });
+        };
+        // 内存 Blob URL 缓存，避免重复请求同一张发票照片
+        const invoicePhotoBlobCache = new Map();
+        // 统一照片加载核心：自动提取鉴权并在内存构建 Blob URL
+        const loadInvoiceBlob = async (targetAttachId) => {
+            let cached = invoicePhotoBlobCache.get(targetAttachId);
+            let isPdf = targetAttachId.toLowerCase().endsWith('.pdf');
+            if (cached) {
+                return { blobUrl: cached, isPdf };
+            }
+            const tokens = extractLatestTokens();
+            let previewUrl = `/fssc/billAttachment/attachmentPreview?attachmentId=${encodeURIComponent(targetAttachId)}`;
+            if (tokens.loginToken) {
+                previewUrl += `&LoginToken=${encodeURIComponent(tokens.loginToken)}`;
+            }
+            const headers = {
+                'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,application/pdf,*/*;q=0.8'
+            };
+            if (tokens.loginToken) {
+                headers['LoginToken'] = tokens.loginToken;
+            }
+            if (tokens.ecsToken) {
+                headers['EcsToken'] = tokens.ecsToken;
+            }
+            const resp = await fetch(previewUrl, {
+                method: 'GET',
+                headers,
+                credentials: 'include'
+            });
+            if (resp.status === 401 || resp.status === 403) {
+                throw new Error('系统登录会话失效，请重新登录系统');
+            }
+            if (!resp.ok) {
+                throw new Error(`HTTP ${resp.status}`);
+            }
+            const contentType = (resp.headers.get('content-type') || '').toLowerCase();
+            if (contentType.includes('application/json') || contentType.includes('text/json')) {
+                const errJson = await resp.json().catch(() => ({}));
+                throw new Error(errJson?.message || errJson?.msg || '系统鉴权失效或照片文件不存在');
+            }
+            const blob = await resp.blob();
+            if (blob.size < 250) {
+                const txt = await blob.text().catch(() => '');
+                if (txt.includes('error') || txt.includes('false') || txt.includes('登录') || txt.includes('失效') || txt.includes('token')) {
+                    throw new Error('系统登录会话失效或发票照片已不存在');
+                }
+            }
+            if (blob.type.includes('pdf')) {
+                isPdf = true;
+            }
+            const blobUrl = URL.createObjectURL(blob);
+            invoicePhotoBlobCache.set(targetAttachId, blobUrl);
+            return { blobUrl, isPdf };
+        };
+        // 渲染指定模式 (裁切特写 crop vs 原始全图 raw) 的 Popover 界面
+        const renderPopoverContent = async (btn, mode, attachId, rawAttachId, invNo, invType, amt) => {
+            if (!invoicePopover)
+                return;
+            const targetAttachId = mode === 'crop' ? (attachId || rawAttachId) : (rawAttachId || attachId);
+            const hasDualView = Boolean(attachId && rawAttachId && attachId !== rawAttachId);
+            invoicePopover.innerHTML = `
+            <div class="yn-bem-pop-header">
+                <div style="display:flex; align-items:center; gap:6px;">
+                    <span class="yn-bem-pop-title">${mode === 'crop' && hasDualView ? '发票单票裁切' : '发票原件照片'}</span>
+                    <span class="yn-bem-pop-tag">${escapeHtml(invType || '发票')}</span>
+                    ${hasDualView ? (mode === 'crop'
+            ? `<span class="yn-bem-pop-tag" style="background:#f0fdf4; color:#166534; border-color:#bbf7d0;">✂️ OCR裁切特写</span>`
+            : `<span class="yn-bem-pop-tag" style="background:#f8fafc; color:#475569; border-color:#e2e8f0;">📷 原始全图</span>`) : ''}
+                </div>
+                ${amt ? `<span style="font-family:ui-monospace, monospace; font-weight:600; color:#171717; font-size:12px;">¥${Number(amt).toFixed(2)}</span>` : ''}
+            </div>
+            <div class="yn-bem-pop-img-wrap" id="yn-bem-pop-img-container">
+                <div class="yn-bem-pop-loading" style="font-size:12px; color:#64748b; display:flex; flex-direction:column; align-items:center; gap:6px;">
+                    <span style="font-size:20px; animation:spin 1s linear infinite;">⏳</span>
+                    <span>正在加载${mode === 'crop' && hasDualView ? '单票裁切特写' : '发票照片'}...</span>
+                </div>
+            </div>
+            <div class="yn-bem-pop-footer">
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <span style="font-size:11px; color:#737373; font-family:ui-monospace, monospace;">${escapeHtml(invNo || (targetAttachId ? targetAttachId.split('/').pop() : ''))}</span>
+                    ${hasDualView ? `
+                        <a href="javascript:void(0)" class="yn-bem-pop-link" id="yn-bem-pop-toggle-mode" style="color:#0284c7; font-weight:500;" title="在单张发票裁切与拍摄原始全图之间切换">
+                            ${mode === 'crop' ? '查看拍摄原图 📷' : '查看裁切单票 ✂️'}
+                        </a>
+                    ` : ''}
+                </div>
+                <a href="javascript:void(0)" class="yn-bem-pop-link" id="yn-bem-pop-newtab" title="在新标签中打开大图">在新标签打开 ↗</a>
+            </div>
+        `;
+            invoicePopover.style.display = 'flex';
+            updatePopoverPosition(lastClientX, lastClientY);
+            const toggleBtn = invoicePopover.querySelector('#yn-bem-pop-toggle-mode');
+            if (toggleBtn) {
+                toggleBtn.onclick = (ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    const nextMode = mode === 'crop' ? 'raw' : 'crop';
+                    renderPopoverContent(btn, nextMode, attachId, rawAttachId, invNo, invType, amt);
+                };
+            }
+            try {
+                let loaded;
+                try {
+                    loaded = await loadInvoiceBlob(targetAttachId);
+                }
+                catch (err) {
+                    // 若优先请求的裁切切片图失效，且存在全图 ID，自动无缝降级回退到原始全图
+                    if (mode === 'crop' && rawAttachId && rawAttachId !== targetAttachId) {
+                        AutopilotLogger.warn(`[InvoicePreview] 裁切图 ${targetAttachId} 加载失败，自动回退到原始全图: ${rawAttachId}`);
+                        loaded = await loadInvoiceBlob(rawAttachId);
+                    }
+                    else {
+                        throw err;
+                    }
+                }
+                const imgContainer = invoicePopover.querySelector('#yn-bem-pop-img-container');
+                const newTabLink = invoicePopover.querySelector('#yn-bem-pop-newtab');
+                if (imgContainer) {
+                    if (loaded.isPdf) {
+                        imgContainer.innerHTML = `
+                        <div class="yn-bem-pop-empty" style="padding:22px 12px; gap:8px;">
+                            <span style="font-size:36px;">📑</span>
+                            <span style="font-weight:600; font-size:13px; color:#0f172a;">PDF 电子发票原件</span>
+                            <span style="font-size:11px; color:#64748b; text-align:center;">此发票为标准版式 PDF，点击下方可直接在新标签页全屏查看或打印</span>
+                            <a href="${loaded.blobUrl}" target="_blank" style="margin-top:6px; display:inline-flex; align-items:center; gap:4px; padding:6px 14px; background:#0284c7; color:#ffffff; border-radius:4px; text-decoration:none; font-size:12px; font-weight:500;">
+                                在新标签页打开 PDF ↗
+                            </a>
+                        </div>
+                    `;
+                    }
+                    else {
+                        imgContainer.innerHTML = `<img src="${loaded.blobUrl}" alt="发票照片" class="yn-bem-pop-img" style="opacity:1; cursor:zoom-in;" title="点击在新标签页全屏打开大图" />`;
+                        const imgEl = imgContainer.querySelector('img');
+                        if (imgEl) {
+                            imgEl.onload = () => {
+                                updatePopoverPosition(lastClientX, lastClientY);
+                            };
+                            imgEl.onclick = () => window.open(loaded.blobUrl, '_blank');
+                            imgEl.onerror = () => {
+                                imgContainer.innerHTML = `
+                                <div class="yn-bem-pop-empty">
+                                    <span style="font-size:24px;">⚠️</span>
+                                    <span style="color:#ef4444; font-size:12px;">照片渲染失败 (非标准图片格式或文件损坏)</span>
+                                    <a href="${loaded.blobUrl}" target="_blank" style="font-size:11px; color:#0284c7; margin-top:4px;">在新标签页打开 ↗</a>
+                                </div>
+                            `;
+                            };
+                        }
+                    }
+                }
+                if (newTabLink) {
+                    newTabLink.href = loaded.blobUrl;
+                    newTabLink.target = '_blank';
+                }
+                updatePopoverPosition(lastClientX, lastClientY);
+            }
+            catch (err) {
+                const imgContainer = invoicePopover.querySelector('#yn-bem-pop-img-container');
+                if (imgContainer) {
+                    imgContainer.innerHTML = `<div class="yn-bem-pop-empty"><span style="color:#ef4444; font-size:12px;">⚠️ 照片加载失败 (${escapeHtml(err?.message || '网络或鉴权异常')})</span></div>`;
+                }
+            }
+        };
+        // Popover 自身鼠标移入事件：当鼠标在其之上时，立即取消关闭定时器，保持常开
+        invoicePopover?.addEventListener('mouseenter', () => {
+            isMouseOverPopover = true;
+            if (closePopoverTimer) {
+                clearTimeout(closePopoverTimer);
+                closePopoverTimer = null;
+            }
+        });
+        // Popover 自身鼠标移出事件：启动 280ms 延迟平滑关闭
+        invoicePopover?.addEventListener('mouseleave', (e) => {
+            isMouseOverPopover = false;
+            const related = e.relatedTarget;
+            const btn = related?.closest('.yn-bem-invoice-photo-btn');
+            if (btn) {
+                isMouseOverBtn = true;
+            }
+            else {
+                isMouseOverBtn = false;
+                scheduleDelayedClose(280);
+            }
+        });
+        container.querySelector('#yn-bem-table-wrap')?.addEventListener('mouseover', (e) => {
+            const mouseEvent = e;
+            const btn = mouseEvent.target.closest('.yn-bem-invoice-photo-btn');
+            if (!btn || !invoicePopover)
+                return;
+            isMouseOverBtn = true;
+            if (closePopoverTimer) {
+                clearTimeout(closePopoverTimer);
+                closePopoverTimer = null;
+            }
+            if (activePopoverBtn === btn && invoicePopover.style.display !== 'none') {
+                updatePopoverPosition(mouseEvent.clientX, mouseEvent.clientY);
+                return;
+            }
+            activePopoverBtn = btn;
+            let attachId = btn.dataset.attachmentId || '';
+            let rawAttachId = btn.dataset.rawAttachmentId || '';
+            const invDataId = btn.dataset.invoiceDataId || '';
+            const invNo = btn.dataset.invoiceNo || '';
+            const invType = btn.dataset.invoiceType || '';
+            const amt = btn.dataset.totalAmount || '';
+            updatePopoverPosition(mouseEvent.clientX, mouseEvent.clientY);
+            if (hoverPopoverTimer)
+                clearTimeout(hoverPopoverTimer);
+            hoverPopoverTimer = setTimeout(async () => {
+                // 若初始无 attachId，但存在 invoiceDataId，则尝试异步拉取真实发票原件与裁切路径
+                if ((!attachId || !rawAttachId) && invDataId) {
+                    try {
+                        const detail = await getInvoiceDetailByDataIdApi(invDataId, modalState);
+                        const cropCand = detail?.videoAddress || detail?.scanVideoAddress || detail?.imagePath;
+                        const rawCand = detail?.filePath || detail?.attachmentPath || detail?.attachmentId || detail?.boTemplateAndData?.boData?.area?.rowDatas?.[0]?.datas?.IMAGE_PATH?.value;
+                        if (cropCand && typeof cropCand === 'string' && !/^\d{12,}$/.test(cropCand.trim())) {
+                            attachId = cropCand.trim();
+                            btn.dataset.attachmentId = attachId;
+                        }
+                        if (rawCand && typeof rawCand === 'string' && !/^\d{12,}$/.test(rawCand.trim())) {
+                            rawAttachId = rawCand.trim();
+                            btn.dataset.rawAttachmentId = rawAttachId;
+                        }
+                        if (!attachId && rawAttachId) {
+                            attachId = rawAttachId;
+                            btn.dataset.attachmentId = attachId;
+                        }
+                        if (!rawAttachId && attachId) {
+                            rawAttachId = attachId;
+                            btn.dataset.rawAttachmentId = rawAttachId;
+                        }
+                    }
+                    catch (e) {
+                        AutopilotLogger.warn(`[InvoicePreview] 异步拉取发票详情异常: ${e?.message}`);
+                    }
+                }
+                if (!attachId && !rawAttachId) {
+                    invoicePopover.innerHTML = `
+                    <div class="yn-bem-pop-header">
+                        <span class="yn-bem-pop-title">发票照片预览</span>
+                        <span class="yn-bem-pop-tag">${escapeHtml(invType || '发票')}</span>
+                    </div>
+                    <div class="yn-bem-pop-empty">
+                        <span style="font-size:26px; margin-bottom:6px;">🧾</span>
+                        <span style="font-size:12px; color:#737373;">暂无发票原件照片附件</span>
+                        ${invNo ? `<span style="font-size:11px; color:#a3a3a3; margin-top:4px;">发票号: ${escapeHtml(invNo)}</span>` : ''}
+                    </div>
+                `;
+                    invoicePopover.style.display = 'flex';
+                    updatePopoverPosition(lastClientX, lastClientY);
+                    return;
+                }
+                // 默认优先以 OCR 裁切特写模式进行渲染
+                await renderPopoverContent(btn, 'crop', attachId, rawAttachId, invNo, invType, amt);
+            }, 100);
+        });
+        container.querySelector('#yn-bem-table-wrap')?.addEventListener('mousemove', (e) => {
+            const mouseEvent = e;
+            const btn = mouseEvent.target.closest('.yn-bem-invoice-photo-btn');
+            if (!btn || !invoicePopover || invoicePopover.style.display === 'none')
+                return;
+            updatePopoverPosition(mouseEvent.clientX, mouseEvent.clientY);
+        });
+        container.querySelector('#yn-bem-table-wrap')?.addEventListener('mouseout', (e) => {
+            const mouseEvent = e;
+            const related = mouseEvent.relatedTarget;
+            const btn = mouseEvent.target.closest('.yn-bem-invoice-photo-btn');
+            if (btn && (!related || !btn.contains(related))) {
+                isMouseOverBtn = false;
+                // 若鼠标正移入 Popover 浮层内部，则不关闭；否则触发 280ms 延迟关闭
+                if (!invoicePopover?.contains(related)) {
+                    scheduleDelayedClose(280);
+                }
+            }
+        });
     }
     if (typeof window !== 'undefined') {
         window.openBatchEditExpenseModal = openBatchEditExpenseModal;
@@ -74066,7 +78213,9 @@ ${contextDataMarkdown}
         AI_SKILLS: AI_SKILLS,
         COLUMN_DEFINITIONS: COLUMN_DEFINITIONS,
         DYNAMIC_COLUMNS: DYNAMIC_COLUMNS,
+        abortPendingTableRenders: abortPendingTableRenders,
         clearTripPlansFromStorage: clearTripPlansFromStorage,
+        clearTypeTreeOptionsCache: clearTypeTreeOptionsCache,
         closeBatchEditModal: closeBatchEditModal,
         clusterExpensesIntoTrips: clusterExpensesIntoTrips,
         detectCurrentEmployeeName: detectCurrentEmployeeName,
@@ -74214,25 +78363,31 @@ ${contextDataMarkdown}
                 }
             }
         }
-        // 从 React Fiber 状态获取 selectedIds (如全选或虚拟滚动时)
+        // 从 React Fiber 状态获取 selectedIds (仅在全选且需确定跨屏选中的 ID 集合时按需提取)
         let fiberSelectedIds = [];
-        try {
-            const items = Array.from(doc.querySelectorAll('[class*="list_item"]'));
-            for (const item of items) {
-                const rKey = Object.keys(item).find(k => k.startsWith('__react'));
-                if (!rKey)
-                    continue;
-                let curr = item[rKey];
-                while (curr) {
-                    const sIds = curr.memoizedState?.selectedIds;
-                    if (Array.isArray(sIds) && sIds.length > fiberSelectedIds.length) {
-                        fiberSelectedIds = sIds;
+        if (isSelectAll) {
+            try {
+                // 优化：selectedIds 保存在列表容器或行父级 Fiber 上，仅需探查首个有效行即可命中并提前退出，避免对全部几百行重复深度遍历
+                const sampleItems = Array.from(doc.querySelectorAll('[class*="list_item"]')).slice(0, 3);
+                for (const item of sampleItems) {
+                    const rKey = Object.keys(item).find(k => k.startsWith('__react'));
+                    if (!rKey)
+                        continue;
+                    let curr = item[rKey];
+                    while (curr) {
+                        const sIds = curr.memoizedState?.selectedIds;
+                        if (Array.isArray(sIds) && sIds.length > 0) {
+                            fiberSelectedIds = sIds;
+                            break;
+                        }
+                        curr = curr.return;
                     }
-                    curr = curr.return;
+                    if (fiberSelectedIds.length > 0)
+                        break;
                 }
             }
+            catch (e) { }
         }
-        catch (e) { }
         const totalDomItems = doc.querySelectorAll('[class*="list_item"]:not([class*="lists_header"])').length;
         let finalIds = [];
         if (isSelectAll) {
@@ -74534,20 +78689,9 @@ ${contextDataMarkdown}
                 }
             });
         }
-        else if (!btnExport.classList.contains('is-loading')) {
-            // 动态同步按钮文本
-            const sel = getExpenseSelectionInfo(doc);
-            const count = sel.isSelectAll ? sel.domItemCount : sel.selectedIds.length;
-            const expected = sel.isSelectAll
-                ? `<span>📥 导出已选费用 (全部 ${count} 条)</span>`
-                : (sel.selectedIds.length > 0 ? `<span>📥 导出已选费用 (已选 ${sel.selectedIds.length} 条)</span>` : `<span>📥 导出费用与发票清单</span>`);
-            if (btnExport.innerHTML !== expected) {
-                btnExport.innerHTML = expected;
-            }
-        }
     }
     /**
-     * 为单个 Document 绑定 MutationObserver 自动感知页面渲染与切页
+     * 为单个 Document 绑定 MutationObserver 自动感知页面渲染与切页 (针对特定表格容器精确过滤，杜绝高频主线程阻塞)
      */
     function ensureDocObserver(doc, onChange) {
         if (!doc || !doc.body || observedDocs.has(doc))
@@ -74555,24 +78699,57 @@ ${contextDataMarkdown}
         observedDocs.add(doc);
         try {
             const obs = new MutationObserver((mutations) => {
-                // 现代化事件隔离：忽略所有发生在批量修改弹窗内部或悬浮岛内部的 DOM 变更
-                // 彻底杜绝弹窗内部的分组切换、折叠/展开、单元格输入触发后台页面的全量扫描与 React Fiber 遍历
-                const isBatchModalMutation = mutations.every(m => {
-                    const target = m.target;
-                    if (!target)
-                        return false;
-                    return Boolean(target.id === 'yn-batch-edit-modal' ||
-                        target.id === 'yn-batch-edit-mask' ||
-                        target.id === 'autopilot-floating-dock' ||
-                        (target.closest && (target.closest('#yn-batch-edit-modal') ||
-                            target.closest('#yn-batch-edit-mask') ||
-                            target.closest('#autopilot-floating-dock'))));
-                });
-                if (isBatchModalMutation)
-                    return;
-                onChange();
+                let shouldTrigger = false;
+                for (const m of mutations) {
+                    if (m.type === 'childList') {
+                        for (let i = 0; i < m.addedNodes.length; i++) {
+                            const node = m.addedNodes[i];
+                            if (node.nodeType === Node.ELEMENT_NODE) {
+                                const el = node;
+                                // 忽略自身注入的按钮和模态框
+                                if (el.id?.startsWith('yn-') ||
+                                    el.id?.startsWith('autopilot-') ||
+                                    el.classList?.contains('yn-') ||
+                                    (el.closest && (el.closest('#yn-batch-edit-modal') || el.closest('#autopilot-floating-dock')))) {
+                                    continue;
+                                }
+                                // 仅当涉及列表容器、行元素、表格或按钮容器变动时触发
+                                if (el.tagName === 'TR' ||
+                                    el.classList?.contains('ant-table-tbody') ||
+                                    el.querySelector?.('[class*="list_item"]') ||
+                                    el.querySelector?.('[class*="record_lists"]') ||
+                                    el.querySelector?.('[class*="operate_record_btn_container"]') ||
+                                    el.classList?.contains('ant-btn-primary')) {
+                                    shouldTrigger = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (shouldTrigger)
+                            break;
+                        for (let i = 0; i < m.removedNodes.length; i++) {
+                            const node = m.removedNodes[i];
+                            if (node.nodeType === Node.ELEMENT_NODE) {
+                                const el = node;
+                                if (el.tagName === 'TR' || el.querySelector?.('[class*="list_item"]') || el.classList?.contains('ant-table-tbody')) {
+                                    shouldTrigger = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (shouldTrigger)
+                            break;
+                    }
+                }
+                if (shouldTrigger) {
+                    onChange();
+                }
             });
-            obs.observe(doc.body, { childList: true, subtree: true });
+            // 优先针对特定表格容器进行精准监听
+            const targetContainer = doc.querySelector('[class*="record_lists"]') ||
+                doc.querySelector('[class*="lists_body"]') ||
+                doc.body;
+            obs.observe(targetContainer, { childList: true, subtree: true });
         }
         catch (e) { }
     }
@@ -74581,15 +78758,28 @@ ${contextDataMarkdown}
      */
     function initExpenseRecordDomService(state) {
         let scanTimeout = null;
+        let idleHandle = null;
+        const runIdleScan = () => {
+            const currentDocs = getExpenseRecordTargetDocs();
+            currentDocs.forEach(doc => {
+                ensureDocObserver(doc, triggerScan);
+                scanAndEnhanceExpenseRecordDOM(doc);
+            });
+        };
         const triggerScan = () => {
             if (scanTimeout)
                 clearTimeout(scanTimeout);
+            if (idleHandle && typeof window.cancelIdleCallback === 'function') {
+                window.cancelIdleCallback(idleHandle);
+            }
             scanTimeout = setTimeout(() => {
-                const currentDocs = getExpenseRecordTargetDocs();
-                currentDocs.forEach(doc => {
-                    ensureDocObserver(doc, triggerScan);
-                    scanAndEnhanceExpenseRecordDOM(doc);
-                });
+                // 利用 requestIdleCallback 分解长任务，确保用户交互（点击、滚动、悬浮）零阻塞
+                if (typeof window.requestIdleCallback === 'function') {
+                    idleHandle = window.requestIdleCallback(runIdleScan, { timeout: 300 });
+                }
+                else {
+                    runIdleScan();
+                }
             }, 150);
         };
         // 立即扫描一次
@@ -74601,11 +78791,17 @@ ${contextDataMarkdown}
         if (isObserverAttached)
             return;
         isObserverAttached = true;
-        // 周期性心跳巡检保活 (2.5 秒)
+        // 周期性心跳巡检保活 (2.5 秒) - 增加 Fast-Path 快速守卫
         setInterval(() => {
             const currentDocs = getExpenseRecordTargetDocs();
             currentDocs.forEach(doc => {
                 ensureDocObserver(doc, triggerScan);
+                // 快速守卫：如果增强按钮皆已连接挂载，则无需触发繁重扫描与 Fiber 遍历
+                const hasFloating = doc.getElementById('yn-floating-batch-edit-expenses');
+                const hasExport = doc.getElementById('yn-btn-export-expense-records');
+                if (hasFloating && hasExport && hasFloating.isConnected && hasExport.isConnected) {
+                    return;
+                }
                 scanAndEnhanceExpenseRecordDOM(doc);
             });
         }, 2500);

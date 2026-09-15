@@ -32,8 +32,12 @@ export function mountStreamingMarkdown(
                 content: text,
                 final: isFinal,
                 typewriter: !isFinal,
-                fade: true,
-                smoothStreaming: true,
+                fade: !isFinal,
+                smoothStreaming: !isFinal ? 'auto' : false,
+                batchRendering: !isFinal,
+                deferNodesUntilVisible: false,
+                viewportPriority: false,
+                maxLiveNodes: 0,
                 customHtmlTags: ['think', 'thinking']
             })
         );
@@ -63,7 +67,13 @@ export function renderStaticMarkdown(container: HTMLElement, content: string): v
             content,
             final: true,
             typewriter: false,
-            fade: false
+            fade: false,
+            smoothStreaming: false,
+            batchRendering: false,
+            deferNodesUntilVisible: false,
+            viewportPriority: false,
+            maxLiveNodes: 0,
+            customHtmlTags: ['think', 'thinking']
         })
     );
 }

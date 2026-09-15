@@ -5,12 +5,23 @@ import {
 } from './trajectoryService';
 import { AutopilotLogger } from '../utils/logger';
 
+export interface ModelOption {
+    id: string;             // 模型实际 ID，例如 "gemini-2.0-flash", "deepseek-chat", "gpt-4o"
+    name: string;           // 界面显示名称，例如 "Gemini 2.0 Flash (新一代极速首选)"
+    provider?: string;      // 服务商标识
+    enabled: boolean;       // 是否在对话框底部快捷下拉中选用
+    isReasoning?: boolean;  // 是否具备深度推理/慢思考能力 (如 R1, o1, o3, Thinking)
+    isVision?: boolean;     // 是否支持多模态识图
+    custom?: boolean;       // 是否为用户手动添加的自定义模型
+}
+
 export interface LlmConfig {
-    provider: 'deepseek' | 'openai' | 'gemini' | 'ollama' | 'openrouter' | 'custom';
+    provider: 'deepseek' | 'openai' | 'gemini' | 'ollama' | 'openrouter' | 'claude' | 'custom';
     endpoint: string;
     apiKey: string;
     model: string;
     temperature: number;
+    models?: ModelOption[];
 }
 
 export interface MessageAttachment {
@@ -26,7 +37,7 @@ export const LLM_PRESETS: Record<string, Partial<LlmConfig>> = {
     gemini: {
         provider: 'gemini',
         endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai',
-        model: 'gemini-1.5-pro',
+        model: 'gemini-2.0-flash',
         temperature: 0.3
     },
     deepseek: {
@@ -41,6 +52,12 @@ export const LLM_PRESETS: Record<string, Partial<LlmConfig>> = {
         model: 'gpt-4o',
         temperature: 0.3
     },
+    claude: {
+        provider: 'claude',
+        endpoint: 'https://openrouter.ai/api/v1',
+        model: 'anthropic/claude-3.7-sonnet',
+        temperature: 0.3
+    },
     ollama: {
         provider: 'ollama',
         endpoint: 'http://localhost:11434/v1',
@@ -50,47 +67,282 @@ export const LLM_PRESETS: Record<string, Partial<LlmConfig>> = {
     openrouter: {
         provider: 'openrouter',
         endpoint: 'https://openrouter.ai/api/v1',
-        model: 'anthropic/claude-3.5-sonnet',
+        model: 'anthropic/claude-3.7-sonnet',
         temperature: 0.3
     },
     custom: {
         provider: 'custom',
         endpoint: '',
-        model: '',
+        model: 'gpt-4o',
         temperature: 0.3
     }
 };
 
 const STORAGE_KEY = 'autopilot_webmcp_llm_config';
 
+export function getDefaultModelsForProvider(provider: string): ModelOption[] {
+    switch (provider) {
+        case 'gemini':
+            return [
+                { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash (新一代极速首选)', provider: 'gemini', enabled: true },
+                { id: 'gemini-2.0-flash-thinking-exp-01-21', name: 'Gemini 2.0 Flash Thinking (深度思考)', provider: 'gemini', enabled: true, isReasoning: true },
+                { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro (最强综合推理旗舰)', provider: 'gemini', enabled: true, isReasoning: true },
+                { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro (百万长上下文)', provider: 'gemini', enabled: false },
+                { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash (轻量低延迟)', provider: 'gemini', enabled: false }
+            ];
+        case 'deepseek':
+            return [
+                { id: 'deepseek-chat', name: 'DeepSeek-V3 (通用极速性价比之王)', provider: 'deepseek', enabled: true },
+                { id: 'deepseek-reasoner', name: 'DeepSeek-R1 (深度慢思考长链推理)', provider: 'deepseek', enabled: true, isReasoning: true }
+            ];
+        case 'openai':
+            return [
+                { id: 'gpt-4o', name: 'GPT-4o (全能多模态旗舰)', provider: 'openai', enabled: true, isVision: true },
+                { id: 'gpt-4o-mini', name: 'GPT-4o-mini (轻巧极速低成本)', provider: 'openai', enabled: true },
+                { id: 'o3-mini', name: 'o3-mini (新一代高效推理)', provider: 'openai', enabled: true, isReasoning: true },
+                { id: 'o1', name: 'o1 (高级慢思考与规划)', provider: 'openai', enabled: false, isReasoning: true },
+                { id: 'gpt-4-turbo', name: 'GPT-4 Turbo', provider: 'openai', enabled: false }
+            ];
+        case 'claude':
+        case 'openrouter':
+            return [
+                { id: 'anthropic/claude-3.7-sonnet', name: 'Claude 3.7 Sonnet (混合推理新旗舰)', provider: 'openrouter', enabled: true, isReasoning: true },
+                { id: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet (代码与逻辑标杆)', provider: 'openrouter', enabled: true },
+                { id: 'anthropic/claude-3.5-haiku', name: 'Claude 3.5 Haiku (超轻量秒级响应)', provider: 'openrouter', enabled: false },
+                { id: 'openai/gpt-4o', name: 'OpenAI GPT-4o (OpenRouter)', provider: 'openrouter', enabled: true },
+                { id: 'deepseek/deepseek-r1', name: 'DeepSeek R1 (OpenRouter)', provider: 'openrouter', enabled: true, isReasoning: true }
+            ];
+        case 'ollama':
+            return [
+                { id: 'qwen2.5:7b', name: '通义千问 Qwen 2.5 7B (本地推荐)', provider: 'ollama', enabled: true },
+                { id: 'deepseek-r1:7b', name: 'DeepSeek R1 本地量化 7B', provider: 'ollama', enabled: true, isReasoning: true },
+                { id: 'llama3.1:8b', name: 'Meta Llama 3.1 8B', provider: 'ollama', enabled: false }
+            ];
+        default:
+            return [
+                { id: 'gpt-4o', name: 'GPT-4o 兼容', provider: 'custom', enabled: true },
+                { id: 'deepseek-chat', name: 'DeepSeek-V3 兼容', provider: 'custom', enabled: true }
+            ];
+    }
+}
+
 export function getLlmConfig(): LlmConfig {
     try {
         const raw = localStorage.getItem(STORAGE_KEY);
         if (raw) {
             const parsed = JSON.parse(raw);
+            const provider = parsed.provider || 'gemini';
+            const defaultModels = getDefaultModelsForProvider(provider);
+            const models: ModelOption[] = Array.isArray(parsed.models) && parsed.models.length > 0
+                ? parsed.models
+                : defaultModels;
+            const model = parsed.model || models.find(m => m.enabled)?.id || defaultModels[0].id;
             return {
-                provider: parsed.provider || 'gemini',
-                endpoint: parsed.endpoint || 'https://generativelanguage.googleapis.com/v1beta/openai',
+                provider,
+                endpoint: parsed.endpoint || LLM_PRESETS[provider]?.endpoint || 'https://generativelanguage.googleapis.com/v1beta/openai',
                 apiKey: parsed.apiKey || '',
-                model: parsed.model || 'gemini-1.5-pro',
-                temperature: typeof parsed.temperature === 'number' ? parsed.temperature : 0.3
+                model,
+                temperature: typeof parsed.temperature === 'number' ? parsed.temperature : 0.3,
+                models
             };
         }
     } catch (e) {
         AutopilotLogger.warn('[LLM] 读取配置失败，采用默认配置');
     }
+    const defaultModels = getDefaultModelsForProvider('gemini');
     return {
         provider: 'gemini',
         endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai',
         apiKey: '',
-        model: 'gemini-1.5-pro',
-        temperature: 0.3
+        model: 'gemini-2.0-flash',
+        temperature: 0.3,
+        models: defaultModels
     };
 }
 
 export function saveLlmConfig(config: LlmConfig) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
     AutopilotLogger.info('[LLM] 配置已保存');
+    try {
+        if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('autopilot:llm_config_changed', { detail: config }));
+        }
+    } catch (e) {}
+}
+
+/**
+ * 自动探测与拉取远端 LLM 端点支持的模型列表
+ * 兼容 OpenAI /v1/models、Google Gemini API、Ollama /api/tags
+ */
+export async function fetchAvailableModels(config: LlmConfig): Promise<{
+    success: boolean;
+    models: ModelOption[];
+    message: string;
+}> {
+    const startTime = Date.now();
+    const rawEndpoint = (config.endpoint || '').trim();
+    if (!rawEndpoint) {
+        const fallbacks = getDefaultModelsForProvider(config.provider);
+        return {
+            success: false,
+            models: fallbacks,
+            message: '请先填写 API 基础地址'
+        };
+    }
+
+    const apiKey = (config.apiKey || '').trim();
+
+    // 1. Google Gemini
+    if (config.provider === 'gemini') {
+        // 优先尝试官方 OpenAI 兼容 /models 端点
+        try {
+            const openaiModelsUrl = rawEndpoint.replace(/\/chat\/completions\/?$/, '').replace(/\/+$/, '') + '/models';
+            const res = await fetch(openaiModelsUrl, {
+                headers: apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}
+            });
+            if (res.ok) {
+                const data = await res.json();
+                if (Array.isArray(data.data) && data.data.length > 0) {
+                    const list: ModelOption[] = data.data
+                        .filter((m: any) => m.id && !m.id.includes('embedding') && !m.id.includes('aqa') && !m.id.includes('imagen'))
+                        .map((m: any) => {
+                            const isReasoning = m.id.includes('thinking') || m.id.includes('pro');
+                            return {
+                                id: m.id,
+                                name: formatModelDisplayName(m.id),
+                                provider: 'gemini',
+                                enabled: isReasoning || m.id.includes('flash'),
+                                isReasoning
+                            };
+                        });
+                    if (list.length > 0) {
+                        return {
+                            success: true,
+                            models: list,
+                            message: `成功自动识别 ${list.length} 个 Gemini 模型 (${Date.now() - startTime}ms)`
+                        };
+                    }
+                }
+            }
+        } catch (e) {}
+
+        // 备用：Google AI Studio API
+        if (apiKey) {
+            try {
+                const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`;
+                const res = await fetch(geminiUrl);
+                if (res.ok) {
+                    const data = await res.json();
+                    if (Array.isArray(data.models) && data.models.length > 0) {
+                        const list: ModelOption[] = data.models
+                            .filter((m: any) => m.name && (m.supportedGenerationMethods?.includes('generateContent') || m.name.includes('gemini')))
+                            .map((m: any) => {
+                                const cleanId = m.name.replace(/^models\//, '');
+                                const isReasoning = cleanId.includes('thinking') || cleanId.includes('pro');
+                                return {
+                                    id: cleanId,
+                                    name: m.displayName || formatModelDisplayName(cleanId),
+                                    provider: 'gemini',
+                                    enabled: isReasoning || cleanId.includes('flash'),
+                                    isReasoning
+                                };
+                            });
+                        if (list.length > 0) {
+                            return {
+                                success: true,
+                                models: list,
+                                message: `成功探测并载入 ${list.length} 个 Gemini 原生模型 (${Date.now() - startTime}ms)`
+                            };
+                        }
+                    }
+                }
+            } catch (e) {}
+        }
+    }
+
+    // 2. Ollama
+    if (config.provider === 'ollama') {
+        const base = rawEndpoint.replace(/\/v1\/?$/, '').replace(/\/+$/, '');
+        try {
+            const res = await fetch(`${base}/api/tags`);
+            if (res.ok) {
+                const data = await res.json();
+                if (Array.isArray(data.models) && data.models.length > 0) {
+                    const list: ModelOption[] = data.models.map((m: any) => ({
+                        id: m.name,
+                        name: `${m.name} (${m.details?.parameter_size || 'Local'})`,
+                        provider: 'ollama',
+                        enabled: true
+                    }));
+                    return {
+                        success: true,
+                        models: list,
+                        message: `成功检测到本地 Ollama 已运行的 ${list.length} 个模型 (${Date.now() - startTime}ms)`
+                    };
+                }
+            }
+        } catch (e) {}
+    }
+
+    // 3. 通用 OpenAI 兼容 /models
+    try {
+        const baseModelsUrl = rawEndpoint.replace(/\/chat\/completions\/?$/, '').replace(/\/+$/, '') + '/models';
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (apiKey) {
+            headers['Authorization'] = `Bearer ${apiKey}`;
+        }
+        const res = await fetch(baseModelsUrl, { method: 'GET', headers });
+        if (res.ok) {
+            const data = await res.json();
+            const rawList = Array.isArray(data.data) ? data.data : (Array.isArray(data) ? data : []);
+            if (rawList.length > 0) {
+                const list: ModelOption[] = rawList
+                    .filter((m: any) => m.id && !m.id.includes('embedding') && !m.id.includes('tts') && !m.id.includes('whisper') && !m.id.includes('dall-e') && !m.id.includes('moderation'))
+                    .map((m: any) => {
+                        const id = m.id;
+                        const isReasoning = id.includes('r1') || id.includes('reasoner') || id.includes('o1') || id.includes('o3') || id.includes('thinking');
+                        return {
+                            id,
+                            name: formatModelDisplayName(id),
+                            provider: config.provider,
+                            enabled: true,
+                            isReasoning
+                        };
+                    });
+                if (list.length > 0) {
+                    return {
+                        success: true,
+                        models: list,
+                        message: `成功自动拉取 ${list.length} 个可用模型 (${Date.now() - startTime}ms)`
+                    };
+                }
+            }
+        }
+    } catch (e) {
+        AutopilotLogger.warn('[LLM] 远端 /models 接口探测失败或受同源策略限制: ' + (e instanceof Error ? e.message : String(e)));
+    }
+
+    // 兜底回退：载入官方预设推荐库
+    const defaultList = getDefaultModelsForProvider(config.provider);
+    return {
+        success: true,
+        models: defaultList,
+        message: `未能从远端自动拉取，已为您载入 ${defaultList.length} 个主流官方推荐模型（可手动增删）`
+    };
+}
+
+function formatModelDisplayName(id: string): string {
+    if (id === 'gemini-2.0-flash') return 'Gemini 2.0 Flash (新一代极速首选)';
+    if (id === 'gemini-2.0-flash-thinking-exp-01-21') return 'Gemini 2.0 Flash Thinking (深度思考)';
+    if (id === 'gemini-2.5-pro') return 'Gemini 2.5 Pro (最强复杂推理)';
+    if (id === 'deepseek-chat') return 'DeepSeek-V3 (通用极速)';
+    if (id === 'deepseek-reasoner') return 'DeepSeek-R1 (深度长链推理)';
+    if (id === 'gpt-4o') return 'GPT-4o (全能旗舰)';
+    if (id === 'gpt-4o-mini') return 'GPT-4o-mini (轻巧极速)';
+    if (id === 'o3-mini') return 'o3-mini (高效推理)';
+    if (id.includes('claude-3-7-sonnet') || id.includes('claude-3.7-sonnet')) return 'Claude 3.7 Sonnet (混合推理)';
+    if (id.includes('claude-3-5-sonnet') || id.includes('claude-3.5-sonnet')) return 'Claude 3.5 Sonnet (逻辑标杆)';
+    return id;
 }
 
 export function isLlmConfigured(): boolean {

@@ -1764,6 +1764,25 @@ export function extractSavedDynamicFields(rowDatas: any, rec?: any, fullData?: a
     return dyn;
 }
 
+/**
+ * 标准化费用记录状态为中文显示
+ * 彻底解决系统底层 REIMBURSE / ALREADY_REIMBURSE / NO_REIMBURSE 显示为英文的问题
+ */
+export function normalizeExpenseStatus(status?: string): string {
+    if (!status) return '未报销';
+    const s = String(status).trim().toUpperCase();
+    if (s === 'NO_REIMBURSE' || s === 'UNREIMBURSED' || s === 'DRAFT' || s === '未报销') {
+        return '未报销';
+    }
+    if (s === 'REIMBURSING' || s === 'IN_REIMBURSE' || s === '报销中') {
+        return '报销中';
+    }
+    if (s === 'REIMBURSE' || s === 'ALREADY_REIMBURSE' || s === 'ALREADY_REIMBURSED' || s === 'REIMBURSED' || s === '已报销') {
+        return '已报销';
+    }
+    return status;
+}
+
 // ==========================================
 // 8. 费用记录与关联发票全量明细核对导出体系 (Excel CSV)
 // ==========================================
@@ -1785,6 +1804,11 @@ export interface ExpenseRecordExportRow {
     // 已持久化保存的动态字段与完整行数据 (解决重新打开弹窗时数据丢失重置为空的问题)
     savedDynamicFields?: DynamicExpenseFieldValues;
     savedRowDatas?: any;
+
+    // 发票附件照片 ID (用于悬浮无阻遮挡预览：attachmentId 优先为 OCR 裁切单张特写，rawAttachmentId 为原始全图)
+    attachmentId?: string;
+    rawAttachmentId?: string;
+    invoiceDataId?: string;
 
     // 发票明细信息
     invoiceIndex: number;
@@ -2104,12 +2128,13 @@ export async function fetchExpenseRecordsWithInvoiceDetails(
             });
             const rowDatas = ruleData?.rowDatas || {};
             const invList: any[] = rowDatas?.expenseRecordInvoiceList?.value || [];
+            const attachList: any[] = rowDatas?.expenseRecordAttachmentList?.value || [];
             const savedDynamicFields = extractSavedDynamicFields(rowDatas, rec, ruleData?.fullData);
 
             const baseRowInfo = {
                 expenseRecordId: rec.expenseRecordId || '',
                 expenseTypeId: rec.expenseTypeId || '',
-                status: rec.status === 'NO_REIMBURSE' ? '未报销' : (rec.status === 'REIMBURSING' ? '报销中' : (rec.status === 'REIMBURSED' ? '已报销' : (rec.status || '未报销'))),
+                status: normalizeExpenseStatus(rec.status),
                 expenseTypeName: rec.expenseType?.title?.zh_CN || rec.expenseTypeName || (rec.expenseTypeId === 'UNIDENTIFIED' ? '未知类型' : (rec.expenseTypeId || '')),
                 expenseAmount: rec.amountObj?.amount !== undefined ? rec.amountObj.amount : (rec.amount || ''),
                 businessDate: rec.businessDate ? rec.businessDate.split(' ')[0] : '',
@@ -2122,8 +2147,12 @@ export async function fetchExpenseRecordsWithInvoiceDetails(
             };
 
             if (invList.length === 0) {
+                const fallbackAttach = attachList[0]?.filePath || attachList[0]?.attachmentId || attachList[0]?.id || '';
                 exportRows.push({
                     ...baseRowInfo,
+                    attachmentId: fallbackAttach,
+                    rawAttachmentId: fallbackAttach,
+                    invoiceDataId: '',
                     invoiceIndex: 0,
                     invoiceType: '',
                     invoiceCode: '',
@@ -2156,8 +2185,74 @@ export async function fetchExpenseRecordsWithInvoiceDetails(
                     const stOff = inv.stationGetOff || inv.to || '';
                     const train = inv.trainNo || inv.trainNumber || inv.licensePlate || '';
 
+                    // =========================================================================
+                    // 提取 OCR 裁切特写单票 ID (inv.videoAddress) 与 原始全图上传 ID (inv.filePath)
+                    // 核心逆向机制：
+                    // 1. inv.videoAddress 代表宿主系统 OCR 自动识别并切片裁切后的单张发票特写图像
+                    // 2. inv.filePath 代表用户原始上传的整页/整张大图 (如手机拍摄包含多张票据的桌面照片)
+                    // =========================================================================
+                    const candidateCropIds = [
+                        inv.videoAddress,
+                        invItem.videoAddress,
+                        inv.scanVideoAddress,
+                        inv.imagePath
+                    ];
+                    let attachmentId = '';
+                    for (const cand of candidateCropIds) {
+                        if (typeof cand === 'string' && cand.trim().length > 3) {
+                            const trimmed = cand.trim();
+                            if (/^\d{12,}$/.test(trimmed)) continue;
+                            if (trimmed === '[object Object]' || trimmed === 'null' || trimmed === 'undefined') continue;
+                            attachmentId = trimmed;
+                            break;
+                        }
+                    }
+
+                    const candidateRawIds = [
+                        inv.filePath,
+                        invItem.filePath,
+                        inv.attachmentPath,
+                        inv.attachmentUrl,
+                        inv.attachmentId,
+                        inv.attachId,
+                        invItem.attachmentId,
+                        invItem.attachmentVO?.attachmentId,
+                        attachList[idx]?.filePath,
+                        attachList[idx]?.attachmentId,
+                        attachList[idx]?.id,
+                        attachList[0]?.filePath,
+                        attachList[0]?.attachmentId,
+                        inv.invoiceAttachmentId,
+                        inv.fileId,
+                        inv.boTemplateAndData?.boData?.area?.rowDatas?.[0]?.datas?.IMAGE_PATH?.value,
+                        inv.boTemplateAndData?.boData?.area?.rowDatas?.[0]?.datas?.FILE_PATH?.value
+                    ];
+                    let rawAttachmentId = '';
+                    for (const cand of candidateRawIds) {
+                        if (typeof cand === 'string' && cand.trim().length > 3) {
+                            const trimmed = cand.trim();
+                            if (/^\d{12,}$/.test(trimmed)) continue;
+                            if (trimmed === '[object Object]' || trimmed === 'null' || trimmed === 'undefined') continue;
+                            rawAttachmentId = trimmed;
+                            break;
+                        }
+                    }
+
+                    // 互为后备兜底 (如电子发票 PDF 仅有 filePath 无 videoAddress，则裁切特写自动回退为 filePath)
+                    if (!attachmentId) {
+                        attachmentId = rawAttachmentId;
+                    }
+                    if (!rawAttachmentId) {
+                        rawAttachmentId = attachmentId;
+                    }
+
+                    const invoiceDataId = inv.invoiceDataId || inv.dataId || invItem.invoiceDataId || invItem.dataId || inv.id || '';
+
                     exportRows.push({
                         ...baseRowInfo,
+                        attachmentId,
+                        rawAttachmentId,
+                        invoiceDataId,
                         invoiceIndex: idx + 1,
                         invoiceType: inv.invoiceTypeAbbreviation || inv.invoiceType || '',
                         invoiceCode: inv.invoiceCode || '',
@@ -2185,7 +2280,7 @@ export async function fetchExpenseRecordsWithInvoiceDetails(
         } catch (err: any) {
             exportRows.push({
                 expenseRecordId: rec.expenseRecordId || '',
-                status: rec.status || '未报销',
+                status: normalizeExpenseStatus(rec.status),
                 expenseTypeName: rec.expenseType?.title?.zh_CN || '',
                 expenseAmount: rec.amountObj?.amount || '',
                 businessDate: rec.businessDate ? rec.businessDate.split(' ')[0] : '',
@@ -2195,6 +2290,8 @@ export async function fetchExpenseRecordsWithInvoiceDetails(
                 createDate: rec.createDate || '',
                 savedDynamicFields: {},
                 savedRowDatas: {},
+                attachmentId: '',
+                invoiceDataId: '',
                 invoiceIndex: 0,
                 invoiceType: '',
                 invoiceCode: '',

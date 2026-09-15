@@ -1,5 +1,13 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import MarkdownRender from 'markstream-react';
+import { openWebMcpSettingsModal } from './webmcpSettingsModal';
+import {
+    getLlmConfig,
+    saveLlmConfig,
+    getDefaultModelsForProvider,
+    LlmConfig,
+    ModelOption
+} from '../services/llmService';
 
 export interface ChatAttachment {
     id: string;
@@ -98,12 +106,14 @@ interface AssistantChatPanelProps {
     employeeName: string;
     isExecuting?: boolean;
     onClose?: () => void;
+    onOpenSettings?: () => void;
     skills: AiSkillItem[];
     activeSkillId: string | null;
     onDismissSkill: () => void;
     onCopyPromptTemplate?: () => void;
     selectedModel?: string;
     onSelectModel?: (model: string) => void;
+    llmConfig?: LlmConfig;
 }
 
 /**
@@ -250,8 +260,12 @@ export const MarkdownContent: React.FC<{
                 content={content}
                 final={!isStreaming}
                 typewriter={isStreaming}
-                fade={true}
-                smoothStreaming={true}
+                fade={isStreaming}
+                smoothStreaming={isStreaming ? 'auto' : false}
+                batchRendering={isStreaming}
+                deferNodesUntilVisible={false}
+                viewportPriority={false}
+                maxLiveNodes={0}
                 customHtmlTags={['think', 'thinking']}
             />
         </div>
@@ -527,6 +541,8 @@ export const AssistantComposer: React.FC<{
     isExecuting?: boolean;
     selectedModel?: string;
     onSelectModel?: (model: string) => void;
+    onOpenSettings?: () => void;
+    llmConfig?: LlmConfig;
 }> = ({
     onSendMessage,
     selectedCount,
@@ -539,8 +555,10 @@ export const AssistantComposer: React.FC<{
     skills,
     onApplySkill,
     isExecuting = false,
-    selectedModel = 'gemini-3.8-flash-low',
-    onSelectModel
+    selectedModel = 'gemini-2.0-flash',
+    onSelectModel,
+    onOpenSettings,
+    llmConfig
 }) => {
     const [inputText, setInputText] = useState('');
     const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
@@ -553,12 +571,38 @@ export const AssistantComposer: React.FC<{
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
-    // Auto-resize textarea
-    useEffect(() => {
-        if (textareaRef.current) {
-            textareaRef.current.style.height = 'auto';
-            textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 180)}px`;
+    // 动态计算已勾选启用的模型列表
+    const enabledModels = useMemo(() => {
+        const activeCfg = llmConfig || getLlmConfig();
+        const rawModels = activeCfg?.models && activeCfg.models.length > 0
+            ? activeCfg.models
+            : getDefaultModelsForProvider(activeCfg?.provider || 'gemini');
+
+        const list = rawModels.filter(m => m.enabled);
+        if (list.length === 0) {
+            const cur = activeCfg?.model || selectedModel || 'gemini-2.0-flash';
+            list.push({ id: cur, name: cur, enabled: true });
         }
+        if (selectedModel && !list.some(m => m.id === selectedModel)) {
+            const found = rawModels.find(m => m.id === selectedModel);
+            if (found) {
+                list.unshift(found);
+            } else {
+                list.unshift({ id: selectedModel, name: selectedModel, enabled: true });
+            }
+        }
+        return list;
+    }, [llmConfig, selectedModel]);
+
+    // Auto-resize textarea (async rAF to eliminate forced synchronous reflow)
+    useEffect(() => {
+        const el = textareaRef.current;
+        if (!el) return;
+        const rafId = requestAnimationFrame(() => {
+            el.style.height = 'auto';
+            el.style.height = `${Math.min(el.scrollHeight, 180)}px`;
+        });
+        return () => cancelAnimationFrame(rafId);
     }, [inputText]);
 
     // Matching skills for slash menu
@@ -856,12 +900,36 @@ export const AssistantComposer: React.FC<{
                         {onSelectModel && (
                             <select
                                 value={selectedModel}
-                                onChange={(e) => onSelectModel(e.target.value)}
-                                style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '8px', fontSize: '10.5px', color: '#475569', padding: '3px 6px', outline: 'none' }}
+                                onChange={(e) => {
+                                    const val = e.target.value;
+                                    if (val === '__manage_models__') {
+                                        onOpenSettings?.();
+                                        return;
+                                    }
+                                    onSelectModel(val);
+                                }}
+                                title="切换当前生效模型 (可在设置中自动识别与勾选展示的模型)"
+                                style={{
+                                    background: '#ffffff',
+                                    border: '1px solid #e2e8f0',
+                                    borderRadius: '8px',
+                                    fontSize: '11px',
+                                    fontWeight: 500,
+                                    color: '#334155',
+                                    padding: '3px 6px',
+                                    outline: 'none',
+                                    cursor: 'pointer',
+                                    maxWidth: '180px',
+                                    height: '24px'
+                                }}
                             >
-                                <option value="gemini-3.8-flash-low">Gemini 3.8 Flash (极速)</option>
-                                <option value="gemini-3.8-pro">Gemini 3.8 Pro (深度认知)</option>
-                                <option value="local-rule-engine">本地规则引擎 (离线)</option>
+                                {enabledModels.map(m => (
+                                    <option key={m.id} value={m.id}>
+                                        {m.isReasoning ? '🧠 ' : (m.isVision ? '👁️ ' : '')}{m.name || m.id}
+                                    </option>
+                                ))}
+                                <option disabled style={{ color: '#cbd5e1' }}>──────────</option>
+                                <option value="__manage_models__">⚙️ 探测与配置更多模型...</option>
                             </select>
                         )}
                     </div>
@@ -902,15 +970,50 @@ export const AssistantChatPanel: React.FC<AssistantChatPanelProps> = ({
     employeeName,
     isExecuting = false,
     onClose,
+    onOpenSettings,
     skills,
     activeSkillId,
     onDismissSkill,
     onCopyPromptTemplate,
     selectedModel,
-    onSelectModel
+    onSelectModel,
+    llmConfig: llmConfigProp
 }) => {
     const [historyMenuOpen, setHistoryMenuOpen] = useState(false);
     const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
+    const [llmConfig, setLlmConfig] = useState<LlmConfig>(() => llmConfigProp || getLlmConfig());
+
+    // 保持与外部 llmConfigProp 变更、selectedModel 变更及 localStorage 同步
+    useEffect(() => {
+        if (llmConfigProp) {
+            setLlmConfig(llmConfigProp);
+        } else {
+            setLlmConfig(getLlmConfig());
+        }
+    }, [llmConfigProp, selectedModel]);
+
+    // 监听全局配置变更事件，即使 React 没有重新传参也能毫秒级无感响应
+    useEffect(() => {
+        const handleConfigChange = (e: any) => {
+            const updated = e?.detail || getLlmConfig();
+            setLlmConfig(updated);
+        };
+        window.addEventListener('autopilot:llm_config_changed', handleConfigChange);
+        return () => window.removeEventListener('autopilot:llm_config_changed', handleConfigChange);
+    }, []);
+
+    // 点击外部区域自动收起历史会话浮层
+    useEffect(() => {
+        if (!historyMenuOpen) return;
+        const handleOutsideClick = (e: MouseEvent) => {
+            const target = e.target as HTMLElement;
+            if (!target.closest('.yn-gemini-history-dropdown') && !target.closest('.aui-history-trigger-btn')) {
+                setHistoryMenuOpen(false);
+            }
+        };
+        document.addEventListener('click', handleOutsideClick);
+        return () => document.removeEventListener('click', handleOutsideClick);
+    }, [historyMenuOpen]);
 
     const currentSession = useMemo(() => {
         return sessions.find(s => s.id === currentSessionId) || sessions[0] || {
@@ -926,32 +1029,97 @@ export const AssistantChatPanel: React.FC<AssistantChatPanelProps> = ({
         return skills.find(s => s.id === activeSkillId) || null;
     }, [skills, activeSkillId]);
 
+    const handleOpenSettings = useCallback(() => {
+        setHistoryMenuOpen(false);
+        if (onOpenSettings) {
+            onOpenSettings();
+        } else {
+            openWebMcpSettingsModal((savedCfg) => {
+                setLlmConfig(savedCfg);
+                onSelectModel?.(savedCfg.model);
+            });
+        }
+    }, [onOpenSettings, onSelectModel]);
+
     return (
         <div className="aui-root">
-            {/* 顶栏 Header: 标题 + 会话切换下拉 + 关闭按钮 */}
+            {/* 顶栏 Header: 标题 + 右上角 4 按钮 (新会话、历史会话、设置、关闭) */}
             <div className="yn-bem-ai-panel-header">
                 <div className="yn-bem-ai-title-wrap">
                     <span className="yn-gemini-sparkle-icon">✦</span>
                     <span style={{ fontWeight: 600, fontSize: '13px' }}>AI 智能副驾</span>
+                    {currentSession.title && (
+                        <span style={{ fontSize: '11px', color: '#64748b', fontWeight: 400, maxWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={currentSession.title}>
+                            · {currentSession.title}
+                        </span>
+                    )}
                 </div>
 
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', position: 'relative' }}>
+                <div className="aui-header-actions">
+                    {/* 1. 新会话按钮 */}
                     <button
                         type="button"
-                        className="yn-gemini-menu-trigger"
+                        className="aui-header-action-btn"
+                        onClick={() => {
+                            setHistoryMenuOpen(false);
+                            onNewSession();
+                        }}
+                        title="开启新会话 (Start new chat)"
+                        aria-label="新会话"
+                    >
+                        <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16" fill="none">
+                            <g fill="transparent" stroke="currentColor" strokeLinejoin="round" strokeWidth="2">
+                                <path d="M11 4H7.2c-1.12 0-1.68 0-2.108.218-.376.192-.682.498-.874.874C4 5.52 4 6.08 4 7.2v9.6c0 1.12 0 1.68.218 2.108.192.376.498.682.874.874C5.52 20 6.08 20 7.2 20h9.6c1.12 0 1.68 0 2.108-.218.376-.192.682-.498.874-.874C20 18.48 20 17.92 20 16.8V13" strokeLinecap="round" />
+                                <path d="M9 15v-2.586c0-.265.105-.52.293-.707l8.043-8.043c.78-.78 2.047-.78 2.828 0l.172.172c.78.78.78 2.047 0 2.828l-8.043 8.043c-.188.188-.442.293-.707.293H9z" strokeLinecap="square" />
+                            </g>
+                        </svg>
+                    </button>
+
+                    {/* 2. 历史会话按钮 */}
+                    <button
+                        type="button"
+                        className={`aui-header-action-btn aui-history-trigger-btn ${historyMenuOpen ? 'is-active' : ''}`}
                         onClick={(e) => {
                             e.stopPropagation();
                             setHistoryMenuOpen(!historyMenuOpen);
                         }}
-                        title="切换历史会话或新建对话"
+                        title="历史会话"
+                        aria-label="历史会话"
                     >
-                        <span>≡</span>
-                        <span style={{ maxWidth: '96px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '11px' }}>
-                            {currentSession.title || '会话'}
-                        </span>
-                        <span style={{ fontSize: '9px', color: '#94a3b8' }}>▾</span>
+                        <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16" fill="currentColor">
+                            <path d="M12 4C9.25 4 6.83 5.39 5.38 7.5H8v2H2v-6h2V6c1.82-2.43 4.73-4 8-4 5.52 0 10 4.48 10 10s-4.48 10-10 10c-4.76 0-8.74-3.33-9.75-7.78l1.95-.44C5.01 17.34 8.19 20 12 20c4.42 0 8-3.58 8-8s-3.58-8-8-8zm-1 4h2v3.59l3.21 3.2-1.42 1.42-3.79-3.8V8z" />
+                        </svg>
                     </button>
 
+                    {/* 3. 设置按钮 */}
+                    <button
+                        type="button"
+                        className="aui-header-action-btn"
+                        onClick={handleOpenSettings}
+                        title="设置与模型参数 (Settings)"
+                        aria-label="设置"
+                    >
+                        <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16" fill="currentColor">
+                            <path d="M10.54 1.75h2.92l1.57 2.36c.11.17.32.25.53.21l2.53-.59 2.17 2.17-.58 2.54c-.05.2.04.41.21.53l2.36 1.57v2.92l-2.36 1.57c-.17.12-.26.33-.21.53l.58 2.54-2.17 2.17-2.53-.59c-.21-.04-.42.04-.53.21l-1.57 2.36h-2.92l-1.58-2.36c-.11-.17-.32-.25-.52-.21l-2.54.59-2.17-2.17.58-2.54c.05-.2-.03-.41-.21-.53l-2.35-1.57v-2.92L4.1 8.97c.18-.12.26-.33.21-.53L3.73 5.9 5.9 3.73l2.54.59c.2.04.41-.04.52-.21l1.58-2.36zm1.07 2l-.98 1.47C10.05 6.08 9 6.5 7.99 6.27l-1.46-.34-.6.6.33 1.46c.24 1.01-.18 2.07-1.05 2.64l-1.46.98v.78l1.46.98c.87.57 1.29 1.63 1.05 2.64l-.33 1.46.6.6 1.46-.34c1.01-.23 2.06.19 2.64 1.05l.98 1.47h.78l.97-1.47c.58-.86 1.63-1.28 2.65-1.05l1.45.34.61-.6-.34-1.46c-.23-1.01.18-2.07 1.05-2.64l1.47-.98v-.78l-1.47-.98c-.87-.57-1.28-1.63-1.05-2.64l.34-1.46-.61-.6-1.45.34c-1.02.23-2.07-.19-2.65-1.05l-.97-1.47h-.78zM12 10.5c-.83 0-1.5.67-1.5 1.5s.67 1.5 1.5 1.5c.82 0 1.5-.67 1.5-1.5s-.68-1.5-1.5-1.5zM8.5 12c0-1.93 1.56-3.5 3.5-3.5 1.93 0 3.5 1.57 3.5 3.5s-1.57 3.5-3.5 3.5c-1.94 0-3.5-1.57-3.5-3.5z" />
+                        </svg>
+                    </button>
+
+                    {/* 4. 关闭按钮 */}
+                    {onClose && (
+                        <button
+                            type="button"
+                            className="aui-header-action-btn"
+                            onClick={onClose}
+                            title="关闭"
+                            aria-label="关闭"
+                        >
+                            <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16" fill="currentColor">
+                                <path d="M10.59 12L4.54 5.96l1.42-1.42L12 10.59l6.04-6.05 1.42 1.42L13.41 12l6.05 6.04-1.42 1.42L12 13.41l-6.04 6.05-1.42-1.42L10.59 12z" />
+                            </svg>
+                        </button>
+                    )}
+
+                    {/* 历史会话浮层菜单 (遵循 Screenshot 规范) */}
                     {historyMenuOpen && (
                         <div
                             className="yn-gemini-history-dropdown"
@@ -965,11 +1133,17 @@ export const AssistantChatPanel: React.FC<AssistantChatPanelProps> = ({
                                     onNewSession();
                                 }}
                             >
-                                <span>📝</span>
-                                <span>开启新对话 (Start new chat)</span>
+                                <svg viewBox="0 0 24 24" aria-hidden="true" width="15" height="15" fill="none" style={{ color: '#475569', flexShrink: 0 }}>
+                                    <g fill="transparent" stroke="currentColor" strokeLinejoin="round" strokeWidth="2">
+                                        <path d="M11 4H7.2c-1.12 0-1.68 0-2.108.218-.376.192-.682.498-.874.874C4 5.52 4 6.08 4 7.2v9.6c0 1.12 0 1.68.218 2.108.192.376.498.682.874.874C5.52 20 6.08 20 7.2 20h9.6c1.12 0 1.68 0 2.108-.218.376-.192.682-.498.874-.874C20 18.48 20 17.92 20 16.8V13" strokeLinecap="round" />
+                                        <path d="M9 15v-2.586c0-.265.105-.52.293-.707l8.043-8.043c.78-.78 2.047-.78 2.828 0l.172.172c.78.78.78 2.047 0 2.828l-8.043 8.043c-.188.188-.442.293-.707.293H9z" strokeLinecap="square" />
+                                    </g>
+                                </svg>
+                                <span style={{ fontSize: '12px', fontWeight: 500, color: '#0f172a' }}>Start new chat</span>
                             </div>
+
                             <div className="yn-gemini-menu-divider" />
-                            <div className="yn-gemini-menu-header">最近会话</div>
+
                             <div className="yn-gemini-history-list">
                                 {sessions.map((s) => (
                                     <div
@@ -981,9 +1155,9 @@ export const AssistantChatPanel: React.FC<AssistantChatPanelProps> = ({
                                             onSelectSession(s.id);
                                         }}
                                     >
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', overflow: 'hidden' }}>
-                                            <span>💬</span>
-                                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden', minWidth: 0 }}>
+                                            <span style={{ fontSize: '13px', color: '#64748b', flexShrink: 0, fontFamily: 'monospace' }}>≡</span>
+                                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '12px' }}>
                                                 {s.title || '未命名会话'}
                                             </span>
                                         </div>
@@ -1002,18 +1176,23 @@ export const AssistantChatPanel: React.FC<AssistantChatPanelProps> = ({
                                     </div>
                                 ))}
                             </div>
-                        </div>
-                    )}
 
-                    {onClose && (
-                        <button
-                            type="button"
-                            className="yn-bem-close-x"
-                            onClick={onClose}
-                            title="收起 AI 助手"
-                        >
-                            ✕
-                        </button>
+                            <div className="yn-gemini-menu-divider" />
+
+                            <div
+                                className="yn-gemini-menu-item"
+                                style={{ justifyContent: 'space-between' }}
+                                onClick={handleOpenSettings}
+                            >
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                    <svg viewBox="0 0 24 24" aria-hidden="true" width="15" height="15" fill="currentColor" style={{ color: '#64748b', flexShrink: 0 }}>
+                                        <path d="M10.54 1.75h2.92l1.57 2.36c.11.17.32.25.53.21l2.53-.59 2.17 2.17-.58 2.54c-.05.2.04.41.21.53l2.36 1.57v2.92l-2.36 1.57c-.17.12-.26.33-.21.53l.58 2.54-2.17 2.17-2.53-.59c-.21-.04-.42.04-.53.21l-1.57 2.36h-2.92l-1.58-2.36c-.11-.17-.32-.25-.52-.21l-2.54.59-2.17-2.17.58-2.54c.05-.2-.03-.41-.21-.53l-2.35-1.57v-2.92L4.1 8.97c.18-.12.26-.33.21-.53L3.73 5.9 5.9 3.73l2.54.59c.2.04.41-.04.52-.21l1.58-2.36zm1.07 2l-.98 1.47C10.05 6.08 9 6.5 7.99 6.27l-1.46-.34-.6.6.33 1.46c.24 1.01-.18 2.07-1.05 2.64l-1.46.98v.78l1.46.98c.87.57 1.29 1.63 1.05 2.64l-.33 1.46.6.6 1.46-.34c1.01-.23 2.06.19 2.64 1.05l.98 1.47h.78l.97-1.47c.58-.86 1.63-1.28 2.65-1.05l1.45.34.61-.6-.34-1.46c-.23-1.01.18-2.07 1.05-2.64l1.47-.98v-.78l-1.47-.98c-.87-.57-1.28-1.63-1.05-2.64l.34-1.46-.61-.6-1.45.34c-1.02.23-2.07-.19-2.65-1.05l-.97-1.47h-.78zM12 10.5c-.83 0-1.5.67-1.5 1.5s.67 1.5 1.5 1.5c.82 0 1.5-.67 1.5-1.5s-.68-1.5-1.5-1.5zM8.5 12c0-1.93 1.56-3.5 3.5-3.5 1.93 0 3.5 1.57 3.5 3.5s-1.57 3.5-3.5 3.5c-1.94 0-3.5-1.57-3.5-3.5z" />
+                                    </svg>
+                                    <span style={{ fontSize: '12px', color: '#475569' }}>Settings & Help</span>
+                                </div>
+                                <span style={{ fontSize: '11px', color: '#94a3b8' }}>›</span>
+                            </div>
+                        </div>
                     )}
                 </div>
             </div>
@@ -1042,8 +1221,16 @@ export const AssistantChatPanel: React.FC<AssistantChatPanelProps> = ({
                 skills={skills}
                 onApplySkill={(sid) => onApplySkill?.(sid)}
                 isExecuting={isExecuting}
-                selectedModel={selectedModel}
-                onSelectModel={onSelectModel}
+                selectedModel={selectedModel || llmConfig.model}
+                onSelectModel={(newModel) => {
+                    const cfg = getLlmConfig();
+                    cfg.model = newModel;
+                    saveLlmConfig(cfg);
+                    setLlmConfig(cfg);
+                    onSelectModel?.(newModel);
+                }}
+                onOpenSettings={handleOpenSettings}
+                llmConfig={llmConfig}
             />
 
             {/* 图片 Lightbox 放大模态框 */}

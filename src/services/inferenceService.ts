@@ -18,7 +18,7 @@
 import { AutopilotLogger } from '../utils/logger';
 import { callDirectLlmJson, isLlmConfigured } from './llmService';
 import type { ExpenseRecordGroup } from '../ui/batchEditExpenseModal';
-import { DynamicExpenseFieldValues } from './expenseService';
+import { DynamicExpenseFieldValues, normalizeExpenseStatus } from './expenseService';
 import { type DynamicTripInput, parseItineraryTable } from './applicationService';
 import type { TripLeg } from '../types/state';
 
@@ -33,12 +33,22 @@ export type ExpenseBillFlow = 'BC' | 'BJ'; // BC: 出差费用报销单, BJ: 经
  */
 export function getExpenseBillFlow(typeId?: string, typeName?: string): ExpenseBillFlow {
     const s = `${typeName || ''} ${typeId || ''}`.toLowerCase();
-    // 明确属于非差旅/日常类的：市内交通费、手机通信费、交际费、会议费、福利费等
+    // 1. 明确属于差旅大类的：飞机票、火车票、住宿费、出租车(taxi)、出差、差旅
+    if (s.includes('飞机') || s.includes('航空') || s.includes('jnc') || typeId === '035671613fdde1653e55bb00bc610000') return 'BC';
+    if (s.includes('火车') || s.includes('高铁') || s.includes('hcp') || typeId === '0356c4c2b14de1653e55bb00bc610000') return 'BC';
+    if (s.includes('住宿') || s.includes('酒店') || s.includes('zsf') || typeId === '0356c4e2b72de1653e55bb00bc610001') return 'BC';
+    if ((s.includes('出租车') && s.includes('taxi')) || typeId === '0356c4cef03345af7f1906ec05cc0000') return 'BC';
+    if (s.includes('差旅')) return 'BC';
+
+    // 2. 明确属于非差旅/日常经费类的：市内交通费、手机通信费、交际费、会议费、福利费、培训费、办公用品、快递等
     if (s.includes('市内交通') || typeId === '0356c529e72de1653e55bb00bc610001') return 'BJ';
     if (s.includes('手机') || s.includes('通信费-员工') || s.includes('txf') || typeId === '0356c577f8ede1653e55bb00bc610001') return 'BJ';
-    if (s.includes('交际') || s.includes('会议') || s.includes('福利') || s.includes('培训') || s.includes('办公')) return 'BJ';
-    // 差旅大类：机票、高铁、住宿、出租车（taxi）、交通费其他
-    return 'BC';
+    if (s.includes('交际') || s.includes('会议') || s.includes('福利') || s.includes('礼金') || s.includes('培训') || s.includes('办公') || s.includes('快递') || s.includes('耗材') || s.includes('服务')) return 'BJ';
+
+    // 3. 其它费用/未分类日常费用：在无出差特征时默认归入日常经费 (BJ)
+    if (s.includes('其他费用') || typeId === '0356c583e17de1653e55bb00bc610000') return 'BJ';
+
+    return 'BJ';
 }
 
 /**
@@ -82,17 +92,45 @@ export function checkTaxiMisclassification(
     group: ExpenseRecordGroup,
     tripDateIntervals: Array<{ tripNo: number; destination: string; start: string; end: string }>
 ): { hasMisclass: boolean; suggestedTypeId?: string; suggestedTypeName?: string; reason?: string } {
+    // 核心铁律：已报销的费用已完成审批归档，严格只读展示，严禁触发错配报警或建议变更
+    if (normalizeExpenseStatus(group.status) === '已报销') {
+        return { hasMisclass: false };
+    }
+
     const typeId = group.newExpenseTypeId || group.expenseTypeId;
     const typeName = group.newExpenseTypeName || group.expenseTypeName;
     const date = group.newBusinessDate || group.businessDate || group.earliestInvoiceDate;
     if (!date) return { hasMisclass: false };
 
     const isLocalTaxi = typeName?.includes('市内交通') || typeId === '0356c529e72de1653e55bb00bc610001';
-    const isTripTaxi = typeName?.includes('taxi') || typeId === '0356c4cef03345af7f1906ec05cc0000';
+    const isTripTaxi = (typeName?.includes('taxi') && !typeName?.includes('市内')) || typeId === '0356c4cef03345af7f1906ec05cc0000';
+    const hasTaxiInvoice = group.invoices?.some(inv => {
+        const s = `${inv.invoiceType || ''} ${inv.salesName || ''} ${inv.fileName || ''} ${inv.remarks || ''}`.toLowerCase();
+        return s.includes('出租车') || s.includes('打车') || s.includes('滴滴') || s.includes('taxi') || Boolean(inv.timeGetOn || inv.timeGetOff);
+    });
 
-    if (!isLocalTaxi && !isTripTaxi) return { hasMisclass: false };
+    if (!isLocalTaxi && !isTripTaxi && !hasTaxiInvoice) return { hasMisclass: false };
 
     const matchedTrip = tripDateIntervals.find(t => date >= t.start && date <= t.end);
+
+    // 1. 发票明明是出租车，但费用类型被设置成了“其他费用”或未知类型
+    if (!isLocalTaxi && !isTripTaxi && hasTaxiInvoice) {
+        if (matchedTrip) {
+            return {
+                hasMisclass: true,
+                suggestedTypeId: '0356c4cef03345af7f1906ec05cc0000',
+                suggestedTypeName: '出租车（taxi）',
+                reason: `底层发票为出租车票且发生于 Trip ${matchedTrip.tripNo} (${matchedTrip.destination}) 出差期间，建议变更为【差旅费 - 出租车(taxi)】`
+            };
+        } else {
+            return {
+                hasMisclass: true,
+                suggestedTypeId: '0356c529e72de1653e55bb00bc610001',
+                suggestedTypeName: '市内交通费',
+                reason: `底层发票为出租车打车票且非出差期间，建议变更为【交通费 - 市内交通费 (日常经费)】`
+            };
+        }
+    }
 
     if (matchedTrip && isLocalTaxi) {
         return {
@@ -351,6 +389,8 @@ export async function dispatchInferenceChannels(
     const unknownGroups: ExpenseRecordGroup[] = [];
 
     for (const g of groupsWithMissingFields) {
+        // 核心铁律：已报销记录严格只读，绝不分流至任何 LLM 推断通道
+        if (normalizeExpenseStatus(g.status) === '已报销') continue;
         if (isUnknownTypeGroup(g)) {
             unknownGroups.push(g);
         } else {

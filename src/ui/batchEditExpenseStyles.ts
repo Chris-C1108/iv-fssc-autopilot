@@ -69,6 +69,7 @@ ${ASSISTANT_UI_STYLES}
     display: none;
     flex-direction: column;
     overflow: hidden;
+    contain: strict;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     color: var(--coss-fg-default);
     animation: ynFadeIn 0.15s var(--coss-ease);
@@ -720,6 +721,7 @@ ${ASSISTANT_UI_STYLES}
     overflow: auto;
     position: relative;
     background: #ffffff;
+    contain: layout style paint;
 }
 
 .yn-bem-table {
@@ -1180,18 +1182,23 @@ td.yn-bem-cell-interactive {
     border-color: #000000;
 }
 
+/* 列头处于筛选浮层打开状态时的粘性层级提升 (保证绝对高于任何表格 sticky 列与行) */
+th.yn-bem-th-popover-open {
+    z-index: 10000 !important;
+}
+
 /* 列头筛选下拉浮层 (Vercel Popover) */
 .yn-bem-filter-popover {
     position: absolute;
     top: calc(100% + 5px);
     left: 0;
-    min-width: 220px;
-    max-width: 320px;
+    min-width: 230px;
+    max-width: 340px;
     background: #ffffff;
-    border: 1px solid #eaeaea;
-    border-radius: 6px;
-    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
-    z-index: 100;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    box-shadow: 0 14px 36px -4px rgba(0, 0, 0, 0.24), 0 4px 12px rgba(0, 0, 0, 0.1);
+    z-index: 10001 !important;
     padding: 8px;
     display: flex;
     flex-direction: column;
@@ -1201,6 +1208,12 @@ td.yn-bem-cell-interactive {
     cursor: default;
     animation: ynFadeIn 0.12s ease-out;
     box-sizing: border-box;
+}
+/* 右对齐列的筛选浮层靠右对齐，防止右边界溢出被截断 */
+th[style*="text-align:right"] .yn-bem-filter-popover,
+th[style*="text-align: right"] .yn-bem-filter-popover {
+    left: auto;
+    right: 0;
 }
 .yn-bem-filter-popover-search {
     width: 100%;
@@ -2169,26 +2182,50 @@ td.yn-bem-cell-interactive {
 /* 多级分组展示、纯 CSS 折叠与单据流向 Tag 样式系统 (Vercel 质感) */
 /* ============================================================ */
 
-/* 分组表头容器与行 (现代视口外剔除优化，极大释放主线程渲染负载) */
+/* 分组表头容器与虚拟占位行 (Native Virtual Scroll Engine) */
+.yn-bem-virtual-tbody {
+    border-bottom: 2px solid #e5e7eb;
+}
+tr.yn-bem-vscroll-spacer {
+    padding: 0 !important;
+    margin: 0 !important;
+    border: none !important;
+    background: transparent !important;
+}
+tr.yn-bem-vscroll-spacer td {
+    padding: 0 !important;
+    margin: 0 !important;
+    border: none !important;
+    background: transparent !important;
+}
 .yn-bem-group-tbody {
     border-bottom: 2px solid #e5e7eb;
     content-visibility: auto;
-    contain-intrinsic-size: 0 42px;
+    contain-intrinsic-size: 0 160px;
+}
+.yn-bem-chunk-tbody {
+    content-visibility: auto;
+    contain-intrinsic-size: 0 450px;
 }
 .yn-bem-group-header-row {
-    background: #f8fafc;
-    border-top: 1px solid #e2e8f0;
-    border-bottom: 1px solid #cbd5e1;
+    background: #edf2f7;
+    border-top: 2px solid #cbd5e1;
+    border-bottom: 1px solid #94a3b8;
     user-select: none;
 }
+.yn-bem-group-header-row:hover td {
+    background: #e2e8f0 !important;
+}
 .yn-bem-group-header-cell {
+    background: #edf2f7 !important;
     padding: 8px 16px !important;
     font-size: 13px;
-    font-weight: 600;
-    color: #1e293b;
+    font-weight: 700;
+    color: #0f172a;
     position: sticky;
     left: 0;
-    z-index: 10;
+    z-index: 15;
+    border-left: 4px solid #2563eb !important;
 }
 .yn-bem-group-header-content {
     display: inline-flex;
@@ -2218,7 +2255,8 @@ td.yn-bem-cell-interactive {
     background: #e2e8f0;
     color: #0f172a;
 }
-.yn-bem-group-tbody.is-collapsed .yn-bem-group-toggle-btn {
+.yn-bem-group-tbody.is-collapsed .yn-bem-group-toggle-btn,
+.yn-bem-group-header-row.is-collapsed .yn-bem-group-toggle-btn {
     transform: rotate(-90deg);
 }
 
@@ -2285,14 +2323,16 @@ td.yn-bem-cell-interactive {
 
 /* 二级子分组头 (Trip + 费用类型) */
 .yn-bem-subgroup-header-row {
-    background: #fdfdfd;
-    border-bottom: 1px dashed #cbd5e1;
+    background: #f1f5f9;
+    border-bottom: 1px dashed #94a3b8;
 }
 .yn-bem-subgroup-header-cell {
+    background: #f1f5f9 !important;
     padding: 6px 16px 6px 36px !important;
     font-size: 12px;
     font-weight: 600;
-    color: #475569;
+    color: #334155;
+    border-left: 4px solid #64748b !important;
 }
 
 /* 单据流向徽章 (BC vs BJ) */
@@ -2717,6 +2757,7 @@ td.yn-bem-cell-interactive {
     height: calc(100vh - 46px);
     min-height: 0;
     overflow: hidden;
+    contain: layout paint;
     transition: margin-right 0.25s cubic-bezier(0.16, 1, 0.3, 1);
     position: relative;
 }
@@ -3099,13 +3140,14 @@ td.yn-bem-cell-interactive {
 /* AI 助手侧边栏左边缘拖拽把手 (自由调整宽度) */
 .yn-bem-ai-resizer {
     position: absolute;
-    left: -4px;
+    left: -6px;
     top: 0;
     bottom: 0;
-    width: 8px;
+    width: 12px;
     cursor: col-resize;
     z-index: 1000000;
     user-select: none;
+    touch-action: none;
     transition: background-color 0.15s ease;
 }
 .yn-bem-ai-resizer:hover,
@@ -3114,8 +3156,8 @@ td.yn-bem-cell-interactive {
     box-shadow: 0 0 8px rgba(37, 99, 235, 0.6);
 }
 .yn-bem-ai-resizer.is-resizing {
-    width: 14px;
-    left: -7px;
+    width: 16px;
+    left: -8px;
 }
 #yn-bem-ai-panel-wrap.is-resizing {
     transition: none !important;
@@ -3295,11 +3337,41 @@ body.yn-resizing-active {
 }
 
 /* Gemini AI 助手面板头部会话历史菜单 (Screenshot 4) */
-.yn-gemini-header-right {
+.yn-gemini-header-right,
+.aui-header-actions {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 4px;
     position: relative;
+}
+.aui-header-action-btn {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: #475569;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    padding: 0;
+    transition: all 120ms ease;
+    user-select: none;
+    flex-shrink: 0;
+}
+.aui-header-action-btn:hover {
+    background: #f1f5f9;
+    color: #0f172a;
+    border-color: #e2e8f0;
+}
+.aui-header-action-btn.is-active {
+    background: #eff6ff;
+    color: #2563eb;
+    border-color: #bfdbfe;
+}
+.aui-header-action-btn svg {
+    display: block;
 }
 .yn-gemini-menu-trigger {
     background: transparent;
@@ -3321,15 +3393,15 @@ body.yn-resizing-active {
 }
 .yn-gemini-history-dropdown {
     position: absolute;
-    top: 32px;
+    top: calc(100% + 6px);
     right: 0;
-    width: 240px;
+    width: 280px;
     background: #ffffff;
-    border: 1px solid rgba(0, 0, 0, 0.12);
-    border-radius: 10px;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.14);
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
     z-index: 1000;
-    padding: 6px 0;
+    padding: 6px;
     display: flex;
     flex-direction: column;
     animation: ynBemFadeIn 0.15s ease-out;
@@ -3341,29 +3413,31 @@ body.yn-resizing-active {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 8px 14px;
+    padding: 8px 10px;
+    border-radius: 6px;
     font-size: 12px;
-    color: #1e293b;
+    color: #334155;
     cursor: pointer;
     text-decoration: none;
-    transition: background 100ms ease;
+    transition: background 100ms ease, color 100ms ease;
     user-select: none;
 }
 .yn-gemini-menu-item:hover {
-    background: #f1f5f9;
+    background: #f8fafc;
+    color: #0f172a;
 }
 .yn-gemini-menu-item.is-active {
     background: #eff6ff;
     color: #2563eb;
-    font-weight: 600;
+    font-weight: 500;
 }
 .yn-gemini-menu-divider {
     height: 1px;
-    background: #e2e8f0;
+    background: #f1f5f9;
     margin: 4px 0;
 }
 .yn-gemini-menu-header {
-    padding: 4px 14px;
+    padding: 4px 10px;
     font-size: 10px;
     font-weight: 600;
     color: #94a3b8;
@@ -3371,7 +3445,7 @@ body.yn-resizing-active {
     letter-spacing: 0.05em;
 }
 .yn-gemini-history-list {
-    max-height: 180px;
+    max-height: 220px;
     overflow-y: auto;
 }
 
@@ -3740,5 +3814,145 @@ td.has-save-error {
     font-size: 11px;
     font-weight: 600;
     margin-left: 6px;
+}
+
+/* 发票类型单元格内照片预览微按钮 */
+.yn-bem-invoice-photo-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    margin: 0;
+    border-radius: 4px;
+    border: 1px solid #e5e7eb;
+    background: #ffffff;
+    cursor: pointer;
+    font-size: 11px;
+    line-height: 1;
+    transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+    flex-shrink: 0;
+}
+.yn-bem-invoice-photo-btn:hover {
+    border-color: #3b82f6;
+    background: #eff6ff;
+    transform: scale(1.1);
+    box-shadow: 0 1px 3px rgba(59, 130, 246, 0.25);
+}
+.yn-bem-invoice-photo-btn.no-attachment {
+    opacity: 0.45;
+    filter: grayscale(1);
+    cursor: help;
+}
+.yn-bem-invoice-photo-btn.no-attachment:hover {
+    border-color: #e5e7eb;
+    background: #ffffff;
+    transform: none;
+    box-shadow: none;
+}
+
+/* 全局单例发票原件悬浮预览浮窗 (高度大幅加大以看清发票，宽度自适应，智能视口内防遮挡) */
+.yn-bem-invoice-preview-popover {
+    position: fixed;
+    z-index: 1000000;
+    width: auto;
+    min-width: 360px;
+    max-width: min(720px, 94vw);
+    max-height: 88vh;
+    background: #ffffff;
+    border: 1px solid rgba(0, 0, 0, 0.18);
+    border-radius: 10px;
+    box-shadow: 0 20px 48px -6px rgba(0, 0, 0, 0.28), 0 8px 20px -2px rgba(0, 0, 0, 0.12);
+    pointer-events: auto; /* 支持用户将鼠标平滑移入浮层进行全屏查看或切换原图/裁切图 */
+    overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    animation: ynFadeIn 0.12s ease-out;
+    display: flex;
+    flex-direction: column;
+}
+.yn-bem-invoice-preview-popover .yn-bem-pop-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    background: #fafafa;
+    border-bottom: 1px solid #f0f0f0;
+    flex-shrink: 0;
+}
+.yn-bem-invoice-preview-popover .yn-bem-pop-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: #171717;
+}
+.yn-bem-invoice-preview-popover .yn-bem-pop-tag {
+    font-size: 11px;
+    background: #f4f4f5;
+    color: #52525b;
+    padding: 1px 6px;
+    border-radius: 4px;
+    border: 1px solid #e4e4e7;
+}
+.yn-bem-invoice-preview-popover .yn-bem-pop-img-wrap {
+    width: 100%;
+    min-height: 260px;
+    max-height: min(620px, 75vh);
+    background: #f8fafc;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: auto;
+    padding: 6px;
+    box-sizing: border-box;
+    flex-grow: 1;
+}
+.yn-bem-invoice-preview-popover .yn-bem-pop-img {
+    max-width: 100%;
+    max-height: min(600px, 74vh);
+    width: auto;
+    height: auto;
+    object-fit: contain;
+    opacity: 0;
+    transition: opacity 0.2s ease-in-out;
+}
+.yn-bem-invoice-preview-popover .yn-bem-pop-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 12px;
+    background: #ffffff;
+    border-top: 1px solid #f0f0f0;
+    pointer-events: auto; /* 允许点击在新标签中打开 */
+}
+.yn-bem-invoice-preview-popover .yn-bem-pop-link {
+    font-size: 11px;
+    color: #2563eb;
+    text-decoration: none;
+    font-weight: 500;
+}
+.yn-bem-invoice-preview-popover .yn-bem-pop-link:hover {
+    text-decoration: underline;
+}
+.yn-bem-invoice-preview-popover .yn-bem-pop-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 36px 16px;
+    color: #94a3b8;
+}
+
+/* 费用类型列筛选多维维度分组标题 */
+.yn-bem-filter-group-header {
+    font-size: 11px;
+    font-weight: 600;
+    color: #475569;
+    background: #f1f5f9;
+    padding: 4px 8px;
+    margin: 6px 0 2px 0;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
 }
 `;

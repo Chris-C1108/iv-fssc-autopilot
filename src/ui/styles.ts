@@ -783,6 +783,20 @@ export const MODAL_STYLES = `
         color: #64748b;
         border: 1px solid #cbd5e1;
     }
+    .yn-bem-row-reimbursed {
+        background-color: #fafafa;
+    }
+    .yn-bem-row-reimbursed td {
+        color: #525252;
+    }
+    .yn-bem-row-reimbursed select:disabled,
+    .yn-bem-row-reimbursed input:disabled,
+    .yn-bem-row-reimbursed input[readonly] {
+        background-color: transparent !important;
+        border-color: transparent !important;
+        cursor: default !important;
+        color: #525252 !important;
+    }
 `;
 
 export function injectStyles() {

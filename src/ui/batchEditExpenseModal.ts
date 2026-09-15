@@ -2,7 +2,7 @@ import { GlobalState, TripApplicationConfig, TripLeg } from '../types/state';
 import { AutopilotLogger } from '../utils/logger';
 import { showToast } from '../utils/toast';
 import { Decimal } from '../utils/decimal';
-import { callNativeHttp } from '../utils/http';
+import { callNativeHttp, extractLatestTokens } from '../utils/http';
 import {
     ExpenseRecordExportRow,
     fetchExpenseRecordsWithInvoiceDetails,
@@ -12,7 +12,9 @@ import {
     ExpenseRecordUpdateItem,
     fetchExpenseTypeTreeApi,
     ExpenseTypeTreeNode,
-    DynamicExpenseFieldValues
+    DynamicExpenseFieldValues,
+    normalizeExpenseStatus,
+    getInvoiceDetailByDataIdApi
 } from '../services/expenseService';
 import {
     searchProjectList,
@@ -46,7 +48,7 @@ const BILL_DEFINE_IDS = {
     TRIP_CLAIM_BC: '035a50ee6d3de1653e55bb00bc610001',        // 出差费用报销单 (BC)
     GENERAL_CLAIM_BJ: '035cd1b4d46de1653e55bb00bc610000'      // 经费报销单 (BJ)
 };
-import { isLlmConfigured, callDirectLlmJson } from '../services/llmService';
+import { isLlmConfigured, callDirectLlmJson, getLlmConfig, saveLlmConfig } from '../services/llmService';
 import {
     extractTripSkeleton,
     dispatchInferenceChannels,
@@ -87,6 +89,7 @@ import { createInitialBillManagementState } from '../services/billPlanService';
 import { BillPlan } from '../types/billPlan';
 import { generateTravelReportWithAi, generateBatchTravelReportsWithAi } from '../services/travelReportService';
 import { callDirectLlmText } from '../services/llmService';
+import { openWebMcpSettingsModal } from './webmcpSettingsModal';
 
 declare const unsafeWindow: any;
 
@@ -111,6 +114,9 @@ export interface ExpenseInvoiceSubItem {
     fileName: string;
     remarks: string;
     reconciliationNote: string;
+    attachmentId?: string; // OCR 裁切单张发票特写图 ID
+    rawAttachmentId?: string; // 原始全图上传照片 ID
+    invoiceDataId?: string;
 }
 
 // 费用聚合分组接口 (一笔费用对应 1~N 张发票)
@@ -355,8 +361,9 @@ export interface BatchEditExpenseModalState {
     syncBusinessDate: boolean;
     fillAddresses: boolean;
 
-    // Shift 键连选锚点
+    // Shift 键连选锚点与行高亮聚焦
     lastSelectedRecordId: string | null;
+    activeRecordId: string | null;
 
     // 页面交互面板状态
     batchSettingsDialogOpen: boolean;
@@ -369,7 +376,7 @@ export interface BatchEditExpenseModalState {
     currentSessionId: string;
     currentAttachments: ChatAttachment[];
     attachedExpenseContextEnabled: boolean;
-    selectedModel: 'flash' | 'pro' | 'flash_lite';
+    selectedModel: string;
     historyMenuOpen: boolean;
     previewImageUrl: string | null;
     aiPanelWidth: number;
@@ -421,6 +428,7 @@ let modalState: BatchEditExpenseModalState = {
     syncBusinessDate: true,
     fillAddresses: true,
     lastSelectedRecordId: null,
+    activeRecordId: null,
 
     batchSettingsDialogOpen: false,
     batchSettingsPanelOpen: false,
@@ -431,7 +439,7 @@ let modalState: BatchEditExpenseModalState = {
     currentSessionId: initialSessions[0]?.id || 'session_init',
     currentAttachments: [],
     attachedExpenseContextEnabled: true,
-    selectedModel: 'flash',
+    selectedModel: getLlmConfig().model || 'gemini-2.0-flash',
     historyMenuOpen: false,
     previewImageUrl: null,
     aiPanelWidth: (typeof localStorage !== 'undefined' && Number(localStorage.getItem('yn_fssc_ai_panel_width'))) || 440,
@@ -442,6 +450,36 @@ let modalState: BatchEditExpenseModalState = {
     slashQuery: '',
     slashSelectedIndex: 0,
     isAssistantExecuting: false
+};
+
+// ============================================================
+// 零依赖原生视口虚拟表格引擎 (Native Virtual Table Windowing Engine)
+// 彻底解决 50~200 笔费用时 20,000+ DOM 节点超载与 200+ 粘性列图层爆炸
+// ============================================================
+export interface VirtualRenderUnit {
+    type: 'SECTION_HEADER' | 'GROUP_ROW';
+    id: string;
+    height: number;
+    section?: GroupRenderSection;
+    group?: ExpenseRecordGroup;
+}
+
+interface VirtualTableState {
+    renderUnits: VirtualRenderUnit[];
+    unitOffsets: number[];
+    totalHeight: number;
+    startIndex: number;
+    endIndex: number;
+    scrollTop: number;
+}
+
+let virtualTableState: VirtualTableState = {
+    renderUnits: [],
+    unitOffsets: [0],
+    totalHeight: 0,
+    startIndex: 0,
+    endIndex: 0,
+    scrollTop: 0
 };
 
 /**
@@ -469,15 +507,15 @@ function groupExpenseRows(rows: ExpenseRecordExportRow[]): ExpenseRecordGroup[] 
                 createDate: r.createDate || '',
                 earliestInvoiceDate: '',
                 hasWarn: false,
-                status: r.status || '未报销',
+                status: normalizeExpenseStatus(r.status),
                 invoices: [],
                 inferredFields: {},
                 dynamicFields: r.savedDynamicFields ? { ...r.savedDynamicFields } : {}
             };
             groupMap.set(r.expenseRecordId, g);
         } else {
-            if (r.status && !g.status) {
-                g.status = r.status;
+            if (r.status) {
+                g.status = normalizeExpenseStatus(r.status);
             }
             if (r.savedDynamicFields && Object.keys(r.savedDynamicFields).length > 0) {
                 g.dynamicFields = { ...r.savedDynamicFields, ...(g.dynamicFields || {}) };
@@ -521,7 +559,10 @@ function groupExpenseRows(rows: ExpenseRecordExportRow[]): ExpenseRecordGroup[] 
                 salesName: r.salesName,
                 fileName: r.fileName,
                 remarks: r.remarks,
-                reconciliationNote: r.reconciliationNote
+                reconciliationNote: r.reconciliationNote,
+                attachmentId: r.attachmentId || '',
+                rawAttachmentId: r.rawAttachmentId || r.attachmentId || '',
+                invoiceDataId: r.invoiceDataId || ''
             });
         }
     }
@@ -535,31 +576,68 @@ function groupExpenseRows(rows: ExpenseRecordExportRow[]): ExpenseRecordGroup[] 
             g.invoiceCount = g.invoices.length;
         }
 
-        // 针对未分类 (UNIDENTIFIED) 记录，优先从底层挂载发票票种与关键特征智能推导报销类型
-        const isUnknown = !g.expenseTypeId || g.expenseTypeId === 'UNIDENTIFIED' || g.expenseTypeName === '未知类型';
-        if (isUnknown && g.invoices.length > 0) {
-            for (const inv of g.invoices) {
-                const s = `${inv.invoiceType || ''} ${inv.salesName || ''} ${inv.fileName || ''} ${inv.remarks || ''}`.toLowerCase();
-                if (s.includes('飞机') || s.includes('航空') || s.includes('机票') || s.includes('flight')) {
-                    g.newExpenseTypeId = '035671613fdde1653e55bb00bc610000';
-                    g.newExpenseTypeName = '飞机票（航空券）';
-                    break;
-                } else if (s.includes('火车') || s.includes('高铁') || s.includes('铁路') || inv.trainNo) {
-                    g.newExpenseTypeId = '0356c4c2b14de1653e55bb00bc610000';
-                    g.newExpenseTypeName = '火车公交车票 （電車Bus代）';
-                    break;
-                } else if (s.includes('酒店') || s.includes('客房') || s.includes('宾馆') || s.includes('住宿') || s.includes('hotel')) {
-                    g.newExpenseTypeId = '0356c4e2b72de1653e55bb00bc610001';
-                    g.newExpenseTypeName = '住宿费（宿泊代）';
-                    break;
-                } else if (s.includes('出租车') || s.includes('打车') || s.includes('滴滴') || s.includes('taxi')) {
-                    g.newExpenseTypeId = '0356c4cef03345af7f1906ec05cc0000';
-                    g.newExpenseTypeName = '出租车（taxi）';
-                    break;
-                } else if (s.includes('通信') || s.includes('话费') || s.includes('手机')) {
-                    g.newExpenseTypeId = '0356c4f6701345af7f1906ec05cc0000';
-                    g.newExpenseTypeName = '通信传真费（通信代）';
-                    break;
+        // 核心铁律：已报销的费用不需要纳入任何推断逻辑，而是严格只读其原始信息
+        if (normalizeExpenseStatus(g.status) === '已报销') {
+            continue;
+        }
+
+        // 针对未分类 (UNIDENTIFIED) 或 标为“其他费用”但实际含有明确发票/业务说明的记录，进行智能推导
+        const isUnknown = !g.expenseTypeId || g.expenseTypeId === 'UNIDENTIFIED' || g.expenseTypeName === '未知类型' || g.expenseTypeName === '其他费用' || g.expenseTypeId === '0356c583e17de1653e55bb00bc610000';
+        if (isUnknown) {
+            if (g.invoices.length > 0) {
+                for (const inv of g.invoices) {
+                    const s = `${inv.invoiceType || ''} ${inv.salesName || ''} ${inv.fileName || ''} ${inv.remarks || ''}`.toLowerCase();
+                    if (s.includes('飞机') || s.includes('航空') || s.includes('机票') || s.includes('flight')) {
+                        if (!g.newExpenseTypeId || isUnknown) {
+                            g.newExpenseTypeId = '035671613fdde1653e55bb00bc610000';
+                            g.newExpenseTypeName = '飞机票（航空券）';
+                        }
+                        break;
+                    } else if (s.includes('火车') || s.includes('高铁') || s.includes('铁路') || inv.trainNo) {
+                        if (!g.newExpenseTypeId || isUnknown) {
+                            g.newExpenseTypeId = '0356c4c2b14de1653e55bb00bc610000';
+                            g.newExpenseTypeName = '火车公交车票 （電車Bus代）';
+                        }
+                        break;
+                    } else if (s.includes('酒店') || s.includes('客房') || s.includes('宾馆') || s.includes('住宿') || s.includes('hotel')) {
+                        if (!g.newExpenseTypeId || isUnknown) {
+                            g.newExpenseTypeId = '0356c4e2b72de1653e55bb00bc610001';
+                            g.newExpenseTypeName = '住宿费（宿泊代）';
+                        }
+                        break;
+                    } else if (s.includes('出租车') || s.includes('打车') || s.includes('滴滴') || s.includes('taxi') || Boolean(inv.timeGetOn || inv.timeGetOff)) {
+                        // 若当前不在出差中，打车票优先识别为市内交通费
+                        if (!g.newExpenseTypeId || isUnknown) {
+                            g.newExpenseTypeId = '0356c529e72de1653e55bb00bc610001';
+                            g.newExpenseTypeName = '市内交通费';
+                        }
+                        break;
+                    } else if (s.includes('通信') || s.includes('话费') || s.includes('手机')) {
+                        if (!g.newExpenseTypeId || isUnknown) {
+                            g.newExpenseTypeId = '0356c4f6701345af7f1906ec05cc0000';
+                            g.newExpenseTypeName = '通信传真费（通信代）';
+                        }
+                        break;
+                    }
+                }
+            } else if (g.description) {
+                // 无发票记录：根据费用说明做常识语义推断
+                const desc = g.description.toLowerCase();
+                if (desc.includes('礼金') || desc.includes('慰问') || desc.includes('福利') || desc.includes('生子') || desc.includes('结婚') || desc.includes('团建')) {
+                    if (!g.newExpenseTypeId || isUnknown) {
+                        g.newExpenseTypeId = '0356c56b795de1653e55bb00bc610001';
+                        g.newExpenseTypeName = '一般福利费-部门团建';
+                    }
+                } else if (desc.includes('打车') || desc.includes('出租') || desc.includes('taxi') || desc.includes('市内交通')) {
+                    if (!g.newExpenseTypeId || isUnknown) {
+                        g.newExpenseTypeId = '0356c529e72de1653e55bb00bc610001';
+                        g.newExpenseTypeName = '市内交通费';
+                    }
+                } else if (desc.includes('手机') || desc.includes('话费') || desc.includes('通信')) {
+                    if (!g.newExpenseTypeId || isUnknown) {
+                        g.newExpenseTypeId = '0356c577f8ede1653e55bb00bc610001';
+                        g.newExpenseTypeName = '通信费-员工手机费';
+                    }
                 }
             }
         }
@@ -826,6 +904,16 @@ export async function openBatchEditExpenseModal(doc: Document, preselectedIds?: 
         modal = targetDoc.createElement('div');
         modal.id = 'yn-batch-edit-modal';
         targetDoc.body.appendChild(modal);
+
+        // 彻底隔绝宿主页面 (vendors_index.js 等) 对弹窗内部点击与手势的全局冒泡监听，杜绝 392ms 的 get offsetY 强迫回流
+        const isolateModalEvents = (e: Event) => {
+            e.stopPropagation();
+        };
+        modal.addEventListener('pointerdown', isolateModalEvents);
+        modal.addEventListener('mousedown', isolateModalEvents);
+        modal.addEventListener('pointerup', isolateModalEvents);
+        modal.addEventListener('mouseup', isolateModalEvents);
+        modal.addEventListener('click', isolateModalEvents);
     }
 
     let isCancelled = false;
@@ -905,6 +993,7 @@ export async function openBatchEditExpenseModal(doc: Document, preselectedIds?: 
 
         // 1. 初始化费用类型树与选区与筛选状态
         modalState.expenseTypeTree = typeTree || [];
+        clearTypeTreeOptionsCache();
         modalState.targetExpenseTypeId = '';
         modalState.targetExpenseTypeName = '';
         modalState.dynamicFields = {};
@@ -1032,7 +1121,17 @@ export function closeBatchEditModal() {
 function getGroupColumnValues(group: ExpenseRecordGroup, key: string): string[] {
     if (key === 'earliestInvoiceDate') return [group.earliestInvoiceDate || '-'];
     if (key === 'businessDate') return [group.newBusinessDate || group.businessDate || '-'];
-    if (key === 'expenseTypeName') return [group.newExpenseTypeName || group.expenseTypeName || '-'];
+    if (key === 'expenseTypeName') {
+        const typeName = group.newExpenseTypeName || group.expenseTypeName || '未分类';
+        const status = normalizeExpenseStatus(group.status);
+        const flow = getGroupBillFlow(group);
+        const flowName = flow === 'BC' ? '差旅·BC' : '经费·BJ';
+        return [
+            typeName,
+            `状态: ${status}`,
+            `单据: ${flowName}`
+        ];
+    }
     if (key === 'expenseAmount') return [`¥${Number(group.expenseAmount || 0).toFixed(2)}`];
     if (key === 'description') return [group.newDescription !== undefined ? group.newDescription : (group.description || '-')];
     if (key === 'invoiceCount') return [String(group.invoiceCount || 0)];
@@ -1160,6 +1259,17 @@ function getFilteredGroups(state: BatchEditExpenseModalState): ExpenseRecordGrou
         // 2. 列字段值精准筛选 (Column-Level Distinct Value Filters)
         for (const [colKey, selectedVals] of Object.entries(state.columnFilters)) {
             if (selectedVals && selectedVals.length > 0) {
+                if (colKey === 'expenseTypeName') {
+                    const statusVals = selectedVals.filter(sv => sv.startsWith('状态: '));
+                    const flowVals = selectedVals.filter(sv => sv.startsWith('单据: '));
+                    const typeVals = selectedVals.filter(sv => !sv.startsWith('状态: ') && !sv.startsWith('单据: '));
+
+                    const gVals = getGroupColumnValues(g, colKey);
+                    if (statusVals.length > 0 && !statusVals.some(sv => gVals.includes(sv))) return false;
+                    if (flowVals.length > 0 && !flowVals.some(sv => gVals.includes(sv))) return false;
+                    if (typeVals.length > 0 && !typeVals.some(sv => gVals.includes(sv))) return false;
+                    continue;
+                }
                 const gVals = getGroupColumnValues(g, colKey);
                 const hasMatch = selectedVals.some(sv => gVals.includes(sv));
                 if (!hasMatch) return false;
@@ -1774,6 +1884,47 @@ export function groupFilteredExpenses(
 }
 
 /**
+ * 渲染列筛选弹窗内部候选项列表 (费用类型列支持 报销状态/单据类型/费用类型 多维分段展示)
+ */
+function renderFilterValListHtml(colKey: string, filteredVals: { value: string; count: number }[], selected: Set<string>): string {
+    if (filteredVals.length === 0) {
+        return `<div style="color:#a3a3a3; font-size:11px; padding:6px;">未匹配到值</div>`;
+    }
+
+    const renderItems = (items: { value: string; count: number }[]) => items.map(item => {
+        const isChecked = selected.has(item.value);
+        const safeVal = item.value.replace(/"/g, '&quot;');
+        return `
+            <label class="yn-bem-filter-val-item">
+                <input type="checkbox" class="yn-bem-col-val-cb" data-col="${colKey}" data-val="${safeVal}" ${isChecked ? 'checked' : ''} />
+                <span class="yn-bem-filter-val-text" title="${safeVal}">${item.value}</span>
+                <span class="yn-bem-filter-val-count">${item.count}</span>
+            </label>
+        `;
+    }).join('');
+
+    if (colKey === 'expenseTypeName') {
+        const statusItems = filteredVals.filter(d => d.value.startsWith('状态: '));
+        const flowItems = filteredVals.filter(d => d.value.startsWith('单据: '));
+        const typeItems = filteredVals.filter(d => !d.value.startsWith('状态: ') && !d.value.startsWith('单据: '));
+
+        let html = '';
+        if (statusItems.length > 0) {
+            html += `<div class="yn-bem-filter-group-header">📋 报销状态</div>` + renderItems(statusItems);
+        }
+        if (flowItems.length > 0) {
+            html += `<div class="yn-bem-filter-group-header">📑 报销单类型</div>` + renderItems(flowItems);
+        }
+        if (typeItems.length > 0) {
+            html += `<div class="yn-bem-filter-group-header">🏷️ 费用类型</div>` + renderItems(typeItems);
+        }
+        return html || `<div style="color:#a3a3a3; font-size:11px; padding:6px;">未匹配到值</div>`;
+    }
+
+    return renderItems(filteredVals);
+}
+
+/**
  * 渲染列头筛选 Popover 浮层 HTML
  */
 function renderColumnFilterPopoverHtml(colKey: string): string {
@@ -1791,21 +1942,52 @@ function renderColumnFilterPopoverHtml(colKey: string): string {
                 <span class="yn-bem-filter-popover-link" id="yn-bem-popover-clear">清空筛选</span>
             </div>
             <div class="yn-bem-filter-val-list">
-                ${filteredVals.length === 0 ? `<div style="color:#a3a3a3; font-size:11px; padding:6px;">未匹配到值</div>` : ''}
-                ${filteredVals.map(item => {
-                    const isChecked = selected.has(item.value);
-                    const safeVal = item.value.replace(/"/g, '&quot;');
-                    return `
-                        <label class="yn-bem-filter-val-item">
-                            <input type="checkbox" class="yn-bem-col-val-cb" data-col="${colKey}" data-val="${safeVal}" ${isChecked ? 'checked' : ''} />
-                            <span class="yn-bem-filter-val-text" title="${safeVal}">${item.value}</span>
-                            <span class="yn-bem-filter-val-count">${item.count}</span>
-                        </label>
-                    `;
-                }).join('')}
+                ${renderFilterValListHtml(colKey, filteredVals, selected)}
             </div>
         </div>
     `;
+}
+
+/**
+ * 局部关闭列头筛选 Popover，避免触发全表无意义重绘 (INP < 1ms)
+ */
+function closeColumnFilterPopover(container: HTMLElement) {
+    if (!modalState.activePopoverCol) return;
+    const oldPopover = container.querySelector('#yn-bem-filter-popover');
+    if (oldPopover) {
+        oldPopover.remove();
+    }
+    const openThs = container.querySelectorAll('.yn-bem-th-popover-open');
+    openThs.forEach(th => th.classList.remove('yn-bem-th-popover-open'));
+    modalState.activePopoverCol = null;
+    modalState.popoverKeyword = '';
+}
+
+/**
+ * 局部展开/切换列头筛选 Popover，零 DOM 销毁与零全表重刷 (INP < 1ms)
+ */
+function toggleColumnFilterPopover(container: HTMLElement, colKey: string) {
+    const isSameCol = modalState.activePopoverCol === colKey;
+    closeColumnFilterPopover(container);
+    if (isSameCol) {
+        return;
+    }
+    modalState.activePopoverCol = colKey;
+    modalState.popoverKeyword = '';
+    const triggerBtn = container.querySelector<HTMLElement>(`.yn-bem-th-filter-trigger[data-filter-col="${colKey}"]`);
+    if (triggerBtn) {
+        const parentTh = triggerBtn.closest('th');
+        if (parentTh) {
+            parentTh.classList.add('yn-bem-th-popover-open');
+        }
+        const topRow = triggerBtn.closest('.yn-bem-th-top-row');
+        if (topRow) {
+            topRow.insertAdjacentHTML('beforeend', renderColumnFilterPopoverHtml(colKey));
+            setTimeout(() => {
+                container.querySelector<HTMLInputElement>('#yn-bem-popover-search')?.focus();
+            }, 10);
+        }
+    }
 }
 
 /**
@@ -2113,11 +2295,7 @@ function renderDynamicFieldCellHtml(group: ExpenseRecordGroup, col: ColumnDef, s
     const isApp = isDynamicColumnApplicable(col.key, cat);
 
     if (!isApp) {
-        return `
-            <td class="yn-bem-group-cell yn-bem-dyn-cell-na" rowspan="${span}">
-                <span>-</span>
-            </td>
-        `;
+        return `<td class="yn-bem-group-cell yn-bem-dyn-cell-na" rowspan="${span}">-</td>`;
     }
 
     const isOverStandardCol = col.key === 'dynOverStandard';
@@ -2198,13 +2376,25 @@ function renderDynamicFieldCellHtml(group: ExpenseRecordGroup, col: ColumnDef, s
     `;
 }
 
+// 内存缓存各报销类型生成的 <option> HTML，消除每行重复递归遍历的严重开销
+const typeTreeOptionsCache = new Map<string, string>();
+
+export function clearTypeTreeOptionsCache() {
+    typeTreeOptionsCache.clear();
+}
+
 function renderTypeTreeOptionsHtml(tree: ExpenseTypeTreeNode[], selectedId: string): string {
+    const cacheKey = `${selectedId || ''}_${(tree && tree.length) || 0}`;
+    if (typeTreeOptionsCache.has(cacheKey)) {
+        return typeTreeOptionsCache.get(cacheKey)!;
+    }
+
     const isUnselected = !selectedId || selectedId === 'UNIDENTIFIED';
     const unselectedHtml = isUnselected ? `<option value="" disabled selected>-- 请选择费用类型 --</option>` : '';
 
     if (!tree || tree.length === 0) {
         // 基于系统元数据兜底 (零延迟秒级响应)
-        return unselectedHtml + `
+        const fallbackRes = unselectedHtml + `
             <optgroup label="差旅费">
                 <option value="0356c4cef03345af7f1906ec05cc0000" data-name="出租车（taxi）" ${selectedId === '0356c4cef03345af7f1906ec05cc0000' ? 'selected' : ''}>出租车（taxi）</option>
                 <option value="0356c4e2b72de1653e55bb00bc610001" data-name="住宿费（宿泊代）" ${selectedId === '0356c4e2b72de1653e55bb00bc610001' ? 'selected' : ''}>住宿费（宿泊代）</option>
@@ -2229,6 +2419,8 @@ function renderTypeTreeOptionsHtml(tree: ExpenseTypeTreeNode[], selectedId: stri
                 <option value="0356c583e17de1653e55bb00bc610000" data-name="其他费用" ${selectedId === '0356c583e17de1653e55bb00bc610000' ? 'selected' : ''}>其他费用</option>
             </optgroup>
         `;
+        typeTreeOptionsCache.set(cacheKey, fallbackRes);
+        return fallbackRes;
     }
 
     const treeOptions = tree.map(cat => {
@@ -2243,7 +2435,9 @@ function renderTypeTreeOptionsHtml(tree: ExpenseTypeTreeNode[], selectedId: stri
         return `<optgroup label="${cat.name}">${options}</optgroup>`;
     }).join('');
 
-    return unselectedHtml + treeOptions;
+    const result = unselectedHtml + treeOptions;
+    typeTreeOptionsCache.set(cacheKey, result);
+    return result;
 }
 
 function renderDynamicFieldsCardHtml(): string {
@@ -3132,6 +3326,12 @@ function renderAssistantChat(container: HTMLElement) {
             onClose: () => {
                 closeAiPanel(container);
             },
+            onOpenSettings: () => {
+                openWebMcpSettingsModal((savedCfg) => {
+                    modalState.selectedModel = savedCfg.model;
+                    renderAssistantChat(container);
+                });
+            },
             skills: AI_SKILLS,
             activeSkillId: modalState.activeSkillId,
             onDismissSkill: () => {
@@ -3143,9 +3343,13 @@ function renderAssistantChat(container: HTMLElement) {
             },
             selectedModel: modalState.selectedModel,
             onSelectModel: (model: string) => {
-                modalState.selectedModel = model as any;
+                modalState.selectedModel = model;
+                const cfg = getLlmConfig();
+                cfg.model = model;
+                saveLlmConfig(cfg);
                 renderAssistantChat(container);
-            }
+            },
+            llmConfig: getLlmConfig()
         })
     );
 }
@@ -3463,19 +3667,20 @@ function openRowDynamicModal(recordId: string, container: HTMLElement) {
  * 渲染单笔费用记录（含发票明细行）的 HTML 结构
  */
 function renderGroupRowsHtml(group: ExpenseRecordGroup): string {
+    const isReimbursed = normalizeExpenseStatus(group.status) === '已报销';
     const isSelected = modalState.selectedRecordIds.has(group.expenseRecordId);
-    const isDescChanged = group.newDescription !== undefined && group.newDescription !== group.description;
-    const isDateChanged = group.newBusinessDate !== undefined && group.newBusinessDate !== group.businessDate;
-    const isTypeChanged = Boolean(group.newExpenseTypeId && group.newExpenseTypeId !== group.expenseTypeId);
-    const isAiDateInferred = Boolean(group.inferredFields?.['businessDate']);
+    const isDescChanged = !isReimbursed && group.newDescription !== undefined && group.newDescription !== group.description;
+    const isDateChanged = !isReimbursed && group.newBusinessDate !== undefined && group.newBusinessDate !== group.businessDate;
+    const isTypeChanged = !isReimbursed && Boolean(group.newExpenseTypeId && group.newExpenseTypeId !== group.expenseTypeId);
+    const isAiDateInferred = !isReimbursed && Boolean(group.inferredFields?.['businessDate']);
     const flow = getGroupBillFlow(group);
 
     const saveError = modalState.saveErrors ? modalState.saveErrors.get(group.expenseRecordId) : undefined;
     const isSaveError = Boolean(saveError);
 
-    // 智能错配检测
+    // 智能错配检测 (已报销记录免除错配提示)
     const tripIntervals = modalState.tripPlans.map(t => ({ tripNo: t.tripNo, destination: t.destination, start: t.startDate, end: t.endDate }));
-    const misclass = checkTaxiMisclassification(group, tripIntervals);
+    const misclass = isReimbursed ? { hasMisclass: false } : checkTaxiMisclassification(group, tripIntervals);
     let misclassHtml = '';
     if (misclass.hasMisclass) {
         const isToTripTaxi = misclass.suggestedTypeId === '0356c4cef03345af7f1906ec05cc0000';
@@ -3487,11 +3692,15 @@ function renderGroupRowsHtml(group: ExpenseRecordGroup): string {
     const span = Math.max(1, invList.length);
     const inv0 = invList[0];
 
+    const isActive = modalState.activeRecordId === group.expenseRecordId;
+    const currentTypeId = group.newExpenseTypeId || group.expenseTypeId || '';
+    const currentTypeName = group.newExpenseTypeName || group.expenseTypeName || '请选择费用类型';
+
     let rowsHtml = `
-        <tr class="${isSelected ? 'is-selected' : ''} ${isSaveError ? 'is-save-error' : ''} yn-bem-group-first yn-bem-data-row" data-recordid="${group.expenseRecordId}">
+        <tr class="${isSelected ? 'is-selected' : ''} ${isActive ? 'is-active-row' : ''} ${isSaveError ? 'is-save-error' : ''} yn-bem-group-first yn-bem-data-row ${isReimbursed ? 'yn-bem-row-reimbursed' : ''}" data-recordid="${group.expenseRecordId}">
             <!-- 费用主体聚合列 1: 复选框 -->
             <td class="yn-bem-col-sticky-cb yn-bem-group-cell" rowspan="${span}">
-                <input type="checkbox" class="yn-bem-record-cb" data-recordid="${group.expenseRecordId}" ${isSelected ? 'checked' : ''} />
+                <input type="checkbox" class="yn-bem-record-cb" data-recordid="${group.expenseRecordId}" ${isSelected ? 'checked' : ''} ${isReimbursed ? 'disabled title="该笔费用已报销归档，无需再次提交保存"' : ''} />
                 ${isSaveError ? `<span class="yn-bem-save-error-badge" title="${escapeHtml(saveError || '')}">❌ 失败</span>` : ''}
             </td>
 
@@ -3506,22 +3715,24 @@ function renderGroupRowsHtml(group: ExpenseRecordGroup): string {
                     <input type="date" class="yn-bem-cell-date-input ${isAiDateInferred ? 'is-ai-inferred' : (isDateChanged ? 'has-changed' : '')}"
                            data-recordid="${group.expenseRecordId}"
                            value="${group.newBusinessDate || group.businessDate || ''}"
-                           title="${isAiDateInferred ? `✨ AI已自动同步为实际入住日期 (原开票日: ${group.businessDate})` : (isDateChanged ? `业务日期已修改 (原业务日期: ${group.businessDate})` : '点击直接修改业务日期')}" />
+                           ${isReimbursed ? 'readonly disabled' : ''}
+                           title="${isReimbursed ? '该笔费用已报销归档，业务日期仅供查阅' : (isAiDateInferred ? `✨ AI已自动同步为实际入住日期 (原开票日: ${group.businessDate})` : (isDateChanged ? `业务日期已修改 (原业务日期: ${group.businessDate})` : '点击直接修改业务日期'))}" />
                     ${isAiDateInferred ? `<span class="yn-bem-ai-sparkle-dot" title="✨ AI已自动同步为实际入住日 (原开票日: ${group.businessDate})">✨</span>` : ''}
                 </div>
             </td>
 
-            <!-- 费用主体聚合列 4: 费用类型 (就地直接修改下拉 + 专属字段微按钮 + 流向 Tag + 错配纠错) -->
+            <!-- 费用主体聚合列 4: 费用类型 (就地直接修改下拉 + 专属字段微按钮 + 流向 Tag + 错配纠错，按需懒加载完整类型树) -->
             <td class="yn-bem-group-cell yn-bem-cell-interactive" rowspan="${span}">
                 <div class="yn-bem-cell-type-wrapper">
                     <div style="display:flex; align-items:center; gap:4px;">
                         <select class="yn-bem-cell-type-select ${isTypeChanged ? 'has-type-changed' : ''}"
                                 data-recordid="${group.expenseRecordId}"
-                                title="点击直接修改此笔费用的报销类型">
-                            ${renderTypeTreeOptionsHtml(modalState.expenseTypeTree, group.newExpenseTypeId || group.expenseTypeId)}
+                                ${isReimbursed ? 'disabled' : ''}
+                                title="${isReimbursed ? '该笔费用已报销归档，报销类型仅供查阅' : '点击直接修改此笔费用的报销类型'}">
+                            <option value="${escapeHtml(currentTypeId)}" selected>${escapeHtml(currentTypeName)}</option>
                         </select>
-                        <span class="yn-bem-status-tag ${group.status === '报销中' ? 'is-reimbursing' : (group.status === '已报销' ? 'is-reimbursed' : 'is-no-reimburse')}" title="当前报销状态: ${escapeHtml(group.status || '未报销')}">
-                            ${escapeHtml(group.status || '未报销')}
+                        <span class="yn-bem-status-tag ${normalizeExpenseStatus(group.status) === '报销中' ? 'is-reimbursing' : (normalizeExpenseStatus(group.status) === '已报销' ? 'is-reimbursed' : 'is-no-reimburse')}" title="当前报销状态: ${escapeHtml(normalizeExpenseStatus(group.status))}">
+                            ${escapeHtml(normalizeExpenseStatus(group.status))}
                         </span>
                         <span class="yn-bem-tag-${flow.toLowerCase()}" style="font-size:10px; padding:1px 4px; border-radius:3px; white-space:nowrap;">
                             ${flow === 'BC' ? '差旅·BC' : '经费·BJ'}
@@ -3544,7 +3755,8 @@ function renderGroupRowsHtml(group: ExpenseRecordGroup): string {
                 <input type="text" class="yn-bem-desc-input ${isDescChanged ? 'has-changed' : ''} ${isSaveError ? 'has-save-error' : ''}"
                        data-recordid="${group.expenseRecordId}"
                        value="${escapeHtml(group.newDescription !== undefined ? group.newDescription : group.description)}"
-                       placeholder="输入或修改费用说明..." title="直接就地编辑费用说明" />
+                       ${isReimbursed ? 'readonly' : ''}
+                       placeholder="输入或修改费用说明..." title="${isReimbursed ? '该笔费用已报销归档，说明仅供查阅' : '直接就地编辑费用说明'}" />
                 ${isSaveError ? `<div class="yn-bem-row-error-hint" title="${escapeHtml(saveError || '')}">❌ ${escapeHtml(saveError || '')}</div>` : ''}
             </td>
 
@@ -3566,7 +3778,7 @@ function renderGroupRowsHtml(group: ExpenseRecordGroup): string {
         for (let k = 1; k < invList.length; k++) {
             const invK = invList[k];
             rowsHtml += `
-                <tr class="${isSelected ? 'is-selected' : ''} ${isSaveError ? 'is-save-error' : ''} yn-bem-data-row" data-recordid="${group.expenseRecordId}">
+                <tr class="${isSelected ? 'is-selected' : ''} ${isActive ? 'is-active-row' : ''} ${isSaveError ? 'is-save-error' : ''} yn-bem-data-row" data-recordid="${group.expenseRecordId}">
                     ${renderInvoiceDetailCells(invK, group.invoiceCount, group)}
                 </tr>
             `;
@@ -3576,80 +3788,108 @@ function renderGroupRowsHtml(group: ExpenseRecordGroup): string {
     return rowsHtml;
 }
 
-/**
- * 渲染聚合多行明细表格 (Vercel Clean Table & Tabular Figures，多级分组与折叠架构)
- */
-function renderTableHtml(): string {
-    const filteredGroups = getFilteredGroups(modalState);
-    const selectedInFiltered = filteredGroups.filter(g =>
-        modalState.selectedRecordIds.has(g.expenseRecordId)
-    );
-    const isAllChecked = filteredGroups.length > 0 && selectedInFiltered.length === filteredGroups.length;
-    const activeCols = COLUMN_DEFINITIONS;
-    const totalColSpan = activeCols.length + 1;
+const getColumnCategoryPill = (key: string): string => {
+    if (['dynFrom', 'dynTo', 'dynTransitNo', 'dynStartDate', 'dynEndDate'].includes(key)) {
+        return `<span class="yn-bem-th-cat-pill yn-th-cat-transit" title="差旅交通专属必填">交通</span>`;
+    }
+    if (['dynCheckIn', 'dynCheckOut', 'dynCity', 'dynCityType', 'dynHotel', 'dynRoomNum', 'dynOverStandard'].includes(key)) {
+        return `<span class="yn-bem-th-cat-pill yn-th-cat-hotel" title="住宿费专属必填">住宿</span>`;
+    }
+    if (['dynAddrFrom', 'dynAddrTo'].includes(key)) {
+        return `<span class="yn-bem-th-cat-pill yn-th-cat-taxi" title="出租车专属必填">打车</span>`;
+    }
+    if (key === 'dynBillMonth') {
+        return `<span class="yn-bem-th-cat-pill yn-th-cat-mobile" title="通信费专属必填">通信</span>`;
+    }
+    if (key.startsWith('invoice') || ['totalAmount', 'departureTime', 'timeGetOff', 'stationGetOn', 'stationGetOff', 'salesName', 'fileName', 'remarks', 'reconciliationNote'].includes(key)) {
+        return `<span class="yn-bem-th-cat-pill yn-th-cat-invoice" title="原始发票票面明细">发票</span>`;
+    }
+    if (['earliestInvoiceDate', 'businessDate', 'expenseTypeName', 'expenseAmount', 'description', 'invoiceCount'].includes(key)) {
+        return `<span class="yn-bem-th-cat-pill yn-th-cat-base" title="费用记录基础属性">基础</span>`;
+    }
+    return '';
+};
 
-    const getColumnCategoryPill = (key: string): string => {
-        if (['dynFrom', 'dynTo', 'dynTransitNo', 'dynStartDate', 'dynEndDate'].includes(key)) {
-            return `<span class="yn-bem-th-cat-pill yn-th-cat-transit" title="差旅交通专属必填">交通</span>`;
-        }
-        if (['dynCheckIn', 'dynCheckOut', 'dynCity', 'dynCityType', 'dynHotel', 'dynRoomNum', 'dynOverStandard'].includes(key)) {
-            return `<span class="yn-bem-th-cat-pill yn-th-cat-hotel" title="住宿费专属必填">住宿</span>`;
-        }
-        if (['dynAddrFrom', 'dynAddrTo'].includes(key)) {
-            return `<span class="yn-bem-th-cat-pill yn-th-cat-taxi" title="出租车专属必填">打车</span>`;
-        }
-        if (key === 'dynBillMonth') {
-            return `<span class="yn-bem-th-cat-pill yn-th-cat-mobile" title="通信费专属必填">通信</span>`;
-        }
-        if (key.startsWith('invoice') || ['totalAmount', 'departureTime', 'timeGetOff', 'stationGetOn', 'stationGetOff', 'salesName', 'fileName', 'remarks', 'reconciliationNote'].includes(key)) {
-            return `<span class="yn-bem-th-cat-pill yn-th-cat-invoice" title="原始发票票面明细">发票</span>`;
-        }
-        if (['earliestInvoiceDate', 'businessDate', 'expenseTypeName', 'expenseAmount', 'description', 'invoiceCount'].includes(key)) {
-            return `<span class="yn-bem-th-cat-pill yn-th-cat-base" title="费用记录基础属性">基础</span>`;
-        }
-        return '';
-    };
-
-    const colGroupHtml = `
+function renderTableColGroupHtml(activeCols: ColumnDef[]): string {
+    return `
         <colgroup>
             <col style="width: 34px; min-width: 34px;" />
             ${activeCols.map(col => `<col style="width: ${col.width || '80px'}; min-width: ${col.width || '80px'};" />`).join('')}
         </colgroup>
     `;
+}
 
-    const renderThCellHtml = (col: ColumnDef): string => {
-        const isSorted = modalState.sortKey === col.key;
-        const arrow = isSorted ? (modalState.sortAsc ? ' ↑' : ' ↓') : '';
-        const isFiltered = Boolean(modalState.columnFilters[col.key] && modalState.columnFilters[col.key].length > 0);
-        const isPopoverOpen = modalState.activePopoverCol === col.key;
-        const stickyClass = col.sticky === 'date' ? 'yn-bem-col-sticky-date' : '';
-        const alignStyle = col.align === 'right' ? 'text-align:right;' : (col.align === 'center' ? 'text-align:center;' : '');
-        const justifyStyle = col.align === 'right' ? 'justify-content:flex-end;' : (col.align === 'center' ? 'justify-content:center;' : '');
-        const catPill = getColumnCategoryPill(col.key);
+function renderThCellHtml(col: ColumnDef): string {
+    const isSorted = modalState.sortKey === col.key;
+    const arrow = isSorted ? (modalState.sortAsc ? ' ↑' : ' ↓') : '';
+    const isFiltered = Boolean(modalState.columnFilters[col.key] && modalState.columnFilters[col.key].length > 0);
+    const isPopoverOpen = modalState.activePopoverCol === col.key;
+    const stickyClass = col.sticky === 'date' ? 'yn-bem-col-sticky-date' : '';
+    const popoverOpenClass = isPopoverOpen ? 'yn-bem-th-popover-open' : '';
+    const alignStyle = col.align === 'right' ? 'text-align:right;' : (col.align === 'center' ? 'text-align:center;' : '');
+    const justifyStyle = col.align === 'right' ? 'justify-content:flex-end;' : (col.align === 'center' ? 'justify-content:center;' : '');
+    const catPill = getColumnCategoryPill(col.key);
 
-        return `
-            <th class="${stickyClass} ${isSorted ? 'sorted-active' : ''}" style="${alignStyle} ${col.width ? `min-width:${col.width}; width:${col.width};` : ''}">
-                <div class="yn-bem-th-cell-stack">
-                    <div class="yn-bem-th-top-row">
-                        ${catPill || '<span class="yn-bem-th-pill-spacer"></span>'}
-                        ${col.key !== 'actions' && col.key !== 'routeDetails' ? `
-                            <button type="button" class="yn-bem-th-filter-trigger ${isFiltered ? 'is-active' : ''}" data-filter-col="${col.key}" title="按 ${col.label} 筛选">▾</button>
-                            ${isPopoverOpen ? renderColumnFilterPopoverHtml(col.key) : ''}
-                        ` : ''}
-                    </div>
-                    <div class="yn-bem-th-bottom-row" style="${justifyStyle}">
-                        <span class="yn-bem-th-title" data-sort="${col.key}" title="${col.label}">
-                            <span class="yn-bem-th-label-text">${col.label}</span>
-                            ${arrow ? `<span class="yn-bem-th-sort-arrow">${arrow}</span>` : ''}
-                        </span>
-                    </div>
+    return `
+        <th class="${stickyClass} ${isSorted ? 'sorted-active' : ''} ${popoverOpenClass}" style="${alignStyle} ${col.width ? `min-width:${col.width}; width:${col.width};` : ''}">
+            <div class="yn-bem-th-cell-stack">
+                <div class="yn-bem-th-top-row">
+                    ${catPill || '<span class="yn-bem-th-pill-spacer"></span>'}
+                    ${col.key !== 'actions' && col.key !== 'routeDetails' ? `
+                        <button type="button" class="yn-bem-th-filter-trigger ${isFiltered ? 'is-active' : ''}" data-filter-col="${col.key}" title="按 ${col.label} 筛选">▾</button>
+                        ${isPopoverOpen ? renderColumnFilterPopoverHtml(col.key) : ''}
+                    ` : ''}
                 </div>
-            </th>
-        `;
-    };
+                <div class="yn-bem-th-bottom-row" style="${justifyStyle}">
+                    <span class="yn-bem-th-title" data-sort="${col.key}" title="${col.label}">
+                        <span class="yn-bem-th-label-text">${col.label}</span>
+                        ${arrow ? `<span class="yn-bem-th-sort-arrow">${arrow}</span>` : ''}
+                    </span>
+                </div>
+            </div>
+        </th>
+    `;
+}
 
-    if (filteredGroups.length === 0) {
-        return `
+function renderTableTheadHtml(activeCols: ColumnDef[], isAllChecked: boolean): string {
+    return `
+        <thead>
+            <tr>
+                <th class="yn-bem-col-sticky-cb">
+                    <input type="checkbox" id="yn-bem-th-select-all" ${isAllChecked ? 'checked' : ''} />
+                </th>
+                ${activeCols.map(col => renderThCellHtml(col)).join('')}
+            </tr>
+        </thead>
+    `;
+}
+
+function renderSectionHeaderRowHtml(sec: GroupRenderSection, totalColSpan: number): string {
+    const isCollapsed = modalState.collapsedGroupKeys.has(sec.key);
+    const selectedCount = sec.items.filter((g: any) => modalState.selectedRecordIds.has(g.expenseRecordId)).length;
+    const totalCount = sec.items.length;
+    const isChecked = totalCount > 0 && selectedCount === totalCount;
+    const isIndeterminate = selectedCount > 0 && selectedCount < totalCount;
+
+    return `
+        <tr class="yn-bem-group-header-row ${isCollapsed ? 'is-collapsed' : ''}" data-group-key="${sec.key}">
+            <td colspan="${totalColSpan}" class="yn-bem-group-header-cell">
+                <div class="yn-bem-group-header-inner">
+                    <button type="button" class="yn-bem-group-toggle-btn ${isCollapsed ? 'is-collapsed' : ''}" data-group-key="${sec.key}" title="${isCollapsed ? '点击展开' : '点击折叠'}">
+                        ${isCollapsed ? '▶' : '▼'}
+                    </button>
+                    <input type="checkbox" class="yn-bem-group-cb" data-group-key="${sec.key}" ${isChecked ? 'checked' : ''} ${isIndeterminate ? 'data-indeterminate="true"' : ''} title="全选/反选本分组" />
+                    <span class="yn-bem-group-title">${sec.title}</span>
+                    <span class="yn-bem-group-flow-tag yn-bem-tag-${sec.flow.toLowerCase()}">${sec.flowTag}</span>
+                    <span class="yn-bem-group-summary-badge">${sec.items.length} 笔费用 (${sec.totalInvoices} 张发票) · 小计 ¥${sec.totalAmount.toFixed(2)}</span>
+                </div>
+            </td>
+        </tr>
+    `;
+}
+
+function renderTableEmptyStateHtml(totalColSpan: number, colGroupHtml: string, theadHtml: string): string {
+    return `
         <table class="yn-bem-table">
             ${colGroupHtml}
             <thead>
@@ -3657,7 +3897,7 @@ function renderTableHtml(): string {
                     <th class="yn-bem-col-sticky-cb">
                         <input type="checkbox" id="yn-bem-th-select-all" disabled />
                     </th>
-                    ${activeCols.map(col => renderThCellHtml(col)).join('')}
+                    ${COLUMN_DEFINITIONS.map(col => renderThCellHtml(col)).join('')}
                 </tr>
             </thead>
             <tbody>
@@ -3672,59 +3912,259 @@ function renderTableHtml(): string {
                 </tr>
             </tbody>
         </table>
-        `;
+    `;
+}
+
+/**
+ * 渲染聚合多行明细表格初始容器 (Vercel Clean Table & Tabular Figures，虚拟视口容器)
+ */
+function renderTableHtml(): string {
+    const filteredGroups = getFilteredGroups(modalState);
+    const selectedInFiltered = filteredGroups.filter(g =>
+        modalState.selectedRecordIds.has(g.expenseRecordId)
+    );
+    const isAllChecked = filteredGroups.length > 0 && selectedInFiltered.length === filteredGroups.length;
+    const activeCols = COLUMN_DEFINITIONS;
+    const totalColSpan = activeCols.length + 1;
+    const colGroupHtml = renderTableColGroupHtml(activeCols);
+    const theadHtml = renderTableTheadHtml(activeCols, isAllChecked);
+
+    if (filteredGroups.length === 0) {
+        return renderTableEmptyStateHtml(totalColSpan, colGroupHtml, theadHtml);
     }
 
     return `
-        <table class="yn-bem-table">
+        <table class="yn-bem-table" id="yn-bem-main-table">
             ${colGroupHtml}
-            <thead>
-                <tr>
-                    <th class="yn-bem-col-sticky-cb">
-                        <input type="checkbox" id="yn-bem-th-select-all" ${isAllChecked ? 'checked' : ''} />
-                    </th>
-                    ${activeCols.map(col => renderThCellHtml(col)).join('')}
-                </tr>
-            </thead>
-            ${(() => {
-                if (modalState.groupingMode === 'NONE') {
-                    return `
-                        <tbody>
-                            ${filteredGroups.map(group => renderGroupRowsHtml(group)).join('')}
-                        </tbody>
-                    `;
-                }
-
-                const sections = groupFilteredExpenses(filteredGroups, modalState.groupingMode, modalState.tripPlans);
-                return sections.map(sec => {
-                    const isCollapsed = modalState.collapsedGroupKeys.has(sec.key);
-                    const selectedCount = sec.items.filter(g => modalState.selectedRecordIds.has(g.expenseRecordId)).length;
-                    const totalCount = sec.items.length;
-                    const isChecked = totalCount > 0 && selectedCount === totalCount;
-                    const isIndeterminate = selectedCount > 0 && selectedCount < totalCount;
-
-                    return `
-                        <tbody class="yn-bem-group-tbody ${isCollapsed ? 'is-collapsed' : ''}" data-group-key="${sec.key}">
-                            <tr class="yn-bem-group-header-row" data-group-key="${sec.key}">
-                                <td colspan="${totalColSpan}" class="yn-bem-group-header-cell">
-                                    <div class="yn-bem-group-header-inner">
-                                        <button type="button" class="yn-bem-group-toggle-btn" data-group-key="${sec.key}" title="${isCollapsed ? '点击展开' : '点击折叠'}">
-                                            ${isCollapsed ? '▶' : '▼'}
-                                        </button>
-                                        <input type="checkbox" class="yn-bem-group-cb" data-group-key="${sec.key}" ${isChecked ? 'checked' : ''} ${isIndeterminate ? 'data-indeterminate="true"' : ''} title="全选/反选本分组" />
-                                        <span class="yn-bem-group-title">${sec.title}</span>
-                                        <span class="yn-bem-group-flow-tag yn-bem-tag-${sec.flow.toLowerCase()}">${sec.flowTag}</span>
-                                        <span class="yn-bem-group-summary-badge">${sec.items.length} 笔费用 (${sec.totalInvoices} 张发票) · 小计 ¥${sec.totalAmount.toFixed(2)}</span>
-                                    </div>
-                                </td>
-                            </tr>
-                            ${sec.items.map(group => renderGroupRowsHtml(group)).join('')}
-                        </tbody>
-                    `;
-                }).join('');
-            })()}
+            ${theadHtml}
+            <tbody id="yn-bem-virtual-tbody" class="yn-bem-virtual-tbody"></tbody>
         </table>
     `;
+}
+
+let currentTableRenderId = 0;
+
+export function abortPendingTableRenders() {
+    currentTableRenderId++;
+}
+
+/**
+ * 依据当前分组模式与折叠状态，将过滤后的费用数据线性映射为扁平轻量级的 RenderUnits 数组
+ */
+function buildVirtualRenderUnits(): { units: VirtualRenderUnit[]; offsets: number[]; totalHeight: number } {
+    const filteredGroups = getFilteredGroups(modalState);
+    const units: VirtualRenderUnit[] = [];
+
+    if (filteredGroups.length === 0) {
+        return { units: [], offsets: [0], totalHeight: 0 };
+    }
+
+    if (modalState.groupingMode === 'NONE') {
+        for (const g of filteredGroups) {
+            const rowHeight = 38 + Math.max(0, g.invoices.length - 1) * 34;
+            units.push({
+                type: 'GROUP_ROW',
+                id: `grp_${g.expenseRecordId}`,
+                height: rowHeight,
+                group: g
+            });
+        }
+    } else {
+        const sections = groupFilteredExpenses(filteredGroups, modalState.groupingMode, modalState.tripPlans);
+        for (const sec of sections) {
+            units.push({
+                type: 'SECTION_HEADER',
+                id: `sec_${sec.key}`,
+                height: 38,
+                section: sec
+            });
+
+            if (!modalState.collapsedGroupKeys.has(sec.key)) {
+                for (const g of sec.items) {
+                    const rowHeight = 38 + Math.max(0, g.invoices.length - 1) * 34;
+                    units.push({
+                        type: 'GROUP_ROW',
+                        id: `grp_${g.expenseRecordId}`,
+                        height: rowHeight,
+                        group: g
+                    });
+                }
+            }
+        }
+    }
+
+    const offsets: number[] = new Array(units.length + 1);
+    offsets[0] = 0;
+    for (let i = 0; i < units.length; i++) {
+        offsets[i + 1] = offsets[i] + units[i].height;
+    }
+    const totalHeight = offsets[units.length];
+
+    return { units, offsets, totalHeight };
+}
+
+function binarySearchOffset(offsets: number[], target: number): number {
+    let low = 0;
+    let high = offsets.length - 1;
+    while (low <= high) {
+        const mid = (low + high) >> 1;
+        if (offsets[mid] < target) {
+            low = mid + 1;
+        } else {
+            high = mid - 1;
+        }
+    }
+    return Math.max(0, low - 1);
+}
+
+function calculateVirtualSlice(
+    offsets: number[],
+    totalUnits: number,
+    scrollTop: number,
+    viewportHeight: number
+): { startIndex: number; endIndex: number } {
+    if (totalUnits === 0) {
+        return { startIndex: 0, endIndex: 0 };
+    }
+
+    const OVERSCAN_PX = 350; // 上下缓冲 350px (~8行)，保证高速滚动零白屏
+    const minVisibleY = Math.max(0, scrollTop - OVERSCAN_PX);
+    const maxVisibleY = scrollTop + viewportHeight + OVERSCAN_PX;
+
+    let startIndex = binarySearchOffset(offsets, minVisibleY);
+    let endIndex = binarySearchOffset(offsets, maxVisibleY) + 1;
+
+    startIndex = Math.max(0, Math.min(startIndex, totalUnits));
+    endIndex = Math.max(startIndex, Math.min(endIndex, totalUnits));
+
+    return { startIndex, endIndex };
+}
+
+let cachedViewportHeight = 0;
+
+/**
+ * 局部切片渲染器 (Window Slice Renderer)
+ * 仅向 #yn-bem-virtual-tbody 注入首尾 spacer 及可视区 ~25 行，耗时 < 3ms
+ */
+function updateVirtualSlice(container: HTMLElement, wrap: HTMLElement, force: boolean = false) {
+    const tbody = wrap.querySelector<HTMLElement>('#yn-bem-virtual-tbody');
+    if (!tbody) return;
+
+    const scrollTop = wrap.scrollTop;
+    if (!cachedViewportHeight) {
+        cachedViewportHeight = wrap.clientHeight || (window.innerHeight - 220);
+    }
+    const viewportHeight = cachedViewportHeight;
+    const { startIndex, endIndex } = calculateVirtualSlice(
+        virtualTableState.unitOffsets,
+        virtualTableState.renderUnits.length,
+        scrollTop,
+        viewportHeight
+    );
+
+    if (!force && startIndex === virtualTableState.startIndex && endIndex === virtualTableState.endIndex) {
+        return;
+    }
+
+    virtualTableState.startIndex = startIndex;
+    virtualTableState.endIndex = endIndex;
+    virtualTableState.scrollTop = scrollTop;
+
+    const totalColSpan = COLUMN_DEFINITIONS.length + 1;
+    const topSpacerHeight = virtualTableState.unitOffsets[startIndex] || 0;
+    const bottomSpacerHeight = Math.max(0, virtualTableState.totalHeight - (virtualTableState.unitOffsets[endIndex] || 0));
+
+    const visibleUnits = virtualTableState.renderUnits.slice(startIndex, endIndex);
+    const rowsHtml = visibleUnits.map(unit => {
+        if (unit.type === 'SECTION_HEADER' && unit.section) {
+            return renderSectionHeaderRowHtml(unit.section, totalColSpan);
+        } else if (unit.type === 'GROUP_ROW' && unit.group) {
+            return renderGroupRowsHtml(unit.group);
+        }
+        return '';
+    }).join('');
+
+    tbody.innerHTML = `
+        <tr class="yn-bem-vscroll-spacer" style="height:${topSpacerHeight}px;"><td colspan="${totalColSpan}"></td></tr>
+        ${rowsHtml}
+        <tr class="yn-bem-vscroll-spacer" style="height:${bottomSpacerHeight}px;"><td colspan="${totalColSpan}"></td></tr>
+    `;
+
+    updateAllCheckboxStates(container);
+}
+
+let isScrollTicking = false;
+
+function bindVirtualScrollListener(container: HTMLElement, wrap: HTMLElement) {
+    if ((wrap as any).__virtualScrollBound) return;
+    (wrap as any).__virtualScrollBound = true;
+
+    cachedViewportHeight = wrap.clientHeight || (window.innerHeight - 220);
+
+    window.addEventListener('resize', () => {
+        cachedViewportHeight = wrap.clientHeight || (window.innerHeight - 220);
+        updateVirtualSlice(container, wrap, true);
+    }, { passive: true });
+
+    wrap.addEventListener('scroll', () => {
+        if (!isScrollTicking) {
+            isScrollTicking = true;
+            requestAnimationFrame(() => {
+                isScrollTicking = false;
+                updateVirtualSlice(container, wrap);
+            });
+        }
+    }, { passive: true });
+}
+
+/**
+ * 零依赖原生视口虚拟表格装配器 (Native Virtual Table Assembler - INP 终极优化核心)
+ * 彻底终结 20,000+ DOM 节点与 200+ 粘性列导致的 17.4s Commit / 11.3s Layerize 性能崩塌
+ */
+function renderVirtualTable(container: HTMLElement, wrap: HTMLElement) {
+    const renderId = ++currentTableRenderId;
+    const filteredGroups = getFilteredGroups(modalState);
+    const selectedInFiltered = filteredGroups.filter(g =>
+        modalState.selectedRecordIds.has(g.expenseRecordId)
+    );
+    const isAllChecked = filteredGroups.length > 0 && selectedInFiltered.length === filteredGroups.length;
+    const activeCols = COLUMN_DEFINITIONS;
+    const totalColSpan = activeCols.length + 1;
+    const colGroupHtml = renderTableColGroupHtml(activeCols);
+    const theadHtml = renderTableTheadHtml(activeCols, isAllChecked);
+
+    if (filteredGroups.length === 0) {
+        wrap.innerHTML = renderTableEmptyStateHtml(totalColSpan, colGroupHtml, theadHtml);
+        updateAllCheckboxStates(container);
+        return;
+    }
+
+    // 重构 RenderUnits 线性映射与前缀高度和
+    const { units, offsets, totalHeight } = buildVirtualRenderUnits();
+    virtualTableState.renderUnits = units;
+    virtualTableState.unitOffsets = offsets;
+    virtualTableState.totalHeight = totalHeight;
+
+    let table = wrap.querySelector<HTMLElement>('.yn-bem-table');
+    let tbody = wrap.querySelector<HTMLElement>('#yn-bem-virtual-tbody');
+
+    if (!table || !tbody) {
+        wrap.innerHTML = `
+            <table class="yn-bem-table" id="yn-bem-main-table">
+                ${colGroupHtml}
+                ${theadHtml}
+                <tbody id="yn-bem-virtual-tbody" class="yn-bem-virtual-tbody"></tbody>
+            </table>
+        `;
+    } else {
+        const thCb = table.querySelector<HTMLInputElement>('#yn-bem-th-select-all');
+        if (thCb) {
+            thCb.checked = isAllChecked;
+        }
+    }
+
+    bindVirtualScrollListener(container, wrap);
+    updateVirtualSlice(container, wrap, true);
 }
 
 /**
@@ -3735,7 +4175,22 @@ function renderInvoiceDetailCells(inv: ExpenseInvoiceSubItem, totalCount: number
 
     return `
         <td style="text-align:center; font-family:ui-monospace, monospace; font-size:11px; color:#737373;">${inv.invoiceIndex}/${totalCount}</td>
-        <td><span style="background:#f5f5f5; border:1px solid #eaeaea; padding:1px 5px; border-radius:3px; font-size:11px; color:#525252;">${inv.invoiceType || '-'}</span></td>
+        <td>
+            <div style="display:flex; align-items:center; gap:4px;">
+                <span style="background:#f5f5f5; border:1px solid #eaeaea; padding:1px 5px; border-radius:3px; font-size:11px; color:#525252; white-space:nowrap;">${inv.invoiceType || '-'}</span>
+                <button type="button" 
+                        class="yn-bem-invoice-photo-btn ${(inv.attachmentId || inv.rawAttachmentId || inv.invoiceDataId) ? 'has-attachment' : 'no-attachment'}" 
+                        data-attachment-id="${escapeHtml(inv.attachmentId || '')}"
+                        data-raw-attachment-id="${escapeHtml(inv.rawAttachmentId || inv.attachmentId || '')}"
+                        data-invoice-data-id="${escapeHtml(inv.invoiceDataId || '')}"
+                        data-invoice-no="${escapeHtml(inv.invoiceNo || '')}"
+                        data-invoice-type="${escapeHtml(inv.invoiceType || '')}"
+                        data-total-amount="${escapeHtml(String(inv.totalAmount || inv.amountTax || ''))}"
+                        title="${(inv.attachmentId || inv.rawAttachmentId || inv.invoiceDataId) ? '悬浮预览发票照片 (默认显示 OCR 单票裁切特写)' : '暂无发票照片'}">
+                    🖼️
+                </button>
+            </div>
+        </td>
         <td style="font-family:ui-monospace, monospace; font-size:11px; color:#737373;">${inv.invoiceCode || '-'}</td>
         <td style="font-family:ui-monospace, monospace; font-size:11px; font-weight:500; color:#171717;">${inv.invoiceNo || '-'}</td>
         <td style="font-family:ui-monospace, monospace; font-variant-numeric:tabular-nums; font-weight:600; text-align:right; color:#171717;">¥${Number(inv.totalAmount || inv.amountTax || 0).toFixed(2)}</td>
@@ -3852,10 +4307,18 @@ function renderModalContent(container: HTMLElement, doc: Document) {
             <div class="yn-bem-ai-resizer" id="yn-bem-ai-resizer" title="左右拖动调整 AI 助手面板宽度"></div>
             <div class="yn-bem-ai-panel" id="yn-bem-ai-panel-react-root"></div>
         </div>
+
+        <!-- 7. 发票照片悬浮预览浮窗 (全局单例，智能防遮挡) -->
+        <div id="yn-bem-invoice-preview-popover" class="yn-bem-invoice-preview-popover" style="display:none;"></div>
     `;
 
     bindEvents(container, doc);
     updateFloatingIsland(container);
+
+    const wrap = container.querySelector<HTMLElement>('#yn-bem-table-wrap');
+    if (wrap) {
+        renderVirtualTable(container, wrap);
+    }
 }
 
 const ITINERARY_PROMPT_TEMPLATE = `请帮我将以下原始出差/行程信息整理为标准的精简 Markdown 表格，仅保留以下必要列（无需多余解释）：
@@ -5000,9 +5463,11 @@ async function handleAiInference(
     onProgress?: (status: string) => void
 ): Promise<string> {
     // 1. 获取推断目标行：有筛选时严格限定在筛选范围内；优先已勾选，若未勾选则以当前筛选视图全部行作为目标
-    const filtered = getFilteredGroups(modalState);
+    // 核心铁律：已报销记录严格只读，绝对不参与任何智能推断与字段改写
+    const filtered = getFilteredGroups(modalState).filter(g => normalizeExpenseStatus(g.status) !== '已报销');
     const isFiltering = filtered.length < modalState.groups.length;
     let targetGroups = modalState.groups.filter(g => {
+        if (normalizeExpenseStatus(g.status) === '已报销') return false;
         if (!modalState.selectedRecordIds.has(g.expenseRecordId)) return false;
         if (isFiltering && !filtered.some(f => f.expenseRecordId === g.expenseRecordId)) return false;
         return true;
@@ -5011,8 +5476,8 @@ async function handleAiInference(
     if (targetGroups.length === 0) {
         targetGroups = filtered;
         if (targetGroups.length === 0) {
-            showToast('warning', isFiltering ? '当前筛选视图中无任何费用记录可供推断' : '当前列表无任何费用记录可供推断');
-            return '当前筛选视图中无任何费用记录可供推断';
+            showToast('info', '当前视图中无可推断的未报销费用（已报销记录为只读归档状态）');
+            return '当前视图中无可推断的未报销费用';
         }
         targetGroups.forEach(g => modalState.selectedRecordIds.add(g.expenseRecordId));
     }
@@ -5303,6 +5768,7 @@ async function handleAiInference(
         // 第二层：若存在未识别类型或空缺专属必填字段，且配置了大模型 API，则启动深度推断
         const hasTransitOrHotel = modalState.groups.some(other => ['FLIGHT', 'TRAIN', 'HOTEL'].includes(getGroupCategory(other)));
         const groupsWithMissingFields = targetGroups.filter(g => {
+            if (normalizeExpenseStatus(g.status) === '已报销') return false;
             if (isUnknownTypeGroup(g)) return true; // 未识别类型记录必须启动推断
             const cat = getGroupCategory(g);
             const dyn = g.dynamicFields || {};
@@ -5436,15 +5902,19 @@ function updateAllCheckboxStates(container: HTMLElement): void {
         }
     });
 
-    // 2. 同步分组 Checkbox
+    // 2. 同步分组 Checkbox (数据层精准计算，无视非视口行卸载)
+    const sections = modalState.groupingMode === 'NONE'
+        ? []
+        : groupFilteredExpenses(filtered, modalState.groupingMode, modalState.tripPlans);
+    const sectionMap = new Map(sections.map(s => [s.key, s]));
+
     container.querySelectorAll<HTMLInputElement>('.yn-bem-group-cb').forEach(cb => {
         const groupKey = cb.dataset.groupKey;
         if (!groupKey) return;
-        const tbody = container.querySelector<HTMLElement>(`tbody[data-group-key="${groupKey}"]`);
-        if (!tbody) return;
-        const rowCbs = Array.from(tbody.querySelectorAll<HTMLInputElement>('.yn-bem-record-cb'));
-        const total = rowCbs.length;
-        const checkedCount = rowCbs.filter(c => c.checked).length;
+        const sec = sectionMap.get(groupKey);
+        if (!sec) return;
+        const total = sec.items.length;
+        const checkedCount = sec.items.filter(g => modalState.selectedRecordIds.has(g.expenseRecordId)).length;
         cb.checked = total > 0 && checkedCount === total;
         cb.indeterminate = checkedCount > 0 && checkedCount < total;
     });
@@ -5612,10 +6082,9 @@ function refreshTableView(container: HTMLElement, mode: RefreshMode = 'ROWS') {
     }
 
     // Default 'ROWS' mode:
-    const wrap = container.querySelector('#yn-bem-table-wrap');
+    const wrap = container.querySelector<HTMLElement>('#yn-bem-table-wrap');
     if (wrap) {
-        wrap.innerHTML = renderTableHtml();
-        updateAllCheckboxStates(container);
+        renderVirtualTable(container, wrap);
     }
     updateStatsAndFooter(container);
     updateAiContextPill(container);
@@ -6099,76 +6568,121 @@ function bindBatchSettingsEvents(container: HTMLElement) {
 }
 
 /**
- * 绑定 AI 侧边栏拖拽调整宽度把手
+ * 绑定 AI 侧边栏拖拽调整宽度把手 (遵循现代 IDE / 开发者工具侧边栏拖拽面板最佳实践)
  */
 function bindAiPanelResizer(container: HTMLElement) {
     const aiWrap = container.querySelector<HTMLElement>('#yn-bem-ai-panel-wrap');
     const resizer = container.querySelector<HTMLElement>('#yn-bem-ai-resizer');
-    if (resizer && aiWrap) {
-        let isResizing = false;
-        let rafId: number | null = null;
-        let pendingWidth: number | null = null;
+    if (!resizer || !aiWrap) return;
 
-        const onMouseDown = (e: MouseEvent) => {
+    let isResizing = false;
+    let startX = 0;
+    let startWidth = 0;
+    let rafId: number | null = null;
+    let pendingWidth: number | null = null;
+    let dragOverlay: HTMLElement | null = null;
+
+    const cleanup = () => {
+        isResizing = false;
+        if (dragOverlay && dragOverlay.parentNode) {
+            dragOverlay.parentNode.removeChild(dragOverlay);
+            dragOverlay = null;
+        }
+        if (rafId) {
+            cancelAnimationFrame(rafId);
+            rafId = null;
+        }
+        resizer.classList.remove('is-resizing');
+        aiWrap.classList.remove('is-resizing');
+        document.body.classList.remove('yn-resizing-active');
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+
+        window.removeEventListener('pointermove', onMove, true);
+        window.removeEventListener('pointerup', onEnd, true);
+        window.removeEventListener('pointercancel', onEnd, true);
+        window.removeEventListener('mousemove', onMove, true);
+        window.removeEventListener('mouseup', onEnd, true);
+        window.removeEventListener('blur', onEnd, true);
+    };
+
+    const onMove = (e: MouseEvent | PointerEvent) => {
+        if (!isResizing) return;
+        e.preventDefault();
+        e.stopPropagation();
+
+        const deltaX = startX - e.clientX; // 向左拖拽展开侧栏
+        const winWidth = window.innerWidth;
+        let newWidth = Math.round(startWidth + deltaX);
+        const minWidth = 360;
+        const maxWidth = Math.round(winWidth * 0.85);
+        if (newWidth < minWidth) newWidth = minWidth;
+        if (newWidth > maxWidth) newWidth = maxWidth;
+
+        pendingWidth = newWidth;
+        if (!rafId) {
+            rafId = requestAnimationFrame(() => {
+                if (pendingWidth !== null && aiWrap) {
+                    aiWrap.style.width = `${pendingWidth}px`;
+                    modalState.aiPanelWidth = pendingWidth;
+                }
+                rafId = null;
+            });
+        }
+    };
+
+    const onEnd = (e?: MouseEvent | PointerEvent) => {
+        if (!isResizing) return;
+        if (e) {
             e.preventDefault();
             e.stopPropagation();
-            isResizing = true;
-            resizer.classList.add('is-resizing');
-            aiWrap.classList.add('is-resizing');
-            document.body.classList.add('yn-resizing-active');
-            document.body.style.cursor = 'col-resize';
-            document.body.style.userSelect = 'none';
+        }
+        if (pendingWidth !== null && aiWrap) {
+            aiWrap.style.width = `${pendingWidth}px`;
+            modalState.aiPanelWidth = pendingWidth;
+        }
+        cleanup();
+        try {
+            localStorage.setItem('yn_fssc_ai_panel_width', String(modalState.aiPanelWidth));
+        } catch (err) {}
+    };
 
-            const onMouseMove = (moveEv: MouseEvent) => {
-                if (!isResizing) return;
-                const winWidth = window.innerWidth;
-                let newWidth = winWidth - moveEv.clientX;
-                const minWidth = 360;
-                const maxWidth = Math.round(winWidth * 0.85);
-                if (newWidth < minWidth) newWidth = minWidth;
-                if (newWidth > maxWidth) newWidth = maxWidth;
+    const onStartResize = (e: MouseEvent | PointerEvent) => {
+        if (e.button !== 0) return; // 仅响应鼠标左键或触控
+        e.preventDefault();
+        e.stopPropagation();
 
-                pendingWidth = newWidth;
-                if (!rafId) {
-                    rafId = requestAnimationFrame(() => {
-                        if (pendingWidth !== null && aiWrap) {
-                            aiWrap.style.width = `${pendingWidth}px`;
-                            modalState.aiPanelWidth = pendingWidth;
-                        }
-                        rafId = null;
-                    });
-                }
-            };
+        isResizing = true;
+        startX = e.clientX;
+        startWidth = aiWrap.getBoundingClientRect().width;
+        pendingWidth = startWidth;
 
-            const onMouseUp = () => {
-                if (isResizing) {
-                    isResizing = false;
-                    if (rafId) {
-                        cancelAnimationFrame(rafId);
-                        rafId = null;
-                    }
-                    if (pendingWidth !== null && aiWrap) {
-                        aiWrap.style.width = `${pendingWidth}px`;
-                        modalState.aiPanelWidth = pendingWidth;
-                    }
-                    resizer.classList.remove('is-resizing');
-                    aiWrap.classList.remove('is-resizing');
-                    document.body.classList.remove('yn-resizing-active');
-                    document.body.style.cursor = '';
-                    document.body.style.userSelect = '';
-                    try {
-                        localStorage.setItem('yn_fssc_ai_panel_width', String(modalState.aiPanelWidth));
-                    } catch (err) {}
-                }
-                window.removeEventListener('mousemove', onMouseMove);
-                window.removeEventListener('mouseup', onMouseUp);
-            };
+        resizer.classList.add('is-resizing');
+        aiWrap.classList.add('is-resizing');
+        document.body.classList.add('yn-resizing-active');
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
 
-            window.addEventListener('mousemove', onMouseMove, { passive: true });
-            window.addEventListener('mouseup', onMouseUp);
-        };
+        // 创建全屏透明拖拽遮罩，杜绝拖拽过程中鼠标移至下方表格、输入框、下拉框被截获或丢帧
+        dragOverlay = document.createElement('div');
+        dragOverlay.id = 'yn-resizer-drag-overlay';
+        dragOverlay.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:9999999;cursor:col-resize;user-select:none;-webkit-user-select:none;background:transparent;';
+        document.body.appendChild(dragOverlay);
 
-        resizer.addEventListener('mousedown', onMouseDown);
+        // 使用 capture: true 顶级捕获，确保无论是任何元素都无法阻止释放事件
+        window.addEventListener('pointermove', onMove, { capture: true, passive: false });
+        window.addEventListener('pointerup', onEnd, { capture: true });
+        window.addEventListener('pointercancel', onEnd, { capture: true });
+        window.addEventListener('mousemove', onMove, { capture: true, passive: false });
+        window.addEventListener('mouseup', onEnd, { capture: true });
+        window.addEventListener('blur', onEnd, { capture: true });
+    };
+
+    // 优先使用现代化 PointerEvent，避免双重注册
+    if (window.PointerEvent) {
+        resizer.addEventListener('pointerdown', onStartResize as any);
+    } else {
+        resizer.addEventListener('mousedown', onStartResize as any);
     }
 }
 
@@ -6998,15 +7512,21 @@ function bindEvents(container: HTMLElement, doc: Document) {
     bindAiPanelResizer(container);
 
     const btnToggleAi = container.querySelector<HTMLButtonElement>('#yn-bem-btn-toggle-ai');
-    btnToggleAi?.addEventListener('click', () => {
+    btnToggleAi?.addEventListener('pointerdown', (e) => e.stopPropagation());
+    btnToggleAi?.addEventListener('mousedown', (e) => e.stopPropagation());
+    btnToggleAi?.addEventListener('click', (e) => {
+        e.stopPropagation();
         modalState.aiPanelOpen = !modalState.aiPanelOpen;
         const aiWrap = container.querySelector<HTMLElement>('#yn-bem-ai-panel-wrap');
         const w = modalState.aiPanelWidth || 440;
         if (aiWrap) {
             aiWrap.style.width = `${w}px`;
             if (modalState.aiPanelOpen) {
-                renderAssistantChat(container);
                 aiWrap.classList.add('is-open');
+                // 关键优化：使用 requestAnimationFrame 延迟挂载 React 渲染树，切断 click 事件单帧重度拥堵 (INP < 16ms)
+                requestAnimationFrame(() => {
+                    renderAssistantChat(container);
+                });
             } else {
                 aiWrap.classList.remove('is-open');
             }
@@ -7020,17 +7540,15 @@ function bindEvents(container: HTMLElement, doc: Document) {
         renderAssistantChat(container);
     }
 
-    // 4. 点击外部时自动收起项目下拉与列筛选浮层
-    doc.addEventListener('click', (e) => {
+    // 4. 点击外部时自动收起项目下拉与列筛选浮层 (监听在 container 根节点，杜绝向外冒泡至 doc)
+    container.addEventListener('click', (e) => {
         const target = e.target as HTMLElement;
         const dropdownProject = container.querySelector<HTMLElement>('#yn-bem-project-dropdown');
         if (dropdownProject && !target.closest('#yn-bem-project-wrapper')) {
             dropdownProject.style.display = 'none';
         }
         if (modalState.activePopoverCol && !target.closest('#yn-bem-filter-popover') && !target.closest('.yn-bem-th-filter-trigger')) {
-            modalState.activePopoverCol = null;
-            modalState.popoverKeyword = '';
-            refreshTableView(container, 'ROWS');
+            closeColumnFilterPopover(container);
         }
     });
 
@@ -7171,27 +7689,21 @@ function bindEvents(container: HTMLElement, doc: Document) {
 
     toggleAllBtn?.addEventListener('click', () => {
         if (modalState.groupingMode === 'NONE') return;
-        const tbodies = container.querySelectorAll<HTMLElement>('.yn-bem-group-tbody');
         const shouldExpand = modalState.collapsedGroupKeys.size > 0;
         if (shouldExpand) {
             modalState.collapsedGroupKeys.clear();
-            tbodies.forEach(tb => {
-                tb.classList.remove('is-collapsed');
-                const btn = tb.querySelector<HTMLElement>('.yn-bem-group-toggle-btn');
-                if (btn) { btn.innerText = '▼'; btn.title = '点击折叠'; }
-            });
             toggleAllBtn.innerText = '折叠';
             toggleAllBtn.title = '折叠所有分组';
         } else {
-            tbodies.forEach(tb => {
-                tb.classList.add('is-collapsed');
-                const key = tb.dataset.groupKey;
-                if (key) modalState.collapsedGroupKeys.add(key);
-                const btn = tb.querySelector<HTMLElement>('.yn-bem-group-toggle-btn');
-                if (btn) { btn.innerText = '▶'; btn.title = '点击展开'; }
-            });
+            const filteredGroups = getFilteredGroups(modalState);
+            const sections = groupFilteredExpenses(filteredGroups, modalState.groupingMode, modalState.tripPlans);
+            sections.forEach(sec => modalState.collapsedGroupKeys.add(sec.key));
             toggleAllBtn.innerText = '展开';
             toggleAllBtn.title = '展开所有分组';
+        }
+        const wrap = container.querySelector<HTMLElement>('#yn-bem-table-wrap');
+        if (wrap) {
+            renderVirtualTable(container, wrap);
         }
     });
 
@@ -7223,25 +7735,23 @@ function bindEvents(container: HTMLElement, doc: Document) {
     container.querySelector('#yn-bem-table-wrap')?.addEventListener('click', (e) => {
         const target = e.target as HTMLElement;
 
-        // 折叠 / 展开分组 (纯 CSS 切换 is-collapsed，0ms 零 DOM 重建，保留所有输入态)
+        // 折叠 / 展开分组 (虚拟表格瞬时重绘，0ms 零 DOM 重建，保留所有输入态)
         const toggleBtn = target.closest<HTMLElement>('.yn-bem-group-toggle-btn');
         if (toggleBtn && toggleBtn.dataset.groupKey) {
             e.stopPropagation();
             const groupKey = toggleBtn.dataset.groupKey;
-            const tbody = container.querySelector<HTMLElement>(`tbody.yn-bem-group-tbody[data-group-key="${groupKey}"]`);
-            if (tbody) {
-                const willCollapse = !tbody.classList.contains('is-collapsed');
-                tbody.classList.toggle('is-collapsed', willCollapse);
-                toggleBtn.innerText = willCollapse ? '▶' : '▼';
-                toggleBtn.title = willCollapse ? '点击展开' : '点击折叠';
-                if (willCollapse) {
-                    modalState.collapsedGroupKeys.add(groupKey);
-                } else {
-                    modalState.collapsedGroupKeys.delete(groupKey);
-                }
-                if (toggleAllBtn) {
-                    toggleAllBtn.innerText = modalState.collapsedGroupKeys.size > 0 ? '展开' : '折叠';
-                }
+            if (modalState.collapsedGroupKeys.has(groupKey)) {
+                modalState.collapsedGroupKeys.delete(groupKey);
+            } else {
+                modalState.collapsedGroupKeys.add(groupKey);
+            }
+            if (toggleAllBtn) {
+                toggleAllBtn.innerText = modalState.collapsedGroupKeys.size > 0 ? '展开' : '折叠';
+                toggleAllBtn.title = modalState.collapsedGroupKeys.size > 0 ? '展开所有分组' : '折叠所有分组';
+            }
+            const wrap = container.querySelector<HTMLElement>('#yn-bem-table-wrap');
+            if (wrap) {
+                renderVirtualTable(container, wrap);
             }
             return;
         }
@@ -7251,16 +7761,14 @@ function bindEvents(container: HTMLElement, doc: Document) {
             const gcb = target as HTMLInputElement;
             const groupKey = gcb.dataset.groupKey;
             if (groupKey) {
-                const tbody = container.querySelector<HTMLElement>(`tbody.yn-bem-group-tbody[data-group-key="${groupKey}"]`);
-                if (tbody) {
-                    const rowCbs = tbody.querySelectorAll<HTMLInputElement>('.yn-bem-record-cb');
+                const filteredGroups = getFilteredGroups(modalState);
+                const sections = groupFilteredExpenses(filteredGroups, modalState.groupingMode, modalState.tripPlans);
+                const sec = sections.find(s => s.key === groupKey);
+                if (sec) {
                     const isChecked = gcb.checked;
-                    rowCbs.forEach(rcb => {
-                        const rid = rcb.dataset.recordid;
-                        if (rid) {
-                            if (isChecked) modalState.selectedRecordIds.add(rid);
-                            else modalState.selectedRecordIds.delete(rid);
-                        }
+                    sec.items.forEach(g => {
+                        if (isChecked) modalState.selectedRecordIds.add(g.expenseRecordId);
+                        else modalState.selectedRecordIds.delete(g.expenseRecordId);
                     });
                     refreshTableView(container, 'CHECKBOXES');
                 }
@@ -7336,6 +7844,7 @@ function bindEvents(container: HTMLElement, doc: Document) {
         const clickedTr = target.closest('tr');
         if (clickedTr && clickedTr.dataset.recordid) {
             const recId = clickedTr.dataset.recordid;
+            modalState.activeRecordId = recId;
             container.querySelectorAll('#yn-bem-table-wrap tbody tr.is-active-row').forEach(r => r.classList.remove('is-active-row'));
             container.querySelectorAll(`#yn-bem-table-wrap tbody tr[data-recordid="${recId}"]`).forEach(r => r.classList.add('is-active-row'));
         }
@@ -7400,23 +7909,12 @@ function bindEvents(container: HTMLElement, doc: Document) {
             return;
         }
 
-        // 列筛选触发按钮 (▾)
+        // 列筛选触发按钮 (▾) - 局部渲染浮层，彻底规避 2,149ms 全表重绘
         const filterBtn = target.closest<HTMLElement>('.yn-bem-th-filter-trigger');
         if (filterBtn && filterBtn.dataset.filterCol) {
             e.stopPropagation();
             const col = filterBtn.dataset.filterCol;
-            if (modalState.activePopoverCol === col) {
-                modalState.activePopoverCol = null;
-            } else {
-                modalState.activePopoverCol = col;
-                modalState.popoverKeyword = '';
-            }
-            refreshTableView(container);
-            if (modalState.activePopoverCol) {
-                setTimeout(() => {
-                    container.querySelector<HTMLInputElement>('#yn-bem-popover-search')?.focus();
-                }, 50);
-            }
+            toggleColumnFilterPopover(container, col);
             return;
         }
 
@@ -7462,13 +7960,35 @@ function bindEvents(container: HTMLElement, doc: Document) {
                 modalState.sortAsc = true;
             }
             sortGroups(modalState.groups, modalState.sortKey, modalState.sortAsc);
-            refreshTableView(container);
-            return;
+        refreshTableView(container);
+        return;
+    }
+});
+
+    // 14.0 费用类型下拉选单按需懒加载 (Option Lazy Loading):
+    // 仅在用户交互 (mousedown / focusin) 聚焦到 select 时，才动态将 50+ 项树状 options 注入
+    // 表格虚拟切片渲染时仅渲染当前选中的单条 option，彻底压降 90% ParseHTML 与 DOM 节点开销
+    const handleTypeSelectLazyLoad = (e: Event) => {
+        const target = e.target as HTMLElement;
+        if (target && target.classList.contains('yn-bem-cell-type-select')) {
+            const selectEl = target as HTMLSelectElement;
+            if (selectEl.options.length <= 1) {
+                const recordId = selectEl.dataset.recordid;
+                if (recordId) {
+                    const group = modalState.groups.find(g => g.expenseRecordId === recordId);
+                    const currTypeId = group?.newExpenseTypeId || group?.expenseTypeId || selectEl.value;
+                    selectEl.innerHTML = renderTypeTreeOptionsHtml(modalState.expenseTypeTree, currTypeId);
+                    selectEl.value = currTypeId;
+                }
+            }
         }
-    });
+    };
+    const tableWrap = container.querySelector('#yn-bem-table-wrap');
+    tableWrap?.addEventListener('mousedown', handleTypeSelectLazyLoad);
+    tableWrap?.addEventListener('focusin', handleTypeSelectLazyLoad);
 
     // 14.1 列头筛选复选框值勾选变更监听 & 单元格就地直接修改监听
-    container.querySelector('#yn-bem-table-wrap')?.addEventListener('change', (e) => {
+    tableWrap?.addEventListener('change', (e) => {
         const target = e.target as HTMLElement;
 
         // 列筛选值复选框
@@ -7609,19 +8129,7 @@ function bindEvents(container: HTMLElement, doc: Document) {
                 const filteredVals = kw ? distinctVals.filter(d => d.value.toLowerCase().includes(kw)) : distinctVals;
                 const listEl = popoverEl.querySelector('.yn-bem-filter-val-list');
                 if (listEl) {
-                    listEl.innerHTML = filteredVals.length === 0
-                        ? `<div style="color:#a3a3a3; font-size:11px; padding:6px;">未匹配到值</div>`
-                        : filteredVals.map(item => {
-                            const isChecked = selected.has(item.value);
-                            const safeVal = item.value.replace(/"/g, '&quot;');
-                            return `
-                                <label class="yn-bem-filter-val-item">
-                                    <input type="checkbox" class="yn-bem-col-val-cb" data-col="${col}" data-val="${safeVal}" ${isChecked ? 'checked' : ''} />
-                                    <span class="yn-bem-filter-val-text" title="${safeVal}">${item.value}</span>
-                                    <span class="yn-bem-filter-val-count">${item.count}</span>
-                                </label>
-                            `;
-                        }).join('');
+                    listEl.innerHTML = renderFilterValListHtml(col, filteredVals, selected);
                 }
             }
             return;
@@ -7795,6 +8303,377 @@ function bindEvents(container: HTMLElement, doc: Document) {
     // 15.1 AI 智能推断专属字段按钮
     container.querySelector('#yn-bem-btn-ai-infer')?.addEventListener('click', () => {
         openAiAssistantWithSkill(container, 'infer');
+    });
+
+    // 16. 发票照片原件悬浮预览 (全局单例，智能视口碰撞与鼠标防遮挡检测，高度放大且宽度自适应，支持平滑移入与延迟关闭)
+    let hoverPopoverTimer: any = null;
+    let closePopoverTimer: any = null;
+    let isMouseOverPopover = false;
+    let isMouseOverBtn = false;
+    let lastClientX = 0;
+    let lastClientY = 0;
+    let activePopoverBtn: HTMLElement | null = null;
+    const invoicePopover = container.querySelector<HTMLElement>('#yn-bem-invoice-preview-popover');
+
+    const hideInvoicePopover = () => {
+        if (hoverPopoverTimer) {
+            clearTimeout(hoverPopoverTimer);
+            hoverPopoverTimer = null;
+        }
+        if (closePopoverTimer) {
+            clearTimeout(closePopoverTimer);
+            closePopoverTimer = null;
+        }
+        if (invoicePopover) {
+            invoicePopover.style.display = 'none';
+            invoicePopover.innerHTML = '';
+        }
+        activePopoverBtn = null;
+        isMouseOverPopover = false;
+        isMouseOverBtn = false;
+    };
+
+    const scheduleDelayedClose = (delayMs: number = 280) => {
+        if (closePopoverTimer) clearTimeout(closePopoverTimer);
+        closePopoverTimer = setTimeout(() => {
+            if (!isMouseOverPopover && !isMouseOverBtn) {
+                hideInvoicePopover();
+            }
+        }, delayMs);
+    };
+
+    let cachedPopWidth = 420;
+    let cachedPopHeight = 520;
+
+    const measurePopoverDimensions = () => {
+        if (!invoicePopover) return;
+        const w = invoicePopover.offsetWidth;
+        const h = invoicePopover.offsetHeight;
+        if (w > 100) cachedPopWidth = w;
+        if (h > 100) cachedPopHeight = h;
+    };
+
+    let isPositionRafPending = false;
+    const updatePopoverPosition = (clientX: number, clientY: number) => {
+        if (!invoicePopover) return;
+        lastClientX = clientX;
+        lastClientY = clientY;
+
+        if (isPositionRafPending) return;
+        isPositionRafPending = true;
+
+        requestAnimationFrame(() => {
+            isPositionRafPending = false;
+            if (!invoicePopover || invoicePopover.style.display === 'none') return;
+
+            measurePopoverDimensions();
+            const popWidth = cachedPopWidth;
+            const popHeight = cachedPopHeight;
+
+            let left = lastClientX + 24; // 默认在光标右侧 24px，保证绝对不遮挡鼠标
+            if (left + popWidth > window.innerWidth - 16) {
+                left = lastClientX - popWidth - 24; // 若右侧超界，平滑定位在光标左侧 24px
+            }
+            if (left < 16) left = 16;
+
+            let top = Math.max(16, Math.min(window.innerHeight - popHeight - 16, lastClientY - 140));
+            invoicePopover.style.left = `${left}px`;
+            invoicePopover.style.top = `${top}px`;
+        });
+    };
+
+    // 内存 Blob URL 缓存，避免重复请求同一张发票照片
+    const invoicePhotoBlobCache = new Map<string, string>();
+
+    // 统一照片加载核心：自动提取鉴权并在内存构建 Blob URL
+    const loadInvoiceBlob = async (targetAttachId: string): Promise<{ blobUrl: string; isPdf: boolean }> => {
+        let cached = invoicePhotoBlobCache.get(targetAttachId);
+        let isPdf = targetAttachId.toLowerCase().endsWith('.pdf');
+        if (cached) {
+            return { blobUrl: cached, isPdf };
+        }
+        const tokens = extractLatestTokens();
+        let previewUrl = `/fssc/billAttachment/attachmentPreview?attachmentId=${encodeURIComponent(targetAttachId)}`;
+        if (tokens.loginToken) {
+            previewUrl += `&LoginToken=${encodeURIComponent(tokens.loginToken)}`;
+        }
+        const headers: Record<string, string> = {
+            'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,application/pdf,*/*;q=0.8'
+        };
+        if (tokens.loginToken) {
+            headers['LoginToken'] = tokens.loginToken;
+        }
+        if (tokens.ecsToken) {
+            headers['EcsToken'] = tokens.ecsToken;
+        }
+        const resp = await fetch(previewUrl, {
+            method: 'GET',
+            headers,
+            credentials: 'include'
+        });
+        if (resp.status === 401 || resp.status === 403) {
+            throw new Error('系统登录会话失效，请重新登录系统');
+        }
+        if (!resp.ok) {
+            throw new Error(`HTTP ${resp.status}`);
+        }
+        const contentType = (resp.headers.get('content-type') || '').toLowerCase();
+        if (contentType.includes('application/json') || contentType.includes('text/json')) {
+            const errJson = await resp.json().catch(() => ({}));
+            throw new Error(errJson?.message || errJson?.msg || '系统鉴权失效或照片文件不存在');
+        }
+        const blob = await resp.blob();
+        if (blob.size < 250) {
+            const txt = await blob.text().catch(() => '');
+            if (txt.includes('error') || txt.includes('false') || txt.includes('登录') || txt.includes('失效') || txt.includes('token')) {
+                throw new Error('系统登录会话失效或发票照片已不存在');
+            }
+        }
+        if (blob.type.includes('pdf')) {
+            isPdf = true;
+        }
+        const blobUrl = URL.createObjectURL(blob);
+        invoicePhotoBlobCache.set(targetAttachId, blobUrl);
+        return { blobUrl, isPdf };
+    };
+
+    // 渲染指定模式 (裁切特写 crop vs 原始全图 raw) 的 Popover 界面
+    const renderPopoverContent = async (
+        btn: HTMLElement,
+        mode: 'crop' | 'raw',
+        attachId: string,
+        rawAttachId: string,
+        invNo: string,
+        invType: string,
+        amt: string
+    ) => {
+        if (!invoicePopover) return;
+        const targetAttachId = mode === 'crop' ? (attachId || rawAttachId) : (rawAttachId || attachId);
+        const hasDualView = Boolean(attachId && rawAttachId && attachId !== rawAttachId);
+
+        invoicePopover.innerHTML = `
+            <div class="yn-bem-pop-header">
+                <div style="display:flex; align-items:center; gap:6px;">
+                    <span class="yn-bem-pop-title">${mode === 'crop' && hasDualView ? '发票单票裁切' : '发票原件照片'}</span>
+                    <span class="yn-bem-pop-tag">${escapeHtml(invType || '发票')}</span>
+                    ${hasDualView ? (
+                        mode === 'crop' 
+                            ? `<span class="yn-bem-pop-tag" style="background:#f0fdf4; color:#166534; border-color:#bbf7d0;">✂️ OCR裁切特写</span>`
+                            : `<span class="yn-bem-pop-tag" style="background:#f8fafc; color:#475569; border-color:#e2e8f0;">📷 原始全图</span>`
+                    ) : ''}
+                </div>
+                ${amt ? `<span style="font-family:ui-monospace, monospace; font-weight:600; color:#171717; font-size:12px;">¥${Number(amt).toFixed(2)}</span>` : ''}
+            </div>
+            <div class="yn-bem-pop-img-wrap" id="yn-bem-pop-img-container">
+                <div class="yn-bem-pop-loading" style="font-size:12px; color:#64748b; display:flex; flex-direction:column; align-items:center; gap:6px;">
+                    <span style="font-size:20px; animation:spin 1s linear infinite;">⏳</span>
+                    <span>正在加载${mode === 'crop' && hasDualView ? '单票裁切特写' : '发票照片'}...</span>
+                </div>
+            </div>
+            <div class="yn-bem-pop-footer">
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <span style="font-size:11px; color:#737373; font-family:ui-monospace, monospace;">${escapeHtml(invNo || (targetAttachId ? targetAttachId.split('/').pop() : ''))}</span>
+                    ${hasDualView ? `
+                        <a href="javascript:void(0)" class="yn-bem-pop-link" id="yn-bem-pop-toggle-mode" style="color:#0284c7; font-weight:500;" title="在单张发票裁切与拍摄原始全图之间切换">
+                            ${mode === 'crop' ? '查看拍摄原图 📷' : '查看裁切单票 ✂️'}
+                        </a>
+                    ` : ''}
+                </div>
+                <a href="javascript:void(0)" class="yn-bem-pop-link" id="yn-bem-pop-newtab" title="在新标签中打开大图">在新标签打开 ↗</a>
+            </div>
+        `;
+        invoicePopover.style.display = 'flex';
+        updatePopoverPosition(lastClientX, lastClientY);
+
+        const toggleBtn = invoicePopover.querySelector<HTMLAnchorElement>('#yn-bem-pop-toggle-mode');
+        if (toggleBtn) {
+            toggleBtn.onclick = (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                const nextMode = mode === 'crop' ? 'raw' : 'crop';
+                renderPopoverContent(btn, nextMode, attachId, rawAttachId, invNo, invType, amt);
+            };
+        }
+
+        try {
+            let loaded: { blobUrl: string; isPdf: boolean };
+            try {
+                loaded = await loadInvoiceBlob(targetAttachId);
+            } catch (err) {
+                // 若优先请求的裁切切片图失效，且存在全图 ID，自动无缝降级回退到原始全图
+                if (mode === 'crop' && rawAttachId && rawAttachId !== targetAttachId) {
+                    AutopilotLogger.warn(`[InvoicePreview] 裁切图 ${targetAttachId} 加载失败，自动回退到原始全图: ${rawAttachId}`);
+                    loaded = await loadInvoiceBlob(rawAttachId);
+                } else {
+                    throw err;
+                }
+            }
+
+            const imgContainer = invoicePopover.querySelector<HTMLElement>('#yn-bem-pop-img-container');
+            const newTabLink = invoicePopover.querySelector<HTMLAnchorElement>('#yn-bem-pop-newtab');
+
+            if (imgContainer) {
+                if (loaded.isPdf) {
+                    imgContainer.innerHTML = `
+                        <div class="yn-bem-pop-empty" style="padding:22px 12px; gap:8px;">
+                            <span style="font-size:36px;">📑</span>
+                            <span style="font-weight:600; font-size:13px; color:#0f172a;">PDF 电子发票原件</span>
+                            <span style="font-size:11px; color:#64748b; text-align:center;">此发票为标准版式 PDF，点击下方可直接在新标签页全屏查看或打印</span>
+                            <a href="${loaded.blobUrl}" target="_blank" style="margin-top:6px; display:inline-flex; align-items:center; gap:4px; padding:6px 14px; background:#0284c7; color:#ffffff; border-radius:4px; text-decoration:none; font-size:12px; font-weight:500;">
+                                在新标签页打开 PDF ↗
+                            </a>
+                        </div>
+                    `;
+                } else {
+                    imgContainer.innerHTML = `<img src="${loaded.blobUrl}" alt="发票照片" class="yn-bem-pop-img" style="opacity:1; cursor:zoom-in;" title="点击在新标签页全屏打开大图" />`;
+                    const imgEl = imgContainer.querySelector<HTMLImageElement>('img');
+                    if (imgEl) {
+                        imgEl.onload = () => {
+                            updatePopoverPosition(lastClientX, lastClientY);
+                        };
+                        imgEl.onclick = () => window.open(loaded.blobUrl, '_blank');
+                        imgEl.onerror = () => {
+                            imgContainer.innerHTML = `
+                                <div class="yn-bem-pop-empty">
+                                    <span style="font-size:24px;">⚠️</span>
+                                    <span style="color:#ef4444; font-size:12px;">照片渲染失败 (非标准图片格式或文件损坏)</span>
+                                    <a href="${loaded.blobUrl}" target="_blank" style="font-size:11px; color:#0284c7; margin-top:4px;">在新标签页打开 ↗</a>
+                                </div>
+                            `;
+                        };
+                    }
+                }
+            }
+            if (newTabLink) {
+                newTabLink.href = loaded.blobUrl;
+                newTabLink.target = '_blank';
+            }
+            updatePopoverPosition(lastClientX, lastClientY);
+        } catch (err: any) {
+            const imgContainer = invoicePopover.querySelector<HTMLElement>('#yn-bem-pop-img-container');
+            if (imgContainer) {
+                imgContainer.innerHTML = `<div class="yn-bem-pop-empty"><span style="color:#ef4444; font-size:12px;">⚠️ 照片加载失败 (${escapeHtml(err?.message || '网络或鉴权异常')})</span></div>`;
+            }
+        }
+    };
+
+    // Popover 自身鼠标移入事件：当鼠标在其之上时，立即取消关闭定时器，保持常开
+    invoicePopover?.addEventListener('mouseenter', () => {
+        isMouseOverPopover = true;
+        if (closePopoverTimer) {
+            clearTimeout(closePopoverTimer);
+            closePopoverTimer = null;
+        }
+    });
+
+    // Popover 自身鼠标移出事件：启动 280ms 延迟平滑关闭
+    invoicePopover?.addEventListener('mouseleave', (e: MouseEvent) => {
+        isMouseOverPopover = false;
+        const related = e.relatedTarget as HTMLElement;
+        const btn = related?.closest<HTMLElement>('.yn-bem-invoice-photo-btn');
+        if (btn) {
+            isMouseOverBtn = true;
+        } else {
+            isMouseOverBtn = false;
+            scheduleDelayedClose(280);
+        }
+    });
+
+    container.querySelector('#yn-bem-table-wrap')?.addEventListener('mouseover', (e: Event) => {
+        const mouseEvent = e as MouseEvent;
+        const btn = (mouseEvent.target as HTMLElement).closest<HTMLElement>('.yn-bem-invoice-photo-btn');
+        if (!btn || !invoicePopover) return;
+
+        isMouseOverBtn = true;
+        if (closePopoverTimer) {
+            clearTimeout(closePopoverTimer);
+            closePopoverTimer = null;
+        }
+
+        if (activePopoverBtn === btn && invoicePopover.style.display !== 'none') {
+            updatePopoverPosition(mouseEvent.clientX, mouseEvent.clientY);
+            return;
+        }
+
+        activePopoverBtn = btn;
+        let attachId = btn.dataset.attachmentId || '';
+        let rawAttachId = btn.dataset.rawAttachmentId || '';
+        const invDataId = btn.dataset.invoiceDataId || '';
+        const invNo = btn.dataset.invoiceNo || '';
+        const invType = btn.dataset.invoiceType || '';
+        const amt = btn.dataset.totalAmount || '';
+
+        updatePopoverPosition(mouseEvent.clientX, mouseEvent.clientY);
+
+        if (hoverPopoverTimer) clearTimeout(hoverPopoverTimer);
+        hoverPopoverTimer = setTimeout(async () => {
+            // 若初始无 attachId，但存在 invoiceDataId，则尝试异步拉取真实发票原件与裁切路径
+            if ((!attachId || !rawAttachId) && invDataId) {
+                try {
+                    const detail = await getInvoiceDetailByDataIdApi(invDataId, modalState as any);
+                    const cropCand = detail?.videoAddress || detail?.scanVideoAddress || detail?.imagePath;
+                    const rawCand = detail?.filePath || detail?.attachmentPath || detail?.attachmentId || detail?.boTemplateAndData?.boData?.area?.rowDatas?.[0]?.datas?.IMAGE_PATH?.value;
+                    if (cropCand && typeof cropCand === 'string' && !/^\d{12,}$/.test(cropCand.trim())) {
+                        attachId = cropCand.trim();
+                        btn.dataset.attachmentId = attachId;
+                    }
+                    if (rawCand && typeof rawCand === 'string' && !/^\d{12,}$/.test(rawCand.trim())) {
+                        rawAttachId = rawCand.trim();
+                        btn.dataset.rawAttachmentId = rawAttachId;
+                    }
+                    if (!attachId && rawAttachId) {
+                        attachId = rawAttachId;
+                        btn.dataset.attachmentId = attachId;
+                    }
+                    if (!rawAttachId && attachId) {
+                        rawAttachId = attachId;
+                        btn.dataset.rawAttachmentId = rawAttachId;
+                    }
+                } catch (e: any) {
+                    AutopilotLogger.warn(`[InvoicePreview] 异步拉取发票详情异常: ${e?.message}`);
+                }
+            }
+
+            if (!attachId && !rawAttachId) {
+                invoicePopover.innerHTML = `
+                    <div class="yn-bem-pop-header">
+                        <span class="yn-bem-pop-title">发票照片预览</span>
+                        <span class="yn-bem-pop-tag">${escapeHtml(invType || '发票')}</span>
+                    </div>
+                    <div class="yn-bem-pop-empty">
+                        <span style="font-size:26px; margin-bottom:6px;">🧾</span>
+                        <span style="font-size:12px; color:#737373;">暂无发票原件照片附件</span>
+                        ${invNo ? `<span style="font-size:11px; color:#a3a3a3; margin-top:4px;">发票号: ${escapeHtml(invNo)}</span>` : ''}
+                    </div>
+                `;
+                invoicePopover.style.display = 'flex';
+                updatePopoverPosition(lastClientX, lastClientY);
+                return;
+            }
+
+            // 默认优先以 OCR 裁切特写模式进行渲染
+            await renderPopoverContent(btn, 'crop', attachId, rawAttachId, invNo, invType, amt);
+        }, 100);
+    });
+
+    container.querySelector('#yn-bem-table-wrap')?.addEventListener('mousemove', (e: Event) => {
+        const mouseEvent = e as MouseEvent;
+        const btn = (mouseEvent.target as HTMLElement).closest<HTMLElement>('.yn-bem-invoice-photo-btn');
+        if (!btn || !invoicePopover || invoicePopover.style.display === 'none') return;
+        updatePopoverPosition(mouseEvent.clientX, mouseEvent.clientY);
+    });
+
+    container.querySelector('#yn-bem-table-wrap')?.addEventListener('mouseout', (e: Event) => {
+        const mouseEvent = e as MouseEvent;
+        const related = mouseEvent.relatedTarget as HTMLElement;
+        const btn = (mouseEvent.target as HTMLElement).closest<HTMLElement>('.yn-bem-invoice-photo-btn');
+        if (btn && (!related || !btn.contains(related))) {
+            isMouseOverBtn = false;
+            // 若鼠标正移入 Popover 浮层内部，则不关闭；否则触发 280ms 延迟关闭
+            if (!invoicePopover?.contains(related)) {
+                scheduleDelayedClose(280);
+            }
+        }
     });
 
 }

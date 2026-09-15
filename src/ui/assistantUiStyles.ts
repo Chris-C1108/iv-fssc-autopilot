@@ -555,10 +555,11 @@ ${getMarkstreamCss()}
 
 /* ==========================================================================
    Markdown Content Markdown 内容与表格设计系统 (assistant-ui 特色)
+   彻底重置并收敛 markstream-react 庞大 rem 字号、2rem外边距与表格过度膨胀
    ========================================================================== */
 .aui-markdown {
-    font-size: 12.5px;
-    line-height: 1.65;
+    font-size: 12px;
+    line-height: 1.45;
     color: #1e293b;
     word-break: break-word;
     width: 100%;
@@ -566,135 +567,256 @@ ${getMarkstreamCss()}
     overflow-x: auto;
     box-sizing: border-box;
 }
-.aui-markdown p {
-    margin: 0 0 8px 0;
-}
-.aui-markdown p:last-child {
-    margin-bottom: 0;
+
+/* 核心字号与段落重置，彻底禁用 content-visibility 与 800x600 预留画幅 */
+.aui-markdown .markstream-react,
+.aui-markdown .markdown-renderer,
+.aui-markdown :where(.markstream-react).markdown-renderer {
+    font-size: 12px !important;
+    line-height: 1.45 !important;
+    color: #1e293b !important;
+    content-visibility: visible !important;
+    contain: none !important;
+    contain-intrinsic-size: auto !important;
 }
 
-.aui-markdown h1, .aui-markdown h2, .aui-markdown h3, .aui-markdown h4 {
-    color: #0f172a;
-    font-weight: 600;
-    margin: 12px 0 6px 0;
-    letter-spacing: -0.01em;
-}
-.aui-markdown h1 { font-size: 15px; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }
-.aui-markdown h2 { font-size: 14px; }
-.aui-markdown h3 { font-size: 13px; }
-.aui-markdown h4 { font-size: 12.5px; }
-
-.aui-markdown ul, .aui-markdown ol {
-    margin: 4px 0 8px 0;
-    padding-left: 20px;
-}
-.aui-markdown li {
-    margin-bottom: 3px;
+/* 彻底隐藏虚拟化高度占位撑开的巨大空白块 (杜绝 600px 巨型空白) */
+.aui-markdown .node-spacer,
+.aui-markdown .node-placeholder {
+    display: none !important;
+    height: 0 !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
 }
 
-.aui-markdown blockquote {
-    margin: 8px 0;
-    padding: 6px 12px;
-    background: #f8fafc;
-    border-left: 3px solid #3b82f6;
-    border-radius: 0 6px 6px 0;
-    color: #475569;
-    font-size: 12px;
+.aui-markdown p,
+.aui-markdown .paragraph-node {
+    font-size: 12px !important;
+    line-height: 1.45 !important;
+    margin: 0 0 5px 0 !important;
+    color: #1e293b !important;
+}
+.aui-markdown p:last-child,
+.aui-markdown .paragraph-node:last-child {
+    margin-bottom: 0 !important;
 }
 
-.aui-markdown code:not(pre code) {
-    background: #f1f5f9;
-    color: #0f172a;
-    padding: 1px 5px;
-    border-radius: 4px;
-    font-size: 11.5px;
-    border: 1px solid #e2e8f0;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+/* 标题精细化收敛 (严禁 2.25rem/1.5rem 巨型标题在侧栏撑爆) */
+.aui-markdown h1, .aui-markdown .heading-1 {
+    font-size: 14px !important;
+    font-weight: 700 !important;
+    color: #0f172a !important;
+    margin: 8px 0 4px 0 !important;
+    line-height: 1.35 !important;
+    border-bottom: 1px solid #e2e8f0 !important;
+    padding-bottom: 3px !important;
+}
+.aui-markdown h2, .aui-markdown .heading-2 {
+    font-size: 13px !important;
+    font-weight: 600 !important;
+    color: #0f172a !important;
+    margin: 6px 0 3px 0 !important;
+    line-height: 1.35 !important;
+}
+.aui-markdown h3, .aui-markdown .heading-3 {
+    font-size: 12.5px !important;
+    font-weight: 600 !important;
+    color: #0f172a !important;
+    margin: 5px 0 2px 0 !important;
+    line-height: 1.35 !important;
+}
+.aui-markdown h4, .aui-markdown .heading-4,
+.aui-markdown h5, .aui-markdown .heading-5,
+.aui-markdown h6, .aui-markdown .heading-6 {
+    font-size: 12px !important;
+    font-weight: 600 !important;
+    color: #334155 !important;
+    margin: 4px 0 2px 0 !important;
+    line-height: 1.35 !important;
 }
 
-.aui-markdown pre {
-    background: #0f172a;
-    color: #f8fafc;
-    padding: 10px 14px;
-    border-radius: 8px;
-    overflow-x: auto;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-    font-size: 11px;
-    line-height: 1.5;
-    margin: 8px 0;
+/* 分隔线收敛 (杜绝 3rem/48px 巨型外边距) */
+.aui-markdown hr,
+.aui-markdown .thematic-break,
+.aui-markdown .hr-node {
+    margin: 8px 0 !important;
+    border: none !important;
+    border-top: 1px solid #e2e8f0 !important;
+    height: 1px !important;
 }
 
-/* assistant-ui 高质感排期与对账表格 */
+/* 列表与引用 (收紧行距与嵌套列表外边距，彻底解决行间距巨大) */
+.aui-markdown ul, .aui-markdown ol,
+.aui-markdown .list-node,
+.aui-markdown .markstream-react ul, .aui-markdown .markstream-react ol {
+    margin: 3px 0 5px 0 !important;
+    padding-left: 18px !important;
+}
+.aui-markdown li,
+.aui-markdown .list-item {
+    font-size: 12px !important;
+    line-height: 1.45 !important;
+    margin: 2px 0 !important;
+    padding: 0 !important;
+    color: #1e293b !important;
+}
+/* 彻底压平宽松列表 (Loose Lists) 中 li 嵌套 p 带来的巨大空行 */
+.aui-markdown li > p,
+.aui-markdown li > .paragraph-node,
+.aui-markdown .list-item > p,
+.aui-markdown .list-item > .paragraph-node {
+    margin: 0 !important;
+    line-height: 1.45 !important;
+    display: inline !important;
+}
+.aui-markdown li > ul,
+.aui-markdown li > ol,
+.aui-markdown .list-item > .list-node {
+    margin: 2px 0 2px 12px !important;
+    padding-left: 0 !important;
+}
+
+/* 强制重置 Tailwind 注入的巨大外边距类名 */
+.aui-markdown .my-8,
+.aui-markdown .my-5,
+.aui-markdown .my-4 {
+    margin-top: 6px !important;
+    margin-bottom: 6px !important;
+}
+.aui-markdown .my-2 {
+    margin-top: 2px !important;
+    margin-bottom: 2px !important;
+}
+.aui-markdown .mb-4 {
+    margin-bottom: 6px !important;
+}
+.aui-markdown .mt-2 {
+    margin-top: 4px !important;
+}
+
+.aui-markdown blockquote,
+.aui-markdown .blockquote-node {
+    margin: 5px 0 !important;
+    padding: 4px 8px !important;
+    background: #f8fafc !important;
+    border-left: 3px solid #3b82f6 !important;
+    border-radius: 0 4px 4px 0 !important;
+    color: #475569 !important;
+    font-size: 11.5px !important;
+    line-height: 1.45 !important;
+}
+
+/* 行内与块级代码 */
+.aui-markdown code:not(pre code),
+.aui-markdown .inline-code {
+    background: #f1f5f9 !important;
+    color: #0f172a !important;
+    padding: 1px 4px !important;
+    border-radius: 3px !important;
+    font-size: 11px !important;
+    border: 1px solid #e2e8f0 !important;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+}
+.aui-markdown pre,
+.aui-markdown .code-block-node {
+    background: #0f172a !important;
+    color: #f8fafc !important;
+    padding: 8px 10px !important;
+    border-radius: 6px !important;
+    overflow-x: auto !important;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+    font-size: 11px !important;
+    line-height: 1.45 !important;
+    margin: 6px 0 !important;
+}
+
+/* ==========================================================================
+   assistant-ui 高质感排期与对账表格重塑 (彻底修复表格巨型字号与2rem边距)
+   ========================================================================== */
+.aui-markdown .table-node-wrapper,
 .aui-markdown-table-wrapper {
-    overflow-x: auto;
-    max-width: 100%;
-    margin: 10px 0;
-    border: 1px solid #e2e8f0;
-    border-radius: 10px;
-    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.03);
-    background: #ffffff;
+    overflow-x: auto !important;
+    max-width: 100% !important;
+    margin: 6px 0 !important;
+    border: 1px solid #e2e8f0 !important;
+    border-radius: 6px !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03) !important;
+    background: #ffffff !important;
 }
 
-.aui-markdown-table,
 .aui-markdown table,
-.markstream table {
-    width: 100%;
-    min-width: 480px;
-    border-collapse: separate;
-    border-spacing: 0;
-    font-size: 11.5px;
-    line-height: 1.4;
-    text-align: left;
-    margin: 8px 0;
-    border: 1px solid #e2e8f0;
-    border-radius: 8px;
-    overflow: hidden;
+.aui-markdown .table-node,
+.aui-markdown .markstream-react table,
+.aui-markdown table.my-8,
+.aui-markdown table.text-sm {
+    width: 100% !important;
+    min-width: 100% !important;
+    border-collapse: collapse !important;
+    font-size: 11px !important;
+    line-height: 1.35 !important;
+    text-align: left !important;
+    margin: 0 !important;
+    border: none !important;
+    border-radius: 0 !important;
 }
 
-.aui-markdown-table th,
 .aui-markdown th,
-.markstream th {
-    background: #f8fafc;
-    color: #334155;
-    font-weight: 600;
-    padding: 8px 12px;
-    border-bottom: 1px solid #e2e8f0;
-    white-space: nowrap;
-    position: sticky;
-    top: 0;
-}
-.aui-markdown-table th:not(:last-child),
-.aui-markdown-table td:not(:last-child),
-.aui-markdown th:not(:last-child),
-.aui-markdown td:not(:last-child),
-.markstream th:not(:last-child),
-.markstream td:not(:last-child) {
-    border-right: 1px solid #f1f5f9;
+.aui-markdown .table-node th,
+.aui-markdown .table-node thead th {
+    background: #f8fafc !important;
+    color: #475569 !important;
+    font-weight: 600 !important;
+    font-size: 10.5px !important;
+    padding: 4px 6px !important;
+    border-bottom: 1px solid #e2e8f0 !important;
+    border-right: 1px solid #f1f5f9 !important;
+    white-space: nowrap !important;
+    position: sticky !important;
+    top: 0 !important;
+    line-height: 1.3 !important;
+    text-align: left !important;
 }
 
-.aui-markdown-table td,
 .aui-markdown td,
-.markstream td {
-    padding: 7px 12px;
-    border-bottom: 1px solid #f1f5f9;
-    color: #1e293b;
-    font-variant-numeric: tabular-nums;
+.aui-markdown .table-node td,
+.aui-markdown .table-node tbody td {
+    padding: 3px 6px !important;
+    border-bottom: 1px solid #f1f5f9 !important;
+    border-right: 1px solid #f1f5f9 !important;
+    color: #1e293b !important;
+    font-size: 10.5px !important;
+    line-height: 1.35 !important;
+    font-variant-numeric: tabular-nums !important;
+    white-space: normal !important;
+    word-break: break-all !important;
 }
 
-.aui-markdown-table tbody tr:nth-child(even),
+/* 单元格内部文本节点字号收敛 */
+.aui-markdown .table-node td *,
+.aui-markdown .table-node th * {
+    font-size: 10.5px !important;
+    line-height: 1.3 !important;
+}
+
+.aui-markdown th:last-child,
+.aui-markdown td:last-child,
+.aui-markdown .table-node th:last-child,
+.aui-markdown .table-node td:last-child {
+    border-right: none !important;
+}
+
 .aui-markdown tbody tr:nth-child(even),
-.markstream tbody tr:nth-child(even) {
-    background: #fbfcfd;
+.aui-markdown .table-node tbody tr:nth-child(even) {
+    background: #fafbfc !important;
 }
-.aui-markdown-table tbody tr:hover,
 .aui-markdown tbody tr:hover,
-.markstream tbody tr:hover {
-    background: #eff6ff;
+.aui-markdown .table-node tbody tr:hover {
+    background: #eff6ff !important;
 }
-.aui-markdown-table tbody tr:last-child td,
 .aui-markdown tbody tr:last-child td,
-.markstream tbody tr:last-child td {
-    border-bottom: none;
+.aui-markdown .table-node tbody tr:last-child td {
+    border-bottom: none !important;
 }
 
 /* ==========================================================================

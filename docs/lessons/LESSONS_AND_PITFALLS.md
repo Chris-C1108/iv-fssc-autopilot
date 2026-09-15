@@ -55,6 +55,8 @@
 | **34** | **住宿超标理由硬编码伪造风控与用户完全自主拷贝双层守卫闭环** | 传统规则粗暴注入硬编码合规假理由（如“项目出差业务需要，就近入住”），违背真实合规审计原则，剥夺用户真实理由自主权 | 彻底清剿所有硬编码假理由；未超标显示选填不标红，超标且未填写时红框必填警示且保持空值；大表格配置一键拷贝微按钮（`📋`）供快速复制本行费用说明；保存前置刚性拦截（`btnSaveAll`）未填超标说明记录，弹窗报警并平滑滚动高亮定位；传输层阻断违规写库 |
 | **35** | **出租车无票面站点导致大模型时空断链与起止地推断失败** | 出租车电子发票/网约车行程单原生票面几乎没有站点（`stationGetOn`/`stationGetOff` 为空），但具备分钟级精度的乘车时间（`timeGetOn`/`timeGetOff`）；数据管道此前丢弃乘车时间，且 Prompt 缺乏大交通起降到发时刻与出租车先后的时空闭环逻辑 | `ExpenseRecordExportRow` 与 `ExpenseInvoiceSubItem` 全链路透传 `timeGetOn`；针对多发票合并优先定位出租车票；System Prompt 注入【时空轨迹闭环推理指引】（去程前从住所赴枢纽、到达后赴酒店、返程前赴枢纽、落地后回住所、常驻日酒店与现场流转、去模糊代称铁律） |
 | **36** | **未提交报销单穿透金额为 ¥0.00 与全员待报销费用池数据源断层陷阱 (v4.61.3)** | ① 报销单明细金额字段形态多样，单纯读取 `claimDatas.AMOUNT?.value?.amount` 在草稿单未算税或未重算时导致明细金额全为 ¥0.00；② 业务语境断层：用户在模态框中有 119 笔费用全量待报销池，而后台仅试生成了 7 张草稿（20笔明细），只查单据草稿导致 99 笔费用严重遗漏，脱离手工账基准 | ① 建立防御性多级级联金额抽取器 `extractRowAmount`，穿透 `claimDatas`、`recArea` (支出记录区)、`boArea` (预算区) 与主单汇总；② 构建双轨数据架构：`generateComprehensivePersonExpenseReport` 对当前 119 笔全量池做确定性人员归集（笔数/发票数/金额），下挂草稿箱单据流转表，100% 对齐财务手工账 (¥55,369.87) |
+| **37** | **宿主系统发票 OCR 裁切特写 (`videoAddress`) 与原始上传大图 (`filePath`) 逆向发现与双模呈现 (v4.62.4)** | 直接拉取发票附件原件展示整张多票拍摄的大图（分辨率达 5712×4284），导致悬浮窗看不清单张发票细节；误以为系统没有单票切片 | 逆向官方验票页 `checkInvoicePage` 发现原生秘密：`inv.filePath` 为用户上传的拍摄全图，而 `inv.videoAddress` 是宿主系统后台 OCR 自动裁切的单张特写切片！数据抽取层双轨捕获 `attachmentId` 与 `rawAttachmentId`，预览默认优先加载 `videoAddress` 特写并提供就地一键无缝切换原件大图与容灾降级 |
+| **38** | **CSS Stacking Context 局部层叠上下文穿透与 Popover 鼠标常驻平滑防抖机制 (v4.62.5)** | ① 表格 `<th>` 自身带有 `position: sticky; z-index: 10`，其内部下拉菜单即使设 `z-index: 99999` 仍会被其他 `z-index: 20` 的粘性列遮挡；② 鼠标离开触发图标移向浮窗时瞬间闪退 | ① 在表头展开筛选菜单时动态为当前 `<th>` 注入高层级类名 `yn-bem-th-popover-open`（`z-index: 10000 !important;`）并赋浮窗 `z-index: 10001 !important;`，击穿局部层叠上下文；② 引入 `isMouseOverPopover` 与 `isMouseOverBtn` 双轨感知，移出触发 280ms 延时防抖接力，鼠标移入浮窗即取消定时器实现顺畅常驻 |
 
 ---
 
@@ -972,6 +974,120 @@
   3. 维表候选人提取 ID 必须使用 `item.data?.objectId || item.key || item.data?.accountId || item.id`，命中当前登录人 ID 时赋予 `+500` 权重并豁免括号扣分。  
   4. `createSingleTripApplicationApi` 在本人出差场景下，刚性锁定 `state.applicantId` 和 `loginUser.userName`。  
 **修复版本**：`v4.61.0`
+
+---
+
+### 51. 费用类型列状态中文规范化、三维复合筛选引擎与发票照片悬浮预览防遮挡算法 (v4.62.0)
+
+**时间**：2026-09-14  
+**严重级别**：🟡 P2 — 业务体验与效率提升（去除残留英文状态、增强多维交叉筛选、免点击发票照片悬浮预览）  
+**现象**：  
+  1. 费用类型列的报销状态徽章偶发显示为 `REIMBURSE` 或 `ALREADY_REIMBURSE` 等英文状态代码。  
+  2. 费用类型列仅支持筛选费用类型名称，缺乏对【报销状态】与【单据类型（差旅·BC / 经费·BJ）】的直接组合筛选。  
+  3. 用户在核对发票时需要频繁点击甚至新开窗口，且发票类型列没有直观的照片预览入口。  
+**底层根因链条**：  
+  1. 元年云底层接口返回的状态字段枚举包括 `NO_REIMBURSE`、`REIMBURSE`、`REIMBURSING`、`ALREADY_REIMBURSE`、`REIMBURSED`。旧代码未做全量收敛映射，直接输出了原始枚举字符串。  
+  2. 列筛选仅将单一字符串存入 set，在单一列包含多个业务维度（类型/状态/单据流向）时，若简单使用 `some` 会退化为扁平 OR 筛选，无法实现“未报销且属于差旅·BC的住宿费”的业务逻辑。  
+  3. 鼠标悬浮预览浮窗若简单跟随光标或绝对居中，极易发生覆盖光标本身，造成鼠标事件被浮窗拦截引起的高频闪烁与无法继续选中文本等体验灾难。  
+**终极解法**：  
+  1. 封装并导出 `normalizeExpenseStatus`，全链路（接口拉取、聚合分组、UI渲染）清洗状态枚举为标准的 `未报销`、`报销中`、`已报销` 中文。  
+  2. 在 `getGroupColumnValues('expenseTypeName')` 中输出 `[类型名, '状态: ' + 状态, '单据: ' + 单据名]`；并在筛选引擎 `getFilteredGroups` 中实现**维度内 OR、维度间 AND** 的复合交叉筛选；弹窗选项分三段（📋 报销状态 / 📑 报销单类型 / 🏷️ 费用类型）清晰渲染。  
+  3. 发票类型列注入 `🖼️` 预览按钮；挂载全局单例浮窗 `#yn-bem-invoice-preview-popover`，采用 `pointer-events: none` 彻底杜绝鼠标穿透遮挡；智能计算视口碰撞：默认置于鼠标右侧 24px，若右侧越界平滑切换至左侧 24px，垂直居中限位，体验丝滑稳定。  
+**修复版本**：`v4.62.0`
+
+---
+
+### 52. 发票原件照片鉴权加载拦截、发票号码伪附件 ID 剔除与非差旅费用类型智能自愈推断 (v4.62.1)
+
+**时间**：2026-09-14  
+**严重级别**：🔴 P1 — 发票照片浮窗加载失败（报未登录 401）与日常/福利费用被错误归类为差旅单据  
+**现象**：  
+  1. 用户悬浮发票原件照片按钮时，浮窗提示“⚠️ 照片加载失败或未登录”；
+  2. 已报销列表的“日常办公与市内交通 (走经费报销单·BJ)”分组下，多笔出租车发票（说明为 CMP）被标记为【其他费用】且单据流向被错误打上【差旅·BC】标签；
+  3. 一笔“新生儿礼金”在无发票挂载时被错误识别或归入飞机票/差旅。  
+**底层根因链条**：  
+  1. **附件 ID 提取偏差**：电子发票的 `fileId` 字段存放的是 20 位发票号码（如 `25317000003166847978`），被误作为 `attachmentId`；真正的附件 ID 需排除纯数字发票号码。
+  2. **跨域/鉴权拦截**：原生 `<img>` 标签直接加载 `/fssc/billAttachment/attachmentPreview` 时不会携带 `LoginToken` / `EcsToken` 请求头，导致后端返回 `{"success":false,"message":"登录失效，请重新登录"}`。
+  3. **单据流向默认回退 BC 陷阱**：`getExpenseBillFlow` 针对“其他费用”或未识别类型，一律回退为 `'BC'`，导致属于经费日常报销单的费用被打上 `[差旅·BC]` 标签。
+  4. **打车票底层发票冲突未纠偏**：底层发票明确为出租车（含上下车时间），但费用记录类型为“其他费用”，系统未根据发票类型做智能自愈与纠偏建议。  
+**终极解法**：  
+  1. 附件 ID 提取加入 `^\d{12,}$` 过滤，排除纯数字发票号码；
+  2. 浮窗图片加载采用带 Token 鉴权的 `fetch(url, { headers })` 获取响应为 `Blob`，并通过 `URL.createObjectURL(blob)` 渲染为临时对象 URL，配合 `invoicePhotoBlobCache` 内存缓存，彻底解决 401 未登录问题；
+  3. 重构 `getExpenseBillFlow`：扩充 `BJ` 判定范围，对于“其他费用”在非出差期间默认归为 `BJ`（经费报销单），严禁一刀切默认返回 `BC`；
+  4. 强化 `groupExpenseRows` 与 `checkTaxiMisclassification`：当记录挂载出租车票据时优先识别为【市内交通费】（BJ）；对无发票记录根据费用说明关键词（如 `礼金`、`福利`）智能归入福利费。  
+**修复版本**：`v4.62.1`
+
+---
+
+### 53. 发票原件照片原生路径逆向提取、PDF电子发票原件与已报销费用免推断只读纯展示铁律 (v4.62.2)
+
+**时间**：2026-09-14  
+**严重级别**：🔴 P1 — 发票照片原件提取缺失/裂开与已报销归档记录被推断改写篡改  
+**现象**：  
+  1. 用户悬浮发票原件照片图标时，绝大多数发票显示“暂无发票原件照片附件”；部分电-普发票（如数电发票）显示图片裂开；
+  2. 已报销状态的费用记录（如原本报销时选定的“其他费用”或“出租车(taxi)”）被批量推断强行改写为“市内交通费”，打上绿色修改框（`has-type-changed`），单据类型被误算，且触发了错配灯泡报警。  
+**底层根因链条**：  
+  1. **发票原生路径字段遗漏**：逆向实测 `POST /fssc/expenseClaim/expenseRecordInvoice/getInvoiceByDataId` 接口发现，真实发票图片路径优先保存在 `inv.filePath`、`inv.videoAddress`、`inv.imagePath`、`IMAGE_PATH` 等字段（如 `"22001246/04872c3e7833a4f3f98b0fbef90c0001.jpg"`）。旧代码只查了 `inv.attachmentId`，该字段常为 `undefined`，导致大量发票附件 ID 提取为空；
+  2. **PDF 格式电子发票与 JSON 错误响应裂开**：电-普等数电发票原件常为 PDF 格式，直接置入 `<img>` 标签会导致渲染裂开；若接口返回鉴权错误 JSON 但 HTTP 为 200，被当作图片 Blob 也会导致图片裂开；
+  3. **已报销记录未做免推断隔离**：已报销费用属于历史已结报归档数据，但在 `groupExpenseRows`、`handleAiInference` 与 `checkTaxiMisclassification` 中均未对 `normalizeExpenseStatus(group.status) === '已报销'` 做熔断保护，导致其费用类型被当作待自愈项篡改。  
+**终极解法**：  
+  1. **原生字段最高优先级提取**：在 `candidateAttachIds` 中将 `inv.filePath`、`inv.videoAddress`、`inv.imagePath`、`invItem.filePath` 等列入最高优先级；并在透传 `invoiceDataId` 后，若初始无 `attachId` 支持悬浮时异步拉取发票详情兜底；
+  2. **PDF 高保真渲染与响应防御**：严格校验 `Content-Type` 与文本特征，彻底防御登录失效 JSON 错误；检测为 PDF 时渲染专用 PDF 卡片，提供一键新标签打开与打印；为普通图片增加 `onerror` 错误兜底；
+  3. **已报销费用免推断铁律 (Anti-Inference for Reimbursed Rows)**：
+     - 在 `groupExpenseRows` 中，若状态为“已报销”，严禁赋值 `newExpenseTypeId`、`newExpenseTypeName`、`newBusinessDate`、`newDescription`，动态字段不推测覆盖；
+     - 在 `checkTaxiMisclassification` 中，已报销单据直接返回 `{ hasMisclass: false }`；
+     - 在 `handleAiInference` 批量推断入口中，自动排除已报销行，绝不修改已归档数据；
+     - 在 UI 渲染中，已报销行下拉框、日期与说明输入框设为只读/禁用，消除修改绿框，呈现整洁优雅的只读态。  
+**修复版本**：`v4.62.2`
+
+---
+
+### 54. Tomcat/Spring MVC 同名不同大小写 Header 逗号拼接导致附件预览鉴权“登录失效”陷阱 (v4.62.3)
+
+**时间**：2026-09-14  
+**严重级别**：🔴 P1 — 发票照片浮窗加载提示“登录失效，请重新登录”  
+**现象**：  
+  发票原件路径已成功提取（按钮已点亮），但在浮窗加载照片时始终提示：`⚠️ 照片加载失败 (登录失效，请重新登录)`。  
+**底层根因链条**：  
+  1. 为了兼容不同后端的头字段大小写规范，前端代码在发送 `fetch(previewUrl)` 时同时传入了：
+     ```javascript
+     headers['LoginToken'] = tokens.loginToken;
+     headers['logintoken'] = tokens.loginToken;
+     ```
+  2. 根据 HTTP 规范，请求头字段名不区分大小写。当浏览器向后端的 Tomcat / Spring MVC 发送同名不同大小写的请求头时，中间件会自动将其合并为逗号分隔的字符串：`"token, token"`。
+  3. 后端服务通过 `request.getHeader("LoginToken")` 获取到的 Token 实际为带逗号的双重字符串，导致 Redis/Session 凭据比对失败，抛出业务错误 `{"success": false, "message": "登录失效，请重新登录"}`。  
+**终极解法**：  
+  1. **严格单一规范命名**：请求头中仅保留规范的大写驼峰 Header（`LoginToken`、`EcsToken`），严禁同时发送小写同名 Header；
+  2. **URL Query Param 双保险**：实测证实，在附件预览请求的 URL 查询参数中直接追加 `&LoginToken=${encodeURIComponent(loginToken)}`，即使在新标签页直接由浏览器打开，也能完美穿透鉴权，直出 5712×4284 超高清原图。  
+**修复版本**：`v4.62.3`
+
+---
+
+### 55. 智能副驾设置弹窗 z-index 层叠覆盖与 LLM 模型自动探测联动最佳实践 (v4.66.0)
+
+**时间**：2026-09-15  
+**严重级别**：🔴 P1 — 副驾右上角设置按钮点击“无效”与模型无法动态选用  
+**现象**：  
+  1. 用户在智能副驾点击右上角“设置”按钮（齿轮图标），页面无任何响应与弹窗呈现；
+  2. 对话框下方模型选择下拉框仅有硬编码的 3 个旧选项，无法切换其他自定义模型或新模型。  
+**底层根因链条**：  
+  1. **双重隐藏与 z-index 倒挂**：
+     - `injectWebMcpStyles()` 仅在 `webmcpModal.ts` 初始化时被调用，当用户从独立批量修改抽屉内部打开副驾时，样式未被注入；
+     - `.webmcp-settings-backdrop` 原样式设定为 `z-index: 100020`，而批量修改全屏弹窗 `batchEditExpenseModal` 的层级高达 `999998 ~ 10000002`，导致设置弹窗虽然成功挂载到 DOM，但被完全覆盖在底层，不可见且不可点击。
+  2. **模型选择硬编码与缺乏模型资产探测**：
+     - 对话框底部 `<select>` 硬编码了固定选项，未与 `LlmConfig` 中的持久化配置打通；
+     - 缺乏现代 AI 客户端（如 Cherry Studio / NextChat）的 `/models` 自动识别能力。  
+**终极解法**：  
+  1. **样式主动注入与超高 z-index 兜底**：
+     - 在 `openWebMcpSettingsModal()` 函数入口处主动调用 `injectWebMcpStyles()` 确保样式必达；
+     - 将 `.webmcp-settings-backdrop` 样式提升至 `z-index: 10000050 !important;`，确保永远浮在任意高层级弹窗的最顶层；
+  2. **多源模型自动探测引擎 (`fetchAvailableModels`)**：
+     - 支持 OpenAI 兼容 `/models` 端点、Google Gemini API 及 Ollama `/api/tags` 自动识别与网络受限平滑降级；
+     - 支持模型搜索过滤、勾选/取消勾选、当前默认模型激活、自定义模型添加；
+  3. **对话框底部动态联动与人在回路**：
+     - `AssistantComposer` 读取 `getLlmConfig().models` 中 `enabled === true` 的模型动态生成 `<option>`，带深度思考 🧠 与视觉 👁️ 图标；
+     - 下拉框末尾追加 `⚙️ 探测与配置更多模型...` 快捷入口，实现设置与选用的无缝闭环。  
+**修复版本**：`v4.66.0`
 
 
 

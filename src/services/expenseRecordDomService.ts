@@ -159,23 +159,28 @@ function getExpenseSelectionInfo(doc: Document): ExpenseSelectionInfo {
         }
     }
 
-    // 从 React Fiber 状态获取 selectedIds (如全选或虚拟滚动时)
+    // 从 React Fiber 状态获取 selectedIds (仅在全选且需确定跨屏选中的 ID 集合时按需提取)
     let fiberSelectedIds: string[] = [];
-    try {
-        const items = Array.from(doc.querySelectorAll('[class*="list_item"]'));
-        for (const item of items) {
-            const rKey = Object.keys(item).find(k => k.startsWith('__react'));
-            if (!rKey) continue;
-            let curr = (item as any)[rKey];
-            while (curr) {
-                const sIds = curr.memoizedState?.selectedIds;
-                if (Array.isArray(sIds) && sIds.length > fiberSelectedIds.length) {
-                    fiberSelectedIds = sIds;
+    if (isSelectAll) {
+        try {
+            // 优化：selectedIds 保存在列表容器或行父级 Fiber 上，仅需探查首个有效行即可命中并提前退出，避免对全部几百行重复深度遍历
+            const sampleItems = Array.from(doc.querySelectorAll('[class*="list_item"]')).slice(0, 3);
+            for (const item of sampleItems) {
+                const rKey = Object.keys(item).find(k => k.startsWith('__react'));
+                if (!rKey) continue;
+                let curr = (item as any)[rKey];
+                while (curr) {
+                    const sIds = curr.memoizedState?.selectedIds;
+                    if (Array.isArray(sIds) && sIds.length > 0) {
+                        fiberSelectedIds = sIds;
+                        break;
+                    }
+                    curr = curr.return;
                 }
-                curr = curr.return;
+                if (fiberSelectedIds.length > 0) break;
             }
-        }
-    } catch (e) { }
+        } catch (e) { }
+    }
 
     const totalDomItems = doc.querySelectorAll('[class*="list_item"]:not([class*="lists_header"])').length;
 
@@ -509,21 +514,11 @@ export function scanAndEnhanceExpenseRecordDOM(doc: Document) {
                 setTimeout(updateSelectionBtn, 50);
             }
         });
-    } else if (!btnExport.classList.contains('is-loading')) {
-        // 动态同步按钮文本
-        const sel = getExpenseSelectionInfo(doc);
-        const count = sel.isSelectAll ? sel.domItemCount : sel.selectedIds.length;
-        const expected = sel.isSelectAll
-            ? `<span>📥 导出已选费用 (全部 ${count} 条)</span>`
-            : (sel.selectedIds.length > 0 ? `<span>📥 导出已选费用 (已选 ${sel.selectedIds.length} 条)</span>` : `<span>📥 导出费用与发票清单</span>`);
-        if (btnExport.innerHTML !== expected) {
-            btnExport.innerHTML = expected;
-        }
     }
 }
 
 /**
- * 为单个 Document 绑定 MutationObserver 自动感知页面渲染与切页
+ * 为单个 Document 绑定 MutationObserver 自动感知页面渲染与切页 (针对特定表格容器精确过滤，杜绝高频主线程阻塞)
  */
 function ensureDocObserver(doc: Document, onChange: () => void) {
     if (!doc || !doc.body || observedDocs.has(doc)) return;
@@ -531,27 +526,61 @@ function ensureDocObserver(doc: Document, onChange: () => void) {
 
     try {
         const obs = new MutationObserver((mutations) => {
-            // 现代化事件隔离：忽略所有发生在批量修改弹窗内部或悬浮岛内部的 DOM 变更
-            // 彻底杜绝弹窗内部的分组切换、折叠/展开、单元格输入触发后台页面的全量扫描与 React Fiber 遍历
-            const isBatchModalMutation = mutations.every(m => {
-                const target = m.target as HTMLElement;
-                if (!target) return false;
-                return Boolean(
-                    target.id === 'yn-batch-edit-modal' ||
-                    target.id === 'yn-batch-edit-mask' ||
-                    target.id === 'autopilot-floating-dock' ||
-                    (target.closest && (
-                        target.closest('#yn-batch-edit-modal') ||
-                        target.closest('#yn-batch-edit-mask') ||
-                        target.closest('#autopilot-floating-dock')
-                    ))
-                );
-            });
-            if (isBatchModalMutation) return;
+            let shouldTrigger = false;
+            for (const m of mutations) {
+                if (m.type === 'childList') {
+                    for (let i = 0; i < m.addedNodes.length; i++) {
+                        const node = m.addedNodes[i];
+                        if (node.nodeType === Node.ELEMENT_NODE) {
+                            const el = node as HTMLElement;
+                            // 忽略自身注入的按钮和模态框
+                            if (
+                                el.id?.startsWith('yn-') ||
+                                el.id?.startsWith('autopilot-') ||
+                                el.classList?.contains('yn-') ||
+                                (el.closest && (el.closest('#yn-batch-edit-modal') || el.closest('#autopilot-floating-dock')))
+                            ) {
+                                continue;
+                            }
+                            // 仅当涉及列表容器、行元素、表格或按钮容器变动时触发
+                            if (
+                                el.tagName === 'TR' ||
+                                el.classList?.contains('ant-table-tbody') ||
+                                el.querySelector?.('[class*="list_item"]') ||
+                                el.querySelector?.('[class*="record_lists"]') ||
+                                el.querySelector?.('[class*="operate_record_btn_container"]') ||
+                                el.classList?.contains('ant-btn-primary')
+                            ) {
+                                shouldTrigger = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (shouldTrigger) break;
 
-            onChange();
+                    for (let i = 0; i < m.removedNodes.length; i++) {
+                        const node = m.removedNodes[i];
+                        if (node.nodeType === Node.ELEMENT_NODE) {
+                            const el = node as HTMLElement;
+                            if (el.tagName === 'TR' || el.querySelector?.('[class*="list_item"]') || el.classList?.contains('ant-table-tbody')) {
+                                shouldTrigger = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (shouldTrigger) break;
+                }
+            }
+            if (shouldTrigger) {
+                onChange();
+            }
         });
-        obs.observe(doc.body, { childList: true, subtree: true });
+
+        // 优先针对特定表格容器进行精准监听
+        const targetContainer = doc.querySelector('[class*="record_lists"]') ||
+            doc.querySelector('[class*="lists_body"]') ||
+            doc.body;
+        obs.observe(targetContainer, { childList: true, subtree: true });
     } catch (e) { }
 }
 
@@ -560,14 +589,29 @@ function ensureDocObserver(doc: Document, onChange: () => void) {
  */
 export function initExpenseRecordDomService(state: GlobalState) {
     let scanTimeout: any = null;
+    let idleHandle: any = null;
+
+    const runIdleScan = () => {
+        const currentDocs = getExpenseRecordTargetDocs();
+        currentDocs.forEach(doc => {
+            ensureDocObserver(doc, triggerScan);
+            scanAndEnhanceExpenseRecordDOM(doc);
+        });
+    };
+
     const triggerScan = () => {
         if (scanTimeout) clearTimeout(scanTimeout);
+        if (idleHandle && typeof (window as any).cancelIdleCallback === 'function') {
+            (window as any).cancelIdleCallback(idleHandle);
+        }
+
         scanTimeout = setTimeout(() => {
-            const currentDocs = getExpenseRecordTargetDocs();
-            currentDocs.forEach(doc => {
-                ensureDocObserver(doc, triggerScan);
-                scanAndEnhanceExpenseRecordDOM(doc);
-            });
+            // 利用 requestIdleCallback 分解长任务，确保用户交互（点击、滚动、悬浮）零阻塞
+            if (typeof (window as any).requestIdleCallback === 'function') {
+                idleHandle = (window as any).requestIdleCallback(runIdleScan, { timeout: 300 });
+            } else {
+                runIdleScan();
+            }
         }, 150);
     };
 
@@ -581,11 +625,17 @@ export function initExpenseRecordDomService(state: GlobalState) {
     if (isObserverAttached) return;
     isObserverAttached = true;
 
-    // 周期性心跳巡检保活 (2.5 秒)
+    // 周期性心跳巡检保活 (2.5 秒) - 增加 Fast-Path 快速守卫
     setInterval(() => {
         const currentDocs = getExpenseRecordTargetDocs();
         currentDocs.forEach(doc => {
             ensureDocObserver(doc, triggerScan);
+            // 快速守卫：如果增强按钮皆已连接挂载，则无需触发繁重扫描与 Fiber 遍历
+            const hasFloating = doc.getElementById('yn-floating-batch-edit-expenses');
+            const hasExport = doc.getElementById('yn-btn-export-expense-records');
+            if (hasFloating && hasExport && hasFloating.isConnected && hasExport.isConnected) {
+                return;
+            }
             scanAndEnhanceExpenseRecordDOM(doc);
         });
     }, 2500);

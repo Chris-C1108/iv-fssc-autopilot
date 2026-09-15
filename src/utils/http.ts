@@ -376,7 +376,8 @@ export async function callNativeHttp(
  * 全方位、实时动态嗅探宿主页面与所有 iframe 中的最新 Token
  * 覆盖：top window 与所有同源 iframe 的 sessionStorage / localStorage / URL 查询参数 / Cookies
  */
-export function extractLatestTokens(state: GlobalState): { loginToken: string; ecsToken: string } {
+export function extractLatestTokens(state?: Partial<GlobalState>): { loginToken: string; ecsToken: string } {
+    const sState = state || {};
     let bestLoginToken = '';
     let bestEcsToken = '';
 
@@ -439,30 +440,30 @@ export function extractLatestTokens(state: GlobalState): { loginToken: string; e
             }
         }
         // 3. 扫描并自动同步宿主当前登录用户信息 (包含真实 userId, userName, loginName)
-        if (!state.currentUser?.userId || !state.applicantId) {
+        if (!sState.currentUser?.userId || !sState.applicantId) {
             try {
                 const uStr = s.getItem('ecs_currentUser');
                 if (uStr) {
                     const u = JSON.parse(uStr);
                     if (u && u.id) {
-                        if (!state.currentUser) state.currentUser = {} as any;
-                        state.currentUser.userId = u.id;
-                        state.currentUser.userName = u.userName || '';
-                        state.currentUser.loginName = u.loginName || '';
-                        state.applicantId = u.id;
-                        state.applicantName = u.userName || '';
+                        if (!sState.currentUser) sState.currentUser = {} as any;
+                        sState.currentUser.userId = u.id;
+                        sState.currentUser.userName = u.userName || '';
+                        sState.currentUser.loginName = u.loginName || '';
+                        sState.applicantId = u.id;
+                        sState.applicantName = u.userName || '';
                     }
                 }
             } catch (e) { }
         }
 
-        if (bestLoginToken && bestEcsToken && state.applicantId) break;
+        if (bestLoginToken && bestEcsToken && sState.applicantId) break;
     }
 
-    if (bestLoginToken) state.loginToken = bestLoginToken;
-    if (bestEcsToken) state.ecsToken = bestEcsToken;
+    if (bestLoginToken) sState.loginToken = bestLoginToken;
+    if (bestEcsToken) sState.ecsToken = bestEcsToken;
 
-    return { loginToken: state.loginToken || bestLoginToken || '', ecsToken: state.ecsToken || bestEcsToken || '' };
+    return { loginToken: sState.loginToken || bestLoginToken || '', ecsToken: sState.ecsToken || bestEcsToken || '' };
 }
 
 export function getHeaders(
