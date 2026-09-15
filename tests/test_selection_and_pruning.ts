@@ -141,6 +141,76 @@ assert(statsB.selectedTotalAmount === '0.00', '清空后金额合计为 ¥0.00')
 assert(statsB.isBatchActionsDisabled === true, 'selectedCount === 0 时，批量操作按钮必须禁用');
 
 // =========================================================================
+// 5. 测试 住宿费单价高精度计算、房间数联动与超标判定 (Hotel Unit Price & Room Num)
+// =========================================================================
+console.log('\n--- 5. 住宿费单价高精度计算、房间数联动与超标判定测试 ---');
+
+import { isHotelGroupOverStandard } from '../src/ui/batchEditExpenseModal';
+import { ExpenseRecordGroup } from '../src/types/state';
+
+// 场景 1: 用户实际用例 (图 1 vs 图 2)
+// 金额 ¥4,265.47，入住 2026-08-17，离店 2026-08-21 (4晚)，房间数 3间，城市 天津 (限额 ¥700)
+const hotelGroup3Rooms: ExpenseRecordGroup = {
+    groupKey: 'HOTEL-001',
+    expenseTypeName: '住宿费（宿泊代）',
+    expenseTypeId: '0356c4e2b72de1653e55bb00bc610001',
+    expenseAmount: 4265.47,
+    items: [],
+    dynamicFields: {
+        checkInDate: '2026-08-17',
+        checkOutDate: '2026-08-21',
+        city: '天津',
+        roomNum: 3,
+        hotelName: '天津津南新城国家会展中心店'
+    },
+    inferredFields: {}
+};
+
+// 验证 1: 间夜数计算
+const dateIn = new Date(hotelGroup3Rooms.dynamicFields!.checkInDate!).getTime();
+const dateOut = new Date(hotelGroup3Rooms.dynamicFields!.checkOutDate!).getTime();
+const nights = Math.max(1, Math.round((dateOut - dateIn) / (1000 * 60 * 60 * 24)));
+const roomNum = hotelGroup3Rooms.dynamicFields!.roomNum || 1;
+const totalRoomNights = nights * roomNum;
+assert(nights === 4, '入住 8-17 至 8-21 天数精准为 4 晚');
+assert(totalRoomNights === 12, '3间房 4晚 总间夜数精准为 12 间夜');
+
+// 验证 2: 单价计算公式准确性
+const unitPrice3Rooms = Math.round((hotelGroup3Rooms.expenseAmount / totalRoomNights) * 100) / 100;
+assert(unitPrice3Rooms === 355.46, '4265.47 / 12 间夜 单价精准计算为 ¥355.46 (对应图2)');
+
+// 验证 3: 超标校验判定
+const isOver3Rooms = isHotelGroupOverStandard(hotelGroup3Rooms);
+assert(isOver3Rooms === false, '3间房时单价 ¥355.46 <= ¥700.00，系统判定为【未超标】(对应图2)');
+
+// 场景 2: 若只有 1 间房 (对比图 1 缺陷场景)
+const hotelGroup1Room: ExpenseRecordGroup = {
+    ...hotelGroup3Rooms,
+    dynamicFields: {
+        ...hotelGroup3Rooms.dynamicFields,
+        roomNum: 1
+    }
+};
+const unitPrice1Room = Math.round((hotelGroup1Room.expenseAmount / (nights * 1)) * 100) / 100;
+assert(unitPrice1Room === 1066.37, '若遗漏房间数 (1间房) 单价为 ¥1066.37 (对应图1)');
+const isOver1Room = isHotelGroupOverStandard(hotelGroup1Room);
+assert(isOver1Room === true, '1间房时单价 ¥1066.37 > ¥700.00，系统判定为【已超标】(对应图1)');
+
+// 场景 3: 一线城市 (北上广深) 限额 ¥800 校验
+const hotelGroupShanghai: ExpenseRecordGroup = {
+    ...hotelGroup3Rooms,
+    expenseAmount: 3100.00, // 3100 / (2晚 * 2间 = 4间夜) = 775.00
+    dynamicFields: {
+        checkInDate: '2026-09-01',
+        checkOutDate: '2026-09-03',
+        city: '上海市',
+        roomNum: 2
+    }
+};
+const isOverShanghai = isHotelGroupOverStandard(hotelGroupShanghai);
+assert(isOverShanghai === false, '上海市限额 ¥800，单价 ¥775.00 时判定为【未超标】');
+
+// =========================================================================
 // 测试结果汇总
 // =========================================================================
 console.log('\n===============================================================');

@@ -65,6 +65,7 @@ export interface InvoiceItem {
     checkInDate?: string;
     checkOutDate?: string;
     stayDays?: number;
+    roomNum?: number;
     city?: string;
 
     // 系统后端错误提示 (来自 getExpenseRecordListBySearchVO 的 expenseRecordTypeMessageVO.errorMessages)
