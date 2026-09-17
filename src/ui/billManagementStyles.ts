@@ -173,6 +173,62 @@ export function getBillManagementStyles(): string {
   display: inline-block;
 }
 
+/* 字段属性归属微徽章 [共通 | 申请 | 报销] */
+.yn-bm-badge-common {
+  display: inline-block;
+  padding: 1px 4px;
+  font-size: 10px;
+  line-height: 12px;
+  font-weight: 700;
+  border-radius: 3px;
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+  margin-right: 3px;
+  vertical-align: middle;
+}
+
+.yn-bm-badge-apply {
+  display: inline-block;
+  padding: 1px 4px;
+  font-size: 10px;
+  line-height: 12px;
+  font-weight: 700;
+  border-radius: 3px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+  margin-right: 3px;
+  vertical-align: middle;
+}
+
+.yn-bm-badge-claim {
+  display: inline-block;
+  padding: 1px 4px;
+  font-size: 10px;
+  line-height: 12px;
+  font-weight: 700;
+  border-radius: 3px;
+  background: #f0fdf4;
+  color: #15803d;
+  border: 1px solid #bbf7d0;
+  margin-right: 3px;
+  vertical-align: middle;
+}
+
+.yn-bm-header-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: #64748b;
+  margin-left: 10px;
+}
+.yn-bm-header-legend span {
+  display: inline-flex;
+  align-items: center;
+}
+
 .yn-bm-spread-table td {
   padding: 4px 6px;
   border-bottom: 1px solid var(--bm-border);

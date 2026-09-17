@@ -674,18 +674,21 @@ export async function searchProjectList(
         if (res && res.success && res.data && Array.isArray(res.data)) {
             const traverse = (nodes: any[]) => {
                 nodes.forEach(node => {
-                    const d = node.data || node;
-                    const id = d.objectId || d.id || node.id || node.key;
-                    const name = d.description || d.name || node.name || (d.externalSysAttr?.NAME) || '';
+                    const d = node.objectAllInfo || node.data || node;
+                    const id = d.objectId || d.id || node.memberId || node.id || node.key || '';
+                    let name = node.memberName || d.name || d.description || node.name || (d.externalSysAttr?.NAME) || '';
                     const code = d.code || node.code || (d.externalSysAttr?.CODE) || '';
+                    if (code && name && !name.includes(code)) {
+                        name = `${code} ${name}`;
+                    }
                     if (id && (name || code)) {
                         list.push({
                             id,
                             code,
-                            name,
+                            name: name || code,
                             vo: {
                                 value: id,
-                                title: { zh_CN: name }
+                                title: { zh_CN: name || code }
                             }
                         });
                     }

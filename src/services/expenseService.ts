@@ -6,7 +6,7 @@ import { computePeriod, normalizeDate } from '../utils/date';
 import { mapConcurrent } from '../utils/concurrency';
 import { detectInvoiceCategory } from './commuteService';
 import { AutopilotLogger } from '../utils/logger';
-import { fetchLoginUserInfo, fetchCityVO } from './applicationService';
+import { fetchLoginUserInfo, fetchCityVO, calculateDaysAndNights, computeMealAllowance, generateUuid } from './applicationService';
 import { fetchBillDataAndTemplateApi, parseBillDataStructure } from './billService';
 import { enrichInvoiceWithValidation } from './invoiceValidationService';
 
@@ -585,7 +585,7 @@ export async function queryExpenseRecordListApi(
     state: GlobalState,
     win?: Window | null,
     forceRefresh: boolean = true,
-    statusList: string[] = ['NO_REIMBURSE', 'REIMBURSING']
+    statusList?: string[]
 ) {
     // 只有在非强制刷新模式下，才允许复用最近拦截到的记录
     if (!forceRefresh && state.lastInterceptedExpenseRecords && state.lastInterceptedExpenseRecords.length > 0) {
@@ -595,10 +595,12 @@ export async function queryExpenseRecordListApi(
 
     const applicantId = state.currentUser?.userId || state.applicantId;
 
-    // 1. 标准分页结构请求 (大分页 200 条，默认覆盖未报销与报销中)
+    // 1. 标准分页结构请求 (大分页 200 条)
+    // statusList 传 undefined 时默认查询未报销与报销中；传 [] 时代表全量查询全部状态 (含未报销、报销中、已报销)
+    const statusParam = statusList === undefined ? ['NO_REIMBURSE', 'REIMBURSING'] : [...statusList];
     const standardPayload: any = {
         pageOrderParam: { pageNum: 1, pageSize: 200 },
-        status: statusList && statusList.length > 0 ? [...statusList] : ['NO_REIMBURSE', 'REIMBURSING'],
+        status: statusParam,
         requestDate: null,
         sortOrder: 'DESC',
         sortColumnCode: 'CREATE_DATE'
@@ -609,8 +611,8 @@ export async function queryExpenseRecordListApi(
         const nativeRes = await callNativeHttp('/expenseClaim/expenseRecord/getExpenseRecordListBySearchVO', 'POST', standardPayload, win);
         if (nativeRes && nativeRes.success && nativeRes.data) {
             let list: any[] = nativeRes.data.list || nativeRes.data.expenseRecordList || [];
-            if (list.length === 0) {
-                // 若未报销状态为 0，尝试全部状态查询
+            if (list.length === 0 && statusParam.length > 0) {
+                // 若指定状态查询为 0 条，尝试全部状态查询
                 standardPayload.status = [];
                 const allRes = await callNativeHttp('/expenseClaim/expenseRecord/getExpenseRecordListBySearchVO', 'POST', standardPayload, win);
                 list = (allRes?.data?.list || allRes?.data?.expenseRecordList) || [];
@@ -2089,12 +2091,12 @@ export async function fetchExpenseRecordsWithInvoiceDetails(
     targetRecordIds?: string[],
     onProgress?: (current: number, total: number) => void,
     win?: Window | null,
-    statusList: string[] = ['NO_REIMBURSE', 'REIMBURSING']
+    statusList?: string[]
 ): Promise<ExpenseRecordExportRow[]> {
     // 强制清除旧拦截缓存，保障穿透拉取最新全量数据
     state.lastInterceptedExpenseRecords = null;
 
-    // 1. 获取费用记录列表 (Network-First，默认查询未报销与报销中)
+    // 1. 获取费用记录列表 (Network-First，statusList 传 [] 时代表全量查询全部状态)
     const allRecords = await queryExpenseRecordListApi(state, win, true, statusList);
     let targetRecords = allRecords;
     if (targetRecordIds && targetRecordIds.length > 0) {
@@ -2909,4 +2911,296 @@ function ensureExpenseRowField(
 
     state.lastInterceptedExpenseRecords = null;
     return result;
+}
+
+export interface MealAllowanceParams {
+    applicantId?: string;
+    applicantName?: string;
+    startDate: string;
+    endDate: string;
+    destinationCity: string;
+    projectName?: string;
+    description?: string;
+}
+
+/**
+ * 为出差报销单 (BC) 中的正社员动态创建【误餐补助】费用明细记录
+ * 
+ * 严格逆向对齐元年官方真实流程 (HAR 校验)：
+ * 1. initExpenseRecordData: 初始化 0356c51e601de1653e55bb00bc610000 (误餐补助)
+ * 2. 动态检索城市维度对象 (fetchCityVO)
+ * 3. 填入起止时间与出差城市，触发 fieldValueChange 联动测算合规标准金额
+ * 4. 持久化保存 (validateAndSaveExpenseRecord) 并返回 expenseRecordId
+ */
+export async function createMealAllowanceExpenseRecordApi(
+    params: MealAllowanceParams,
+    state: GlobalState,
+    win?: Window | null
+): Promise<string> {
+    if (!state.applicantId || !state.currentUser?.userId) {
+        try {
+            await fetchLoginUserInfo(state);
+        } catch (e) { }
+    }
+
+    const userId = params.applicantId ||
+        state.applicantId ||
+        state.currentUser?.userId ||
+        (typeof sessionStorage !== 'undefined' ? (sessionStorage.getItem('userId') || sessionStorage.getItem('loginUserId')) : '') || '';
+    
+    const userName = params.applicantName ||
+        state.applicantName ||
+        state.currentUser?.userName ||
+        '正社员';
+
+    const startDateRaw = params.startDate || '';
+    const endDateRaw = params.endDate || '';
+    const baseStartDate = startDateRaw.split('T')[0].split(' ')[0];
+    const baseEndDate = endDateRaw.split('T')[0].split(' ')[0];
+
+    const startTime = (startDateRaw.includes('T') ? startDateRaw.split('T')[1] : startDateRaw.includes(' ') ? startDateRaw.split(' ')[1] : '').slice(0, 5) || '09:00';
+    const endTime = (endDateRaw.includes('T') ? endDateRaw.split('T')[1] : endDateRaw.includes(' ') ? endDateRaw.split(' ')[1] : '').slice(0, 5) || '18:00';
+
+    const trainStart = `${baseStartDate} ${startTime}:00`;
+    const trainEnd = `${baseEndDate} ${endTime}:00`;
+    const businessDate = `${baseStartDate} 00:00:00`;
+
+    const winObj = win || (typeof window !== 'undefined' ? window : null);
+    const mealTypeId = '0356c51e601de1653e55bb00bc610000';
+    const currencyId = state.accountCurrencyId || '6e589eb2dd9f11e8b5a69590a14a4e34';
+
+    // 1. 初始化费用记录模版 (initExpenseRecordData)
+    const initPayload = {
+        intersectionScope: [["03566dbf373de1653e55bb00bc610000"]],
+        accountCurrencyId: currencyId,
+        expenseTypeId: mealTypeId,
+        executeType: "CHANGE_EXPENSE_TYPE",
+        triggerTiming: "ADD_ROW",
+        applicantId: userId,
+        preview: false,
+        dimensionMappingQueryVOList: [],
+        billApplicantId: userId
+    };
+
+    let initRes: any = await callNativeHttp(
+        '/fssc/expenseClaim/expenseRecord/initExpenseRecordData',
+        'POST',
+        initPayload,
+        winObj
+    ) || await apiRequest(
+        '/fssc/expenseClaim/expenseRecord/initExpenseRecordData',
+        'POST',
+        initPayload,
+        state
+    );
+
+    let expenseRecordId = initRes?.data?.expenseRecordId || generateUuid();
+    let rowDatas: any = initRes?.data?.rowDatas || {};
+
+    // 2. 动态检索城市维度对象
+    const cityVO = await fetchCityVO(params.destinationCity, state, '6b8ff0649ebe11e88b72df10cd5db793');
+
+    // 3. 严格遵循官方链路执行 4 步规则联动 (fieldValueChange)
+    // 3.1 联动 BUSINESS_DATE
+    try {
+        const fvc1: any = await callNativeHttp(
+            '/fssc/expenseClaim/expenseRecordRuleExecute/fieldValueChange',
+            'POST',
+            {
+                fieldId: "0356c51e67ede1653e55bb00bc610016",
+                fieldName: "费用日期",
+                columnCode: "BUSINESS_DATE",
+                fieldValue: businessDate,
+                recordDataVO: {
+                    accountCurrencyId: currencyId,
+                    expenseTypeId: mealTypeId,
+                    expenseRecordId,
+                    rowDatas
+                }
+            },
+            winObj
+        );
+        if (fvc1?.data?.rowDatas) rowDatas = Object.assign({}, rowDatas, fvc1.data.rowDatas);
+    } catch (e) { }
+
+    // 3.2 联动 出差开始时间 (TRAIN_START_DATE)
+    try {
+        const fvc2: any = await callNativeHttp(
+            '/fssc/expenseClaim/expenseRecordRuleExecute/fieldValueChange',
+            'POST',
+            {
+                fieldId: "0356c823023345af7f1906ec05cc0003",
+                fieldName: "出差开始时间",
+                columnCode: "TRAIN_START_DATE",
+                fieldValue: trainStart,
+                recordDataVO: {
+                    accountCurrencyId: currencyId,
+                    expenseTypeId: mealTypeId,
+                    expenseRecordId,
+                    rowDatas
+                }
+            },
+            winObj
+        );
+        if (fvc2?.data?.rowDatas) rowDatas = Object.assign({}, rowDatas, fvc2.data.rowDatas);
+    } catch (e) { }
+
+    // 3.3 联动 出差城市 (CITY，关键 fieldId: 035a4985309345af7f1906ec05cc0001)
+    if (cityVO) {
+        try {
+            const fvc3: any = await callNativeHttp(
+                '/fssc/expenseClaim/expenseRecordRuleExecute/fieldValueChange',
+                'POST',
+                {
+                    fieldId: "035a4985309345af7f1906ec05cc0001",
+                    fieldName: "出差城市",
+                    columnCode: "CITY",
+                    fieldValue: {
+                        value: cityVO.value,
+                        title: cityVO.title || { zh_CN: params.destinationCity }
+                    },
+                    recordDataVO: {
+                        accountCurrencyId: currencyId,
+                        expenseTypeId: mealTypeId,
+                        expenseRecordId,
+                        rowDatas
+                    }
+                },
+                winObj
+            );
+            if (fvc3?.data?.rowDatas) rowDatas = Object.assign({}, rowDatas, fvc3.data.rowDatas);
+        } catch (e) { }
+    }
+
+    // 3.4 联动 出差结束时间 (TRAIN_END_DATE)
+    try {
+        const fvc4: any = await callNativeHttp(
+            '/fssc/expenseClaim/expenseRecordRuleExecute/fieldValueChange',
+            'POST',
+            {
+                fieldId: "0356c82de83345af7f1906ec05cc0004",
+                fieldName: "出差结束时间",
+                columnCode: "TRAIN_END_DATE",
+                fieldValue: trainEnd,
+                recordDataVO: {
+                    accountCurrencyId: currencyId,
+                    expenseTypeId: mealTypeId,
+                    expenseRecordId,
+                    rowDatas
+                }
+            },
+            winObj
+        );
+        if (fvc4?.data?.rowDatas) rowDatas = Object.assign({}, rowDatas, fvc4.data.rowDatas);
+    } catch (e) { }
+
+    // 4. 回填业务事由与申请人
+    const finalDesc = params.description || `[${userName}]-[${params.projectName || '差旅出差'}]`;
+    rowDatas.DESCRIPTION = { dataType: 'MTEXT', value: finalDesc };
+    rowDatas.APPLICANT_ID = { dataType: 'PERSON', required: true, value: { value: userId, title: { zh_CN: userName } } };
+    rowDatas.COST_STANDARD_USER = { dataType: 'PERSON', readOnly: true, required: true, value: { value: userId, title: { zh_CN: userName } } };
+    rowDatas.F_FYF_DEF_001 = { dataType: 'DROPDOWN', hidden: true, required: true, value: { value: '0355ce0b3c3de1653e55bb00bc610000', title: { zh_CN: '差旅费-误餐补贴' } } };
+    rowDatas.EXPENSE_TYPE_ID = { hidden: true, required: true, value: { icon: 'e-group-meals', iconColor: '#3DBF76', title: { zh_CN: '误餐补助（誤餐補助）' }, value: mealTypeId } };
+    rowDatas.expenseType = { hidden: true, required: true, value: { icon: 'e-group-meals', iconColor: '#3DBF76', title: { zh_CN: '误餐补助（誤餐補助）' }, value: mealTypeId } };
+    rowDatas.needInvoice = { value: 'NOT_REQUIRED' };
+    rowDatas.expenseRecordInvoiceList = { value: [] };
+    rowDatas.expenseRecordAttachmentList = { value: [] };
+    rowDatas.ATTACH_COUNT = { dataType: 'NUMBER', hidden: true, readOnly: true, value: 0 };
+    rowDatas.INVOICE_COUNT = { dataType: 'NUMBER', hidden: true, readOnly: true, value: 0 };
+    rowDatas.OVER_STANDARD = { dataType: 'DROPDOWN', hidden: true, readOnly: true, value: { title: { zh_CN: '否' }, value: '6b8ff0809ebe11e88b7219c3aed96e32' } };
+
+    // 5. 持久化保存 (operationType: 'ADD')
+    const savePayload = {
+        rowDatas,
+        expenseRecordMessageList: [],
+        accountCurrencyId: currencyId,
+        applicantId: userId,
+        expenseTypeId: mealTypeId,
+        intersectionScope: [['03566dbf373de1653e55bb00bc610000']],
+        dimensionMappingQueryVOList: [],
+        operationType: 'ADD',
+        expenseRecordId,
+        version: 0,
+        billApplicantId: userId
+    };
+
+    let saveRes: any = await callNativeHttp(
+        '/fssc/expenseClaim/expenseRecord/validateAndSaveExpenseRecord',
+        'POST',
+        savePayload,
+        winObj
+    ) || await apiRequest(
+        '/fssc/expenseClaim/expenseRecord/validateAndSaveExpenseRecord',
+        'POST',
+        savePayload,
+        state
+    );
+
+    let finalId = saveRes?.data?.expenseRecordId || expenseRecordId;
+
+    // 6. 核心防御：若保存后系统仍残留“住宿城市类型必填”禁止消息，立即执行一次针对当前已保存记录的 UPDATE 补齐
+    if (cityVO) {
+        try {
+            const checkRes: any = await callNativeHttp(
+                '/fssc/expenseClaim/expenseRecord/getExpenseTypeFieldRuleListAndAllValueVO',
+                'POST',
+                { expenseRecordId: finalId, expenseTypeId: mealTypeId },
+                winObj
+            );
+            const checkData = checkRes?.data;
+            const hasCityTypeIssue = checkData?.expenseRecordMessageList?.some((m: any) =>
+                m.columnCodes?.includes('F_ZSC_DEF_001') || m.message?.includes('住宿城市类型')
+            );
+            if (hasCityTypeIssue && checkData?.rowDatas) {
+                const fvcUpdate: any = await callNativeHttp(
+                    '/fssc/expenseClaim/expenseRecordRuleExecute/fieldValueChange',
+                    'POST',
+                    {
+                        fieldId: '035a4985309345af7f1906ec05cc0001',
+                        fieldName: '出差城市',
+                        columnCode: 'CITY',
+                        fieldValue: {
+                            value: cityVO.value,
+                            title: cityVO.title || { zh_CN: params.destinationCity }
+                        },
+                        recordDataVO: {
+                            accountCurrencyId: currencyId,
+                            expenseTypeId: mealTypeId,
+                            expenseRecordId: finalId,
+                            rowDatas: checkData.rowDatas
+                        }
+                    },
+                    winObj
+                );
+                if (fvcUpdate?.data?.rowDatas?.F_ZSC_DEF_001?.value) {
+                    const updateRowDatas = Object.assign({}, checkData.rowDatas, fvcUpdate.data.rowDatas);
+                    await callNativeHttp(
+                        '/fssc/expenseClaim/expenseRecord/validateAndSaveExpenseRecord',
+                        'POST',
+                        {
+                            expenseRecordId: finalId,
+                            expenseTypeId: mealTypeId,
+                            version: checkData.version || 1,
+                            operationType: 'UPDATE',
+                            applicantId: userId,
+                            accountCurrencyId: currencyId,
+                            rowDatas: updateRowDatas,
+                            dimensionMappingQueryVOList: [],
+                            expenseRecordMessageList: []
+                        },
+                        winObj
+                    );
+                    AutopilotLogger.info(`[createMealAllowance] 已成功通过二次联动治愈 F_ZSC_DEF_001: ${finalId}`);
+                }
+            }
+        } catch (healErr: any) {
+            AutopilotLogger.warn(`[createMealAllowance] 二次联动治愈跳过: ${healErr.message}`);
+        }
+    }
+
+    if (saveRes?.success && finalId) {
+        AutopilotLogger.info(`[createMealAllowance] 成功为正社员 ${userName} 创建合规误餐补助记录: ${finalId}`);
+        return finalId;
+    }
+    throw new Error(saveRes?.message || '保存误餐补助费用明细失败');
 }

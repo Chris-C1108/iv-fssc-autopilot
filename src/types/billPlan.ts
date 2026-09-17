@@ -69,6 +69,14 @@ export interface SCPlan {
     // 系统关联单号与实体主键 (用于幂等就地更新与关联)
     billCode?: string;
     billMainId?: string;
+
+    // 审批流与出差台账状态 (两阶段解耦与刚性守卫)
+    approvalStatus?: 'none' | 'draft' | 'approving' | 'approved' | 'rejected' | 'unknown';
+    approvalStatusText?: string;
+    currentNode?: string;
+    currentApprover?: string;
+    machineAccountId?: string;
+    machineAccountBalance?: number;
 }
 
 // ─── 报销单计划主行 (BillPlan) ────────────────────────────────
@@ -115,6 +123,11 @@ export interface BillPlan {
     // 系统关联单号与实体主键 (用于幂等就地更新与防重)
     billCode?: string;
     billMainId?: string;
+
+    // 系统中已关联/检测到的报销单信息 (用于查询与修改)
+    existingBcBillCode?: string;
+    existingBcBillMainId?: string;
+    existingBcStatus?: string;
 
     // AI 辅助填充标记 (记录被 AI 填充或调整过的字段名，用于视觉微光反馈)
     aiFilledFields?: string[];

@@ -1,6 +1,8 @@
 import { apiRequest, callNativeHttp, inferLegalMenuId, LEGAL_MENU_IDS } from '../utils/http';
 import { BUDGET_CONSTANTS } from '../config/constants';
-import { GlobalState, BillRowItem, GenericExpenseGroup } from '../types/state';
+import { GlobalState, BillRowItem, GenericExpenseGroup, TripLeg } from '../types/state';
+import { BILL_DEFINE_IDS } from '../types/billPlan';
+import { normalizeToDatetimeLocal, formatFlightTrainRemark } from './billPlanService';
 
 export function prepareBillSceneVO(billData: any): any {
     if (!billData) return null;
@@ -664,5 +666,540 @@ export function generateComprehensivePersonExpenseReport(
     };
 }
 
+/**
+ * 报销单台账关联回填接口 (Official relationWriteBack API)
+ * 将选中的台账行自动回填至指定区域与字段（支持主表区与预算明细子表区）
+ */
+export async function relationWriteBackApi(
+    areaId: string,
+    areaFieldId: string,
+    rowId: string,
+    writeBackDataList: any[],
+    billData: any,
+    parentAreaId: string = '',
+    parentRowId?: string,
+    state?: GlobalState
+): Promise<any> {
+    const payload: any = {
+        areaId,
+        areaFieldId,
+        rowId,
+        parentAreaId,
+        writeBackDataList,
+        relationType: 'RELATION_MACHINE_ACCOUNT',
+        validateInfoList: [],
+        billData: billData,
+        userId: state?.applicantId || state?.currentUser?.userId || billData?.currentUserId || ''
+    };
+    if (parentRowId) {
+        payload.parentRowId = parentRowId;
+    }
+    const targetMenuId = inferLegalMenuId('/fssc/expenseClaim/billData/relationWriteBack', payload);
+    const res = await callNativeHttp(
+        '/fssc/expenseClaim/billData/relationWriteBack',
+        'POST',
+        payload,
+        null,
+        undefined,
+        targetMenuId
+    ) || await apiRequest(
+        '/fssc/expenseClaim/billData/relationWriteBack',
+        'POST',
+        payload,
+        state,
+        false,
+        false,
+        targetMenuId
+    );
+    if (res && res.success && res.data) {
+        return res.data;
+    }
+    throw new Error(res?.message || '关联台账回填失败');
+}
 
+export interface ApprovedMachineAccountItem {
+    machineAccountId: string;
+    machineAccountDefineId: string;
+    billCode: string;
+    billMainId: string;
+    balanceAmount: number;
+    balanceAmountObj: any;
+    budgetDim: any[];
+    customerCharge: boolean;
+    destination: string;
+    purpose: string;
+    startDate: string;
+    endDate: string;
+    projectId?: string;
+    projectName?: string;
+    applicantDate?: string;
+    rawRow: any;
+}
 
+/**
+ * 获取当前用户已审批通过并入库出差申请台账的单据列表
+ */
+export async function fetchApprovedTripApplicationsFromMachineAccountApi(
+    state: GlobalState,
+    billData?: any
+): Promise<ApprovedMachineAccountItem[]> {
+    let userId = state?.applicantId || state?.currentUser?.userId || '';
+    if (!userId && typeof window !== 'undefined') {
+        try {
+            const raw = window.sessionStorage?.getItem('ecs_currentUser') || window.localStorage?.getItem('ecs_currentUser');
+            if (raw) {
+                const u = JSON.parse(raw);
+                if (u && u.id) userId = u.id;
+            }
+        } catch (e) { }
+    }
+    const effectiveBillData = billData || {
+        area: {
+            rowDatas: [{
+                rowId: '00000000000000000000000000000000',
+                datas: {
+                    e2bf037da4f211e88f5e11f085684a5f: {
+                        dataType: 'PERSON',
+                        value: [{ value: userId }]
+                    },
+                    APPLICANT_ID: {
+                        dataType: 'PERSON',
+                        value: [{ value: userId }]
+                    }
+                }
+            }]
+        },
+        billMainId: '00000000000000000000000000000000',
+        billDefineId: BILL_DEFINE_IDS.BC
+    };
+    const payload = {
+        machineAccountDefineId: null,
+        requestUserId: userId,
+        boAreaId: '59b6f7cec84e441db2fea4a63700a175',
+        boAreaFieldId: '03976cebfeec42ef00eb2e736fda0000',
+        triggerRowId: effectiveBillData.area?.rowDatas?.[0]?.rowId || '00000000000000000000000000000000',
+        conditions: [
+            {
+                compileType: 'SQL',
+                conditionAggregate: false,
+                conditionRuleDesc: '申请人(申请台账) 等于 申请人(主表区) 并且 申请费用类型(申请台账) 隶属于 国内出張(IVCCLX_01),海外出張(IVCCLX_02)',
+                conditionRuleItemList: [
+                    {
+                        areaId: '3299661bb34111e8846f7b262b3e5000',
+                        compileType: 'SQL',
+                        deleteFlag: '',
+                        dimTypeId: '6b8ce3209ebe11e88b72d1f897294e91',
+                        displayName: '申请人',
+                        moduleDataType: 'PERSON',
+                        multiSelect: false,
+                        multiType: false,
+                        originalDataType: 'PERSON',
+                        pointCode: 'APPLICANT_ID',
+                        pointId: '2d6120e7ba4511e8bf347b96f5340a89',
+                        pointName: '申请人(申请台账)',
+                        pointValueType: 'DIM',
+                        ruleIndex: 0,
+                        rulePointType: 'MACHINE_ACCOUNT_ATTRIBUTE',
+                        sourceType: 'MACHINE_ACCOUNT'
+                    },
+                    {
+                        areaId: '',
+                        compileType: 'SQL',
+                        displayName: '等于',
+                        i18nInfo: 'RuleSpecialI18nEnum.DIM_EQUAL',
+                        pointCode: 'DIM_EQUAL',
+                        pointId: '32daf5c48a4f11e8bb0fcf1bb8fe3657',
+                        pointName: '等于',
+                        ruleIndex: 0,
+                        rulePointType: 'DIM_RELATION_SYMBOL'
+                    },
+                    {
+                        areaId: '59b6f7cec84e441db2fea4a63700a175',
+                        compileType: 'JS',
+                        displayName: '申请人',
+                        i18nInfo: '2d61b475afe47cde99aadfbe6f04762e',
+                        moduleDataType: 'PERSON',
+                        pointCode: 'APPLICANT_ID',
+                        pointId: 'e2bf037da4f211e88f5e11f085684a5f',
+                        pointName: '申请人(主表区)',
+                        pointValueType: 'DIM',
+                        ruleIndex: 0,
+                        rulePointType: 'BILL_ATTRIBUTE',
+                        sourceType: 'BILL'
+                    },
+                    {
+                        areaId: '',
+                        displayName: '并且',
+                        i18nInfo: 'RuleSpecialI18nEnum.AND',
+                        pointId: '&&',
+                        pointName: '并且',
+                        ruleIndex: 0,
+                        rulePointType: 'LOGICAL_AND_SYMBOL'
+                    },
+                    {
+                        areaId: '3299661bb34111e8846f7b262b3e5000',
+                        compileType: 'SQL',
+                        dimTypeId: '03560c39cf4345af7f1906ec05cc0000',
+                        displayName: '申请费用类型',
+                        moduleDataType: 'DROPDOWN',
+                        pointCode: 'F_SQFYLX',
+                        pointId: '035af06e420de1653e55bb00bc610001',
+                        pointName: '申请费用类型(申请台账)',
+                        pointValueType: 'DIM',
+                        ruleIndex: 0,
+                        rulePointType: 'MACHINE_ACCOUNT_ATTRIBUTE',
+                        sourceType: 'MACHINE_ACCOUNT'
+                    },
+                    {
+                        areaId: '',
+                        compileType: 'SQL',
+                        displayName: '',
+                        i18nInfo: 'RuleSpecialI18nEnum.DIM_MULTI_RADIO_BELONG',
+                        pointCode: 'DIM_MULTI_RADIO_BELONG',
+                        pointId: '11ec45dbcc3f086797df4196023dd92f',
+                        pointName: '隶属于',
+                        ruleIndex: 0,
+                        rulePointType: 'DIM_RELATION_SYMBOL'
+                    },
+                    {
+                        areaId: '',
+                        dimTypeId: '03560c39cf4345af7f1906ec05cc0000',
+                        displayName: '国内出張(IVCCLX_01)……',
+                        edit: 'true',
+                        pointId: '03560c40cb4de1653e55bb00bc610000,03560c4598ade1653e55bb00bc610000',
+                        pointName: '国内出張(IVCCLX_01),海外出張(IVCCLX_02)',
+                        ruleIndex: 0,
+                        rulePointType: 'DIM_VALUE'
+                    }
+                ]
+            }
+        ],
+        billDataVO: prepareBillSceneVO(effectiveBillData),
+        appId: state.appId || 'e3d5e4787ff911e88b1997bee3518b4d',
+        queryConditionParam: {
+            pageOrderParam: {
+                pageNum: 1,
+                pageSize: 50,
+                count: false,
+                enableCountLimit: true,
+                countLimit: 1000
+            }
+        }
+    };
+
+    const targetMenuId = inferLegalMenuId('/fssc/machaccount/relationMachineAccount/getBillRelationMachAccountData', payload);
+    const res = await callNativeHttp(
+        '/fssc/machaccount/relationMachineAccount/getBillRelationMachAccountData',
+        'POST',
+        payload,
+        null,
+        undefined,
+        targetMenuId
+    ) || await apiRequest(
+        '/fssc/machaccount/relationMachineAccount/getBillRelationMachAccountData',
+        'POST',
+        payload,
+        state,
+        false,
+        false,
+        targetMenuId
+    );
+
+    const list = res?.data?.billRowDataPageInfo?.list || [];
+    return list.map((item: any) => {
+        const d = item.datas || {};
+        const balanceObj = d.BALANCE_AMOUNT?.value || {};
+        const balanceNum = typeof balanceObj === 'object' ? (balanceObj.amount || 0) : Number(balanceObj || 0);
+        const khfqVal = d.F_SFXKHQ?.value?.value || d.F_SFXKHQ?.value;
+        const customerCharge = khfqVal === '6b8ff07f9ebe11e88b72e5ee60bf5166' || d.F_SFXKHQ?.value?.title?.zh_CN === '是';
+
+        // 穿透提取台账关联申请单中原本审批通过的权威预算项目 (DIM_PROJECT 与 BUDGET_DIM)
+        let projName = d.DIM_PROJECT?.value?.title?.zh_CN || d.DIM_PROJECT?.value?.name || '';
+        let projId = d.DIM_PROJECT?.value?.value || d.DIM_PROJECT?.value?.id || '';
+        const bDimList = d.BUDGET_DIM?.value || [];
+        if (Array.isArray(bDimList)) {
+            for (const bDim of bDimList) {
+                const cols = bDim?.columns || [];
+                const pCol = cols.find((c: any) => c.column === 'DIM_PROJECT');
+                if (pCol) {
+                    projName = pCol.title?.zh_CN || pCol.title || projName;
+                    projId = pCol.value || projId;
+                    break;
+                }
+            }
+        }
+
+        return {
+            machineAccountId: d.MACHINE_ACCOUNT_ID?.value || item.rowId || '',
+            machineAccountDefineId: d.MACHINE_ACCOUNT_DEFINE_ID?.value || '3299661bb34111e8846f7b262b3e5000',
+            billCode: d.BILL_CODE?.value || '',
+            billMainId: d.BILL_MAIN_ID?.value || '',
+            balanceAmount: balanceNum,
+            balanceAmountObj: balanceObj,
+            budgetDim: d.BUDGET_DIM?.value || [],
+            customerCharge,
+            destination: d.F_CZXCIT?.value || d.F_CZXSYD?.value || d.DESTINATION?.value || '',
+            purpose: d.F_CZMDPU?.value || d.F_CZMDZD?.value || d.PURPOSE?.value || '',
+            startDate: d.START_TRIP_DATE?.value || d.F_QJPERI?.value || '',
+            endDate: d.END_TRIP_DATE?.value || d.F_QJPERI_01?.value || '',
+            projectId: projId,
+            projectName: projName,
+            applicantDate: d.APPLICANT_DATE?.value || d.CREATE_TIME?.value || '',
+            rawRow: item
+        };
+    });
+}
+
+export interface MyApplicationStatusItem {
+    billMainId: string;
+    billCode: string;
+    billName?: string;
+    status: string; // '未提交' | '审批中' | '已审批' | '审批通过' | string
+    statusEnum?: string; // 'UNCOMMITTED' | 'APPROVING' | 'APPROVED' | string
+    currentNode?: string;
+    currentApprover?: string;
+    applicantDate?: string;
+    budgetSum?: number;
+    machineAccountId?: string;
+    machineAccountDefineId?: string;
+}
+
+/**
+ * 查询当前用户发起的所有出差申请单审批流状态 (V_MYAPPLICATION)
+ */
+export async function fetchMyApplicationsStatusApi(state: GlobalState): Promise<Map<string, MyApplicationStatusItem>> {
+    const res = await callNativeHttp(
+        '/fssc/billViewConfig/getBillViewQueryDataList',
+        'POST',
+        {
+            conditionMap: {},
+            pageOrderParam: { pageNum: 1, pageSize: 50, enableCountLimit: true, countLimit: 1000, count: false },
+            sheetId: 'df023624bfba11ec99e696d1bc9d5c7e',
+            appId: state.appId || 'e3d5e4787ff911e88b1997bee3518b4d'
+        }
+    );
+    const map = new Map<string, MyApplicationStatusItem>();
+    const list = res?.data?.list || [];
+    for (const it of list) {
+        const billCode = it.e2bedc68a4f211e88f5e0154a3e7bffc?.value || it.e2bedc68a4f211e88f5e0154a3e7bffc || '';
+        const billMainId = it.BILL_MAIN_ID?.value || it.BILL_MAIN_ID || '';
+        const status = it.e2bf9fe2a4f211e88f5e9d87398070eb?.showValue || it.e2bf9fe2a4f211e88f5e9d87398070eb?.value || it.BILL_STATUS?.value || it.BILL_STATUS || '';
+        const statusEnum = it.BILL_STATUS?.id || it.e2bf9fe2a4f211e88f5e9d87398070eb?.id || (typeof it.BILL_STATUS === 'string' ? it.BILL_STATUS : '');
+        const currentNode = it.e2bf9fdfa4f211e88f5e19f3cc6bb546?.showValue || it.e2bf9fdfa4f211e88f5e19f3cc6bb546?.value || '';
+        const currentApprover = it.bd07382e45fe431faddfb4c206a7df85?.showValue || it.bd07382e45fe431faddfb4c206a7df85?.value || '';
+        const applicantDate = it.e2bedc6ba4f211e88f5e7bcfe24f5802?.showValue || it.e2bedc6ba4f211e88f5e7bcfe24f5802?.value || '';
+        const billName = it.e2bedc66a4f211e88f5ef99ecdff44af?.showValue || it.e2bedc66a4f211e88f5ef99ecdff44af?.value || '出張伺書';
+        const amtObj = it.e2bf51aea4f211e88f5e77f2e04472c7?.amount?.value || it.e2bf51aea4f211e88f5e77f2e04472c7?.value;
+        const budgetSum = typeof amtObj === 'string' ? parseFloat(amtObj.replace(/[^0-9.]/g, '')) || 0 : Number(amtObj || 0);
+        const machVOS = it.billRequestMachineAccountDataVOS?.value || it.billRequestMachineAccountDataVOS || [];
+        const firstMach = Array.isArray(machVOS) ? machVOS[0] : null;
+        const machId = firstMach?.machineAccountId || '';
+        const machDefId = firstMach?.machineAccountDefineId || '3299661bb34111e8846f7b262b3e5000';
+
+        if (billCode) {
+            map.set(billCode, {
+                machineAccountId: machId,
+                machineAccountDefineId: machDefId,
+                billCode,
+                billMainId,
+                status,
+                statusEnum,
+                currentNode,
+                currentApprover,
+                applicantDate,
+                budgetSum,
+                billName
+            });
+        }
+    }
+    return map;
+}
+
+export interface UserApplicationDetailItem {
+    billMainId: string;
+    billCode: string;
+    destination: string;
+    purpose: string;
+    startDate: string;
+    endDate: string;
+    projectName: string;
+    projectId: string;
+    departmentName: string;
+    status: string;
+    budgetSum: number;
+    legs?: TripLeg[];
+}
+
+/**
+ * 获取出差申请单原生完整填报详情 (用于提取预算项目、起止日期、出差地、事由与旅程行程明细)
+ */
+export async function fetchApplicationDetailApi(billMainId: string, state: GlobalState): Promise<UserApplicationDetailItem | null> {
+    try {
+        const res = await fetchBillDataAndTemplateApi(billMainId, state);
+        const billData = res?.billData;
+        if (!billData) return null;
+
+        const mainRow = billData.area?.rowDatas?.[0]?.datas || {};
+        const destination = mainRow.F_CZXCIT?.value || mainRow.F_CZXSYD?.value || mainRow.DESTINATION?.value || '';
+        const purpose = mainRow.F_CZMDPU?.value || mainRow.F_CZMDZD?.value || mainRow.PURPOSE?.value || '';
+        const startDate = (mainRow.START_TRIP_DATE?.value || mainRow.F_QJPERI?.value || '').split('T')[0];
+        const endDate = (mainRow.END_TRIP_DATE?.value || mainRow.F_QJPERI_01?.value || '').split('T')[0];
+        const billCode = billData.billCode || '';
+        const status = billData.statusEnum || '';
+        const amtVal = mainRow.BUDGET_SUM?.value?.amount ?? mainRow.BUDGET_SUM?.value ?? 0;
+        const budgetSum = Number(amtVal) || 0;
+        const departmentName = mainRow.APPLICANT_DEPARTMENT_ID?.value?.title?.zh_CN || mainRow.APPLICANT_DEPARTMENT_ID?.value?.name || '';
+
+        // 预算区提取项目 (遍历所有子表区寻找 DIM_PROJECT / BUDGET_DIM)
+        let projectName = '';
+        let projectId = '';
+        const subAreas = Object.values(billData.area?.rowDatas?.[0]?.subAreaDatas || {});
+        for (const boArea of subAreas as any[]) {
+            const boRows = boArea?.rowDatas || [];
+            for (const r of boRows) {
+                const d = r.datas || {};
+                const projObj = d.DIM_PROJECT?.value;
+                if (projObj) {
+                    projectName = projObj.title?.zh_CN || projObj.title || projObj.name || (typeof projObj === 'string' ? projObj : '');
+                    projectId = projObj.value || projObj.id || '';
+                    if (projectName) break;
+                }
+                const bDim = d.BUDGET_DIM?.value || [];
+                if (Array.isArray(bDim)) {
+                    for (const b of bDim) {
+                        const cols = b.columns || [];
+                        const pCol = cols.find((c: any) => c.column === 'DIM_PROJECT');
+                        if (pCol && (pCol.title?.zh_CN || pCol.title || pCol.name)) {
+                            projectName = pCol.title?.zh_CN || pCol.title || pCol.name;
+                            projectId = pCol.value || pCol.id || '';
+                            break;
+                        }
+                    }
+                }
+                if (projectName) break;
+            }
+            if (projectName) break;
+        }
+
+        // 旅程明细区 (T_BILL_AREA_CCS_DEF_001) 提取完整出行人及大交通航段 (零硬编码，精准回显多出行人行程)
+        const legs: TripLeg[] = [];
+        for (const boArea of subAreas as any[]) {
+            const isTripLegArea = boArea?.boAreaCode === 'T_BILL_AREA_CCS_DEF_001' ||
+                boArea?.boAreaId === '035af6afcfade1653e55bb00bc610000' ||
+                (boArea?.rowDatas || []).some((r: any) => r?.datas?.F_DATE && (r?.datas?.F_FROM || r?.datas?.F_TO || r?.datas?.F_FLIGHT));
+
+            if (isTripLegArea) {
+                const boRows = boArea?.rowDatas || [];
+                for (const r of boRows) {
+                    const d = r.datas || {};
+                    const rawDate = d.F_DATE?.value || '';
+                    const dateVal = normalizeToDatetimeLocal(rawDate, '09:00');
+                    const fromCity = d.F_FROM?.value?.title?.zh_CN || d.F_FROM?.value?.title || d.F_FROM?.value?.name || d.F_FROM?.value || '';
+                    const toCity = d.F_TO?.value?.title?.zh_CN || d.F_TO?.value?.title || d.F_TO?.value?.name || d.F_TO?.value || '';
+                    const flightRaw = d.F_FLIGHT?.value || '';
+
+                    let travelerName = '';
+                    const tMatch = flightRaw.match(/\[(?:外驻[:：])?([^\]]+)\]/) || flightRaw.match(/\((?:外驻[:：])?([^)]+)\)/);
+                    if (tMatch) {
+                        travelerName = (tMatch[1] || '').trim();
+                    }
+                    const applicantName = mainRow.APPLICANT_ID?.value?.name || mainRow.APPLICANT_ID?.value?.title || departmentName;
+                    const isExternal = flightRaw.includes('外驻') || (Boolean(travelerName) && travelerName !== applicantName && !applicantName.includes(travelerName));
+                    const formattedFlight = formatFlightTrainRemark(flightRaw, travelerName, isExternal, projectName);
+
+                    const transport = (flightRaw.includes('机') || flightRaw.includes('MU') || flightRaw.includes('CA') || flightRaw.includes('CZ'))
+                        ? '飞机'
+                        : (flightRaw.includes('高铁') || flightRaw.includes('火车') || flightRaw.includes('G') || flightRaw.includes('D'))
+                        ? '高铁'
+                        : '飞机/高铁';
+
+                    if (dateVal || fromCity || toCity || flightRaw) {
+                        legs.push({
+                            date: dateVal,
+                            fromCity,
+                            toCity,
+                            transport,
+                            flightOrTrain: formattedFlight,
+                            travelerName
+                        });
+                    }
+                }
+                if (legs.length > 0) break;
+            }
+        }
+
+        return {
+            billMainId,
+            billCode,
+            destination,
+            purpose,
+            startDate,
+            endDate,
+            projectName,
+            projectId,
+            departmentName,
+            status,
+            budgetSum,
+            legs: legs.length > 0 ? legs : undefined
+        };
+    } catch (e) {
+        return null;
+    }
+}
+
+export interface UserReimbursementBillSummary {
+    billCode: string;
+    billMainId: string;
+    status: string;
+    billName: string;
+    createTime: string;
+    amount: number;
+}
+
+/**
+ * 查询当前用户发起的报销单列表 (V_MYREIMBURSEMENT)
+ */
+export async function fetchUserReimbursementBillsListApi(state: GlobalState): Promise<UserReimbursementBillSummary[]> {
+    const appId = state?.appId || 'e3d5e4787ff911e88b1997bee3518b4d';
+    const listRes = await callNativeHttp(
+        '/fssc/billViewConfig/getBillViewQueryDataList',
+        'POST',
+        {
+            conditionMap: {},
+            pageOrderParam: { pageNum: 1, pageSize: 50, enableCountLimit: true, countLimit: 1000, count: false },
+            sheetId: '80b9cd76d02611ec99e696d1bc9d5c7e',
+            appId
+        }
+    ) || await apiRequest(
+        '/fssc/billViewConfig/getBillViewQueryDataList',
+        'POST',
+        {
+            conditionMap: {},
+            pageOrderParam: { pageNum: 1, pageSize: 50, enableCountLimit: true, countLimit: 1000, count: false },
+            sheetId: '80b9cd76d02611ec99e696d1bc9d5c7e',
+            appId
+        },
+        state
+    );
+
+    const items = listRes?.data?.list || [];
+    return items.map((it: any) => {
+        const codeObj = Object.values(it).find((v: any) => typeof v === 'string' && (v.startsWith('BC') || v.startsWith('BJ')))
+            || Object.values(it).find((v: any) => typeof v === 'object' && (String((v as any)?.value).startsWith('BC') || String((v as any)?.value).startsWith('BJ')));
+        const billCode = typeof codeObj === 'object' ? (codeObj as any)?.value : (codeObj || '');
+        const billMainId = it.BILL_MAIN_ID?.value || it.BILL_MAIN_ID?.id || it.BILL_MAIN_ID || '';
+        const billName = it.e2bedc66a4f211e88f5ef99ecdff44af?.showValue || it.e2bedc66a4f211e88f5ef99ecdff44af?.value || '';
+        const status = it.e2bf9fe2a4f211e88f5e9d87398070eb?.showValue || it.e2bf9fe2a4f211e88f5e9d87398070eb?.value || it.BILL_STATUS || '';
+        const createTime = it.e2bedc68a4f211e88f5e27a9ff593444?.showValue || it.e2bedc68a4f211e88f5e27a9ff593444?.value || '';
+        const amtObj = it.e2bf51aea4f211e88f5e77f2e04472c7?.amount?.value || it.e2bf51aea4f211e88f5e77f2e04472c7?.value || 0;
+        const amount = typeof amtObj === 'string' ? parseFloat(amtObj.replace(/[^0-9.]/g, '')) || 0 : Number(amtObj || 0);
+        return {
+            billCode,
+            billMainId,
+            status,
+            billName,
+            createTime,
+            amount
+        };
+    });
+}

@@ -18,7 +18,7 @@ import {
     BillValidationResult,
     FieldValidationError,
 } from '../types/billPlan';
-import { TripApplicationConfig } from '../types/state';
+import { TripApplicationConfig, TripLeg } from '../types/state';
 import { ExpenseRecordGroup } from '../ui/batchEditExpenseModal';
 import { getGroupBillFlow } from './inferenceService';
 import { resolveTransportLabel } from './applicationService';
@@ -40,18 +40,175 @@ function formatDateShort(dateStr: string): string {
 }
 
 /**
+ * 标准化任何输入日期为 HTML5 datetime-local 及元年标准的 YYYY-MM-DDTHH:mm 格式
+ * 解决浏览器 <input type="datetime-local"> 无法识别导致回显空白 (mm/dd/yyyy --:-- --) 的严重缺陷
+ */
+export function normalizeToDatetimeLocal(val: any, defaultTime: string = '09:00'): string {
+    if (!val) return '';
+    const str = String(val).trim();
+    if (!str) return '';
+
+    // 1. 如果已是标准 YYYY-MM-DDTHH:mm
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(str)) {
+        return str.slice(0, 16);
+    }
+    // 2. 如果是 YYYY-MM-DD HH:mm:ss 或 YYYY-MM-DD HH:mm
+    if (/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/.test(str)) {
+        return str.replace(/\s+/, 'T').slice(0, 16);
+    }
+    // 3. 如果是纯日期 YYYY-MM-DD
+    if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
+        return `${str}T${defaultTime}`;
+    }
+    // 4. 如果是 MM/DD/YYYY 或 MM/DD/YYYY HH:mm
+    const slashMatch = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2}))?/);
+    if (slashMatch) {
+        const month = slashMatch[1].padStart(2, '0');
+        const day = slashMatch[2].padStart(2, '0');
+        const year = slashMatch[3];
+        const hh = slashMatch[4] ? slashMatch[4].padStart(2, '0') : defaultTime.split(':')[0];
+        const mm = slashMatch[5] || defaultTime.split(':')[1] || '00';
+        return `${year}-${month}-${day}T${hh}:${mm}`;
+    }
+    // 5. 如果是 YYYY/MM/DD 或 YYYY/MM/DD HH:mm
+    const ySlashMatch = str.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?/);
+    if (ySlashMatch) {
+        const year = ySlashMatch[1];
+        const month = ySlashMatch[2].padStart(2, '0');
+        const day = ySlashMatch[3].padStart(2, '0');
+        const hh = ySlashMatch[4] ? ySlashMatch[4].padStart(2, '0') : defaultTime.split(':')[0];
+        const mm = ySlashMatch[5] || defaultTime.split(':')[1] || '00';
+        return `${year}-${month}-${day}T${hh}:${mm}`;
+    }
+    // 6. 如果是时间戳数字
+    const num = Number(str);
+    if (!isNaN(num) && num > 100000000000) {
+        const d = new Date(num);
+        if (!isNaN(d.getTime())) {
+            const year = d.getFullYear();
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            const hh = String(d.getHours()).padStart(2, '0');
+            const mm = String(d.getMinutes()).padStart(2, '0');
+            return `${year}-${month}-${day}T${hh}:${mm}`;
+        }
+    }
+    // 7. Date.parse 兜底
+    const d = new Date(str);
+    if (!isNaN(d.getTime())) {
+        const year = d.getFullYear();
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        const hh = String(d.getHours()).padStart(2, '0');
+        const mm = String(d.getMinutes()).padStart(2, '0');
+        return `${year}-${month}-${day}T${hh}:${mm}`;
+    }
+    return '';
+}
+
+/**
+ * 格式化航班/车次备注为统一规范格式：
+ * 建议格式：[人名|外驻:人名]-[飞机|高铁|出租车]-[项目号]
+ * 例如：
+ *  - [陈浩]-[飞机]-[X2607-001]
+ *  - [外驻:成勇]-[飞机]-[X2607-001]
+ *  - [外驻:李建勇]-[飞机/高铁]-[X2607-001]
+ */
+export function formatFlightTrainRemark(
+    rawText: string,
+    travelerName: string,
+    isExternal: boolean,
+    projectNameOrCode: string
+): string {
+    // 1. 动态提取项目编号 (如 X2607-001, PRJ-001)
+    let projCode = '';
+    const projMatch = (projectNameOrCode || '').match(/(X\d{4}-\d{3}|[A-Z0-9]{2,8}-\d{3,4}|PRJ-[A-Z0-9\-]+)/);
+    if (projMatch) {
+        projCode = projMatch[1];
+    } else if (projectNameOrCode && projectNameOrCode.trim().length <= 15 && !projectNameOrCode.includes(' ')) {
+        projCode = projectNameOrCode.trim();
+    }
+
+    const cleanRaw = (rawText || '').trim();
+
+    // 若传入的 rawText 中已携带项目编号且前面未提取到
+    if (!projCode) {
+        const m = cleanRaw.match(/(?:\[)?(X\d{4}-\d{3}|[A-Z0-9]{2,8}-\d{3,4}|PRJ-[A-Z0-9\-]+)(?:\])?/);
+        if (m) projCode = m[1];
+    }
+
+    // 2. 解析出行人姓名与外驻身份
+    let effectiveTraveler = (travelerName || '').trim();
+    let effectiveExternal = isExternal;
+
+    if (!effectiveTraveler) {
+        const tMatch = cleanRaw.match(/\[(?:外驻[:：])?([^\]]+)\]/) || cleanRaw.match(/\((?:外驻[:：])?([^)]+)\)/);
+        if (tMatch) {
+            effectiveTraveler = (tMatch[1] || '').trim();
+            if (cleanRaw.includes('外驻')) effectiveExternal = true;
+        }
+    } else {
+        if (effectiveTraveler.includes('外驻')) {
+            effectiveExternal = true;
+            effectiveTraveler = effectiveTraveler.replace(/外驻[:：]/, '').trim();
+        }
+    }
+    // 剔除括号
+    effectiveTraveler = effectiveTraveler.replace(/[（()）\[\]]/g, '').trim();
+
+    // 3. 提取纯交通方式/车次 (从 rawText 中剥离括号、出行人、项目号)
+    let transport = cleanRaw
+        .replace(/\[(?:外驻[:：])?[^\]]+\]/g, '')
+        .replace(/\((?:外驻[:：])?[^)]+\)/g, '')
+        .replace(/(?:\[)?(X\d{4}-\d{3}|[A-Z0-9]{2,8}-\d{3,4}|PRJ-[A-Z0-9\-]+)(?:\])?/g, '')
+        .replace(/[|\-—_]+/g, ' ')
+        .trim();
+
+    // 针对常见交通词汇进行标准化清洗
+    if (!transport || transport === '未知' || transport === '待定') {
+        transport = '飞机/高铁';
+    } else if (/MU|CZ|CA|MF|ZH|3U|HU|FM|9C|航空|机/.test(transport) && !/高铁|火车|动车/.test(transport)) {
+        if (!/^[A-Z0-9]{5,7}$/.test(transport)) {
+            transport = transport.includes('机') ? '飞机' : transport;
+        }
+    } else if (/高铁|火车|动车|G\d|D\d/.test(transport) && !/机/.test(transport)) {
+        if (!/^[GD]\d{1,5}$/.test(transport)) {
+            transport = '高铁';
+        }
+    } else if (/出租|打车|Taxi|滴滴/.test(transport)) {
+        transport = '出租车';
+    }
+
+    // 4. 组装标准三段式格式: [人名|外驻:人名]-[飞机|高铁|出租车]-[项目号]
+    const travelerTag = effectiveExternal
+        ? `[外驻:${effectiveTraveler || '同行人'}]`
+        : `[${effectiveTraveler || '出差人'}]`;
+
+    const transportTag = `[${transport}]`;
+    const projTag = projCode ? `-[${projCode}]` : '';
+
+    return `${travelerTag}-${transportTag}${projTag}`;
+}
+
+/**
  * 提取一组费用记录按费用类型分组的预算归属行
  */
 function buildInitialBudgetAllocations(
     expenses: ExpenseRecordGroup[],
     projectId: string,
-    projectName: string
+    projectName: string,
+    mealAllowanceAmount: number = 0
 ): BudgetAllocationItem[] {
     const typeMap = new Map<string, number>();
     for (const g of expenses) {
         const tName = g.expenseTypeName || '日常报销费用';
         const amt = Number(g.expenseAmount || 0);
         typeMap.set(tName, (typeMap.get(tName) || 0) + amt);
+    }
+
+    // 正社员出差误餐补助：若费用池中尚未包含，则按出差天数标准自动追加正社员餐补
+    if (mealAllowanceAmount > 0 && !typeMap.has('误餐补助') && !typeMap.has('误餐补助（誤餐補助）') && !typeMap.has('差旅费-误餐补贴')) {
+        typeMap.set('误餐补助（誤餐補助）', mealAllowanceAmount);
     }
 
     const allocations: BudgetAllocationItem[] = [];
@@ -73,6 +230,149 @@ function buildInitialBudgetAllocations(
 }
 
 /**
+ * 动态提取行程全部出差人员及全员大交通往返行程 (零硬编码，严格遵循 Anti-Hardcoding 铁律)
+ */
+export function extractTripTravelersAndLegs(
+    plan: {
+        applicantName?: string;
+        destination?: string;
+        startDate?: string;
+        endDate?: string;
+        travelReport?: string;
+        projectName?: string;
+        expenseRecordIds: string[];
+        scPlan?: { legs?: TripLeg[]; flightOrTrain?: string; projectName?: string } | null;
+    },
+    expenses: ExpenseRecordGroup[],
+    defaultApplicant?: string
+): { allTravelers: string[]; companions: string; legs: TripLeg[] } {
+    const rawApplicant = plan.applicantName || defaultApplicant || '当前社员';
+    const mainApplicant = rawApplicant.replace(/（.*）|\(.*\)/g, '').trim();
+    const travelerSet = new Set<string>();
+    if (mainApplicant) {
+        travelerSet.add(mainApplicant);
+    }
+
+    // 1. 从 travelReport 中动态提取出差人员名单 (如 "出差人员：陈浩、成勇、李建勇" 或 "调研人员为陈浩、成勇、李建勇")
+    if (plan.travelReport) {
+        const reportMatch = plan.travelReport.match(/(?:调研人员为|出差人员[：:]\s*|同行人员[：:]\s*|同行者[：:]\s*)([^\n。\r]+)/);
+        if (reportMatch && reportMatch[1]) {
+            const rawNames = reportMatch[1].split(/[、,，\s]+/);
+            for (const name of rawNames) {
+                const clean = name.replace(/（.*）|\(.*\)/g, '').replace(/[*#-]/g, '').trim();
+                if (clean && clean.length >= 2 && clean.length <= 10 && !['人员', '同行', '等', '至', '到'].includes(clean)) {
+                    travelerSet.add(clean);
+                }
+            }
+        }
+    }
+
+    // 2. 从关联费用记录的备注中动态提取外驻出行人 ([外驻:姓名])
+    if (Array.isArray(expenses)) {
+        for (const exp of expenses) {
+            if (plan.expenseRecordIds.includes(exp.expenseRecordId)) {
+                const textsToCheck = [
+                    exp.newDescription,
+                    exp.description,
+                    (exp as any).remarks,
+                    ...(exp.invoices || []).map((inv: any) => inv.remarks || inv.description || '')
+                ].filter(Boolean) as string[];
+
+                for (const text of textsToCheck) {
+                    const externalMatches = text.matchAll(/\[外驻[:：]([^\]]+)\]/g);
+                    for (const m of externalMatches) {
+                        const clean = (m[1] || '').replace(/（.*）|\(.*\)/g, '').trim();
+                        if (clean && clean.length >= 2 && clean.length <= 10) {
+                            travelerSet.add(clean);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    const allTravelers = Array.from(travelerSet);
+    const companionsList = allTravelers.filter(t => t !== mainApplicant);
+    const companions = companionsList.join('、');
+
+    // 3. 构建包含所有人员的大交通行程 (ITINERARY legs)
+    const legs: TripLeg[] = [];
+    const destCity = plan.destination || '目的地';
+    const originCity = '上海';
+
+    // 从该 Trip 关联的所有费用记录及发票中推测大交通工具类型
+    const tripInvoiceTypes: string[] = [];
+    if (Array.isArray(expenses)) {
+        for (const exp of expenses) {
+            if (plan.expenseRecordIds.includes(exp.expenseRecordId)) {
+                if (exp.expenseTypeName) tripInvoiceTypes.push(exp.expenseTypeName);
+                if (exp.newExpenseTypeName) tripInvoiceTypes.push(exp.newExpenseTypeName);
+                for (const inv of (exp.invoices || [])) {
+                    if (inv.invoiceType) tripInvoiceTypes.push(inv.invoiceType);
+                    if (inv.remarks) tripInvoiceTypes.push(inv.remarks);
+                    if (inv.salesName) tripInvoiceTypes.push(inv.salesName);
+                    if (inv.fileName) tripInvoiceTypes.push(inv.fileName);
+                }
+            }
+        }
+    }
+    const tripTransportDefault = resolveTransportLabel(plan.scPlan?.flightOrTrain, tripInvoiceTypes);
+
+    // 若原有 scPlan.legs 中已有具体航班/车次信息，按人员归类
+    const existingLegs = plan.scPlan?.legs || [];
+    const projName = plan.scPlan?.projectName || (plan as any).projectName || '';
+
+    for (const t of allTravelers) {
+        const isExt = t !== mainApplicant && !t.includes(mainApplicant);
+        const tLegs = existingLegs.filter(l => {
+            const legTraveler = (l.travelerName || '').replace(/（.*）|\(.*\)/g, '').trim();
+            return legTraveler === t || (!legTraveler && t === mainApplicant);
+        });
+
+        if (tLegs.length > 0) {
+            tLegs.forEach(l => {
+                const legTransport = resolveTransportLabel(l.flightOrTrain || l.transport, tripInvoiceTypes) || tripTransportDefault;
+                legs.push({
+                    date: normalizeToDatetimeLocal(l.date || plan.startDate || '', '09:00'),
+                    fromCity: (!l.fromCity || l.fromCity === '出发地') ? originCity : l.fromCity,
+                    toCity: (!l.toCity || l.toCity === '返回地') ? destCity : l.toCity,
+                    transport: legTransport,
+                    flightOrTrain: formatFlightTrainRemark(l.flightOrTrain || legTransport, t, isExt, projName),
+                    travelerName: t
+                });
+            });
+        } else {
+            // 为该人员自动补齐去程与返程对称大交通
+            legs.push({
+                date: normalizeToDatetimeLocal(plan.startDate || '', '09:00'),
+                fromCity: originCity,
+                toCity: destCity,
+                transport: tripTransportDefault,
+                flightOrTrain: formatFlightTrainRemark(tripTransportDefault, t, isExt, projName),
+                travelerName: t
+            });
+            legs.push({
+                date: normalizeToDatetimeLocal(plan.endDate || '', '18:00'),
+                fromCity: destCity,
+                toCity: originCity,
+                transport: tripTransportDefault,
+                flightOrTrain: formatFlightTrainRemark(tripTransportDefault, t, isExt, projName),
+                travelerName: t
+            });
+        }
+    }
+
+    // 按日期与出行人正序排序
+    legs.sort((a, b) => {
+        const timeDiff = new Date(a.date.replace(/-/g, '/')).getTime() - new Date(b.date.replace(/-/g, '/')).getTime();
+        if (timeDiff !== 0) return timeDiff;
+        return (a.travelerName || '').localeCompare(b.travelerName || '');
+    });
+
+    return { allTravelers, companions, legs };
+}
+
+/**
  * 从费用记录分组和 Trip 规划中聚合生成报销单计划行
  */
 export function aggregateExpensesIntoBillPlans(
@@ -90,17 +390,46 @@ export function aggregateExpensesIntoBillPlans(
             const tripExpenses = groups.filter(g => g.tripId === trip.id);
             const expenseRecordIds = tripExpenses.map(g => g.expenseRecordId);
             const invoiceCount = tripExpenses.reduce((sum, g) => sum + (g.invoiceCount || 0), 0);
-            const totalAmount = tripExpenses.reduce((sum, g) => sum + Number(g.expenseAmount || 0), 0);
-
-            const projId = trip.projectVO?.value || '';
-            const projName = trip.projectName || projectName;
-
+            
             // 原生 4 项预算估算
             const airfare = Math.round(trip.trafficFee * 100) / 100;
             const hotel = Math.round(trip.hotelFee * 100) / 100;
             const meal = Math.round(trip.mealFee * 100) / 100;
             const other = Math.round(trip.otherFee * 100) / 100;
             const totalBudget = Math.round((airfare + hotel + meal + other) * 100) / 100;
+
+            const hasMealInExpenses = tripExpenses.some(g => (g.expenseTypeName || '').includes('误餐'));
+            const effectiveMealAmt = hasMealInExpenses ? 0 : meal;
+            const totalAmount = tripExpenses.reduce((sum, g) => sum + Number(g.expenseAmount || 0), 0) + effectiveMealAmt;
+
+            const projId = trip.projectVO?.value || '';
+            let tripProjName = trip.projectName || '';
+            if (!tripProjName) {
+                for (const g of tripExpenses) {
+                    const m = (g.description || g.newDescription || '').match(/(?:\[)?(X\d{4}-\d{3}|[A-Z0-9]{2,8}-\d{3,4}|PRJ-[A-Z0-9\-]+)/);
+                    if (m) {
+                        tripProjName = m[1].trim();
+                        break;
+                    }
+                }
+            }
+            const projName = tripProjName;
+
+            // 动态多出行人及往返大交通航段派生 (零硬编码，支持单据初始回显全员 6 段往返)
+            const planLike = {
+                applicantName: trip.applicantName || applicantName,
+                destination: trip.destination,
+                startDate: trip.startDate,
+                endDate: trip.endDate,
+                travelReport: trip.travelReport || '',
+                expenseRecordIds,
+                scPlan: {
+                    legs: trip.legs || [],
+                    flightOrTrain: ''
+                }
+            };
+            const extractedTravelers = extractTripTravelersAndLegs(planLike, tripExpenses, applicantName);
+            const effectiveLegs = (trip.legs && trip.legs.length > 2) ? trip.legs : extractedTravelers.legs;
 
             const scPlan: SCPlan = {
                 applicantName: trip.applicantName || applicantName,
@@ -111,7 +440,7 @@ export function aggregateExpensesIntoBillPlans(
                 endDate: trip.endDate,
                 days: trip.days,
                 nights: trip.nights,
-                legs: trip.legs || [],
+                legs: effectiveLegs,
                 airfareBudget: airfare,
                 hotelBudget: hotel,
                 mealAllowance: meal,
@@ -124,7 +453,7 @@ export function aggregateExpensesIntoBillPlans(
                 billMainId: trip.billMainId,
             };
 
-            const budgetAllocations = buildInitialBudgetAllocations(tripExpenses, projId, projName);
+            const budgetAllocations = buildInitialBudgetAllocations(tripExpenses, projId, projName, effectiveMealAmt);
 
             plans.push({
                 id: nextBillId('BC'),
@@ -232,9 +561,17 @@ export function updateBillPlanField(
     return plans.map(p => {
         if (p.id !== billId) return p;
         const updated = { ...p, [field]: value };
-        // 若同时修改了主项目，且有关联 SC 申请单，同步 SC 项目
+        // 若同时修改了主项目，且有关联 SC 申请单，同步 SC 项目及航段备注中的项目号
         if (field === 'projectName' && updated.scPlan) {
-            updated.scPlan = { ...updated.scPlan, projectName: value };
+            const sc = updated.scPlan;
+            const updatedLegs = (sc.legs || []).map(leg => {
+                const isExt = leg.travelerName ? (leg.travelerName !== p.applicantName && !leg.travelerName.includes(p.applicantName)) : false;
+                return {
+                    ...leg,
+                    flightOrTrain: formatFlightTrainRemark(leg.flightOrTrain || leg.transport || '', leg.travelerName || '', isExt, value)
+                };
+            });
+            updated.scPlan = { ...sc, projectName: value, legs: updatedLegs };
         }
         return updated;
     });
@@ -634,20 +971,28 @@ export function autoFillBillPlansWithAi(
             }
         }
 
-        // 4. 补全项目维表 (若为空，从费用说明或全局默认中继承)
+        // 4. 补全项目维表 (优先从该 Trip 自身费用说明中提取，防止全局串行污染)
         if (!updated.projectName || !updated.projectName.trim()) {
-            let foundProj = defaultProjectName || '';
-            if (!foundProj) {
-                for (const g of associatedGroups) {
-                    const match = (g.description || g.newDescription || '').match(/(?:\[)?([A-Z0-9]{3,}-[0-9]+[^\]\s]*)/);
-                    if (match) {
-                        foundProj = match[1];
-                        break;
-                    }
+            let foundProj = '';
+            for (const g of associatedGroups) {
+                const match = (g.description || g.newDescription || '').match(/(?:\[)?([A-Z0-9]{3,}-[0-9]+[^\]\s]*)/);
+                if (match) {
+                    foundProj = match[1];
+                    break;
                 }
+            }
+            if (!foundProj && defaultProjectName) {
+                foundProj = defaultProjectName;
             }
             if (foundProj) {
                 updated.projectName = foundProj;
+                if (updated.scPlan) {
+                    updated.scPlan.projectName = updated.scPlan.projectName || foundProj;
+                }
+                updated.budgetAllocations = (updated.budgetAllocations || []).map(alloc => ({
+                    ...alloc,
+                    projectName: alloc.projectName || foundProj
+                }));
                 aiFilled.add('projectName');
                 filledCount++;
             }

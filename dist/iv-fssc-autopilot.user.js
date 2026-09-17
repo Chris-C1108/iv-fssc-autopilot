@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVision FSSC Autopilot (元年云费控极速自动驾驶副驾)
 // @namespace    https://github.com/Chris-C1108/iv-fssc-autopilot
-// @version      4.67.0
+// @version      4.75.0
 // @description  元年云报销全流程超级副驾：①【发票夹 & 费用记录】全量OCR数据穿透补全(乘车时间/里程100%恢复)、自动识别通信费、自由切换分类、早晚行程智能推断、拖拽多附件；②【经费报销单页】丰富多维菜单Item(科目/项目/成本中心/向客户请款)、自动聚合备注TAG(如X2605-001)、智能检索匹配项目、蝴蝶效应引擎链式联动、一键自动持久化保存(saveBillData)并自动刷新单据视图；③【极速模式】首行蝴蝶+内存克隆+单次入库(30倍提速)。
 // @author       Chris-C1108
 // @match        https://ync37.yuanian.com/*
@@ -979,6 +979,8655 @@
         return results;
     }
 
+    const BILL_TYPE_LABELS = {
+        BC: '出差费用报销单',
+        BJ: '经费报销单'
+    };
+    const BILL_DEFINE_IDS$1 = {
+        BC: '035a50ee6d3de1653e55bb00bc610001'};
+    // ─── 工具函数 ────────────────────────────────────────────────
+    function computeSCTotal(sc) {
+        const air = Number(sc.airfareBudget) || 0;
+        const hotel = Number(sc.hotelBudget) || 0;
+        const meal = Number(sc.mealAllowance) || 0;
+        const other = Number(sc.otherBudget) || 0;
+        return Math.round((air + hotel + meal + other) * 100) / 100;
+    }
+    function formatCurrency(amount) {
+        return '¥' + (amount || 0).toLocaleString('zh-CN', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+        });
+    }
+
+    /******************************************************************************
+    Copyright (c) Microsoft Corporation.
+
+    Permission to use, copy, modify, and/or distribute this software for any
+    purpose with or without fee is hereby granted.
+
+    THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+    REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+    AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+    INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+    LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+    OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+    PERFORMANCE OF THIS SOFTWARE.
+    ***************************************************************************** */
+    /* global Reflect, Promise, SuppressedError, Symbol, Iterator */
+
+
+    function __classPrivateFieldGet(receiver, state, kind, f) {
+        if (kind === "a" && !f) throw new TypeError("Private accessor was defined without a getter");
+        if (typeof state === "function" ? receiver !== state || !f : !state.has(receiver)) throw new TypeError("Cannot read private member from an object whose class did not declare it");
+        return kind === "m" ? f : kind === "a" ? f.call(receiver) : f ? f.value : state.get(receiver);
+    }
+
+    function __classPrivateFieldSet(receiver, state, value, kind, f) {
+        if (kind === "m") throw new TypeError("Private method is not writable");
+        if (kind === "a" && !f) throw new TypeError("Private accessor was defined without a setter");
+        if (typeof state === "function" ? receiver !== state || !f : !state.has(receiver)) throw new TypeError("Cannot write private member to an object whose class did not declare it");
+        return (kind === "a" ? f.call(receiver, value) : f ? f.value = value : state.set(receiver, value)), value;
+    }
+
+    typeof SuppressedError === "function" ? SuppressedError : function (error, suppressed, message) {
+        var e = new Error(message);
+        return e.name = "SuppressedError", e.error = error, e.suppressed = suppressed, e;
+    };
+
+    /**
+     * High-Performance W3C WebMCP (Web Model Context Protocol) Runtime Polyfill
+     *
+     * Optimized for high-throughput enterprise single-page applications (Yuanian FSSC):
+     * 1. WeakMap-based memoized Shadow DOM root caching (O(1) lookup, eliminating 866ms traversal bottleneck)
+     * 2. Task decomposition with window.requestIdleCallback / requestAnimationFrame (preventing UI stutter and INP presentation delays)
+     * 3. Event-driven targeted queries rather than full-document querySelectorAll('*')
+     * 4. Spec-compliant document.modelContext with registerTool, getTools, executeTool, and toolchange events
+     */
+    var _StrictWebMCPContext_instances, _StrictWebMCPContext_tools, _StrictWebMCPContext_testingShim, _StrictWebMCPContext_ontoolchangeHandler, _StrictWebMCPContext_ownerDocument, _StrictWebMCPContext_removeTool, _StrictWebMCPContext_notifyToolsChanged;
+    const POLYFILL_MARKER_PROPERTY = '__isWebMCPPolyfill';
+    const REGISTRATION_SIGNAL_SYMBOL = Symbol('registrationSignal');
+    const REGISTRATION_ABORT_SYMBOL = Symbol('registrationAbort');
+    const REGISTERED_INPUT_SCHEMA_SYMBOL = Symbol('registeredInputSchema');
+    // 1. WeakMap 缓存已探查过的 ShadowRoot (O(1) 秒级查表，彻底消除 866ms 深度递归开销)
+    const shadowRootCache = new WeakMap();
+    /**
+     * 高性能带缓存的 ShadowRoot 查找 (支持针对非自定义元素直接短路)
+     */
+    function getOpenShadowRoot(element) {
+        if (!element || !(element instanceof Element))
+            return null;
+        if (shadowRootCache.has(element)) {
+            return shadowRootCache.get(element) || null;
+        }
+        // 针对常见标准 HTML 元素（无连字符且非自定义元素）进行首道安全过滤
+        const tagName = element.tagName ? element.tagName.toLowerCase() : '';
+        const isCustomElement = tagName.includes('-');
+        let root = null;
+        try {
+            root = Reflect.get(Element.prototype, 'shadowRoot', element) || element.shadowRoot || null;
+        }
+        catch {
+            root = null;
+        }
+        // 仅当是 open 模式才可被遍历
+        if (root && (root.mode === 'open' || !root.mode)) {
+            shadowRootCache.set(element, root);
+            return root;
+        }
+        // 若非自定义标签且无 shadowRoot，永久缓存 null
+        if (!isCustomElement) {
+            shadowRootCache.set(element, null);
+        }
+        return null;
+    }
+    /**
+     * 任务分解调度器：优先利用 requestIdleCallback，降级为 requestAnimationFrame / setTimeout
+     */
+    function scheduleIdleTask(callback, timeoutMs = 300) {
+        if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+            const handle = window.requestIdleCallback(callback, { timeout: timeoutMs });
+            return () => window.cancelIdleCallback(handle);
+        }
+        if (typeof requestAnimationFrame === 'function') {
+            const handle = requestAnimationFrame(() => callback());
+            return () => cancelAnimationFrame(handle);
+        }
+        const timer = setTimeout(callback, 50);
+        return () => clearTimeout(timer);
+    }
+    function currentOrigin() {
+        return typeof globalThis.origin === 'string'
+            ? globalThis.origin
+            : globalThis.location?.origin ?? '';
+    }
+    function parseInputArguments(input) {
+        if (input === undefined || input === null)
+            return {};
+        if (typeof input === 'object')
+            return input;
+        if (typeof input === 'string') {
+            try {
+                return JSON.parse(input);
+            }
+            catch {
+                return input;
+            }
+        }
+        return input;
+    }
+    function serializeOutputResult(value) {
+        if (typeof value === 'string')
+            return value;
+        if (typeof value === 'object' && value !== null) {
+            try {
+                return JSON.stringify(value);
+            }
+            catch {
+                return String(value);
+            }
+        }
+        return String(value ?? '');
+    }
+    /**
+     * 严格 W3C 规范级 WebMCP Context 实现
+     */
+    class StrictWebMCPContext extends EventTarget {
+        constructor(ownerDocument) {
+            super();
+            _StrictWebMCPContext_instances.add(this);
+            _StrictWebMCPContext_tools.set(this, new Map());
+            _StrictWebMCPContext_testingShim.set(this, null);
+            _StrictWebMCPContext_ontoolchangeHandler.set(this, null);
+            _StrictWebMCPContext_ownerDocument.set(this, void 0);
+            __classPrivateFieldSet(this, _StrictWebMCPContext_ownerDocument, ownerDocument, "f");
+            Object.defineProperty(this, POLYFILL_MARKER_PROPERTY, {
+                value: true,
+                enumerable: false,
+                writable: false,
+                configurable: false
+            });
+        }
+        get ontoolchange() {
+            return __classPrivateFieldGet(this, _StrictWebMCPContext_ontoolchangeHandler, "f");
+        }
+        set ontoolchange(handler) {
+            if (__classPrivateFieldGet(this, _StrictWebMCPContext_ontoolchangeHandler, "f")) {
+                super.removeEventListener('toolchange', __classPrivateFieldGet(this, _StrictWebMCPContext_ontoolchangeHandler, "f"));
+            }
+            __classPrivateFieldSet(this, _StrictWebMCPContext_ontoolchangeHandler, typeof handler === 'function' ? handler : null, "f");
+            if (__classPrivateFieldGet(this, _StrictWebMCPContext_ontoolchangeHandler, "f")) {
+                super.addEventListener('toolchange', __classPrivateFieldGet(this, _StrictWebMCPContext_ontoolchangeHandler, "f"));
+            }
+        }
+        async registerTool(tool, options) {
+            if (!tool || typeof tool !== 'object') {
+                throw new TypeError('Tool descriptor must be an object');
+            }
+            if (!tool.name || typeof tool.name !== 'string') {
+                throw new TypeError('Tool "name" must be a non-empty string');
+            }
+            if (typeof tool.execute !== 'function') {
+                throw new TypeError('Tool "execute" must be a function');
+            }
+            const signal = options?.signal;
+            signal?.throwIfAborted?.();
+            const toolEntry = {
+                name: String(tool.name).trim(),
+                title: tool.title ? String(tool.title) : undefined,
+                description: String(tool.description || ''),
+                inputSchema: tool.inputSchema,
+                outputSchema: tool.outputSchema,
+                annotations: tool.annotations,
+                execute: tool.execute,
+                [REGISTERED_INPUT_SCHEMA_SYMBOL]: tool.inputSchema ? JSON.stringify(tool.inputSchema) : undefined
+            };
+            __classPrivateFieldGet(this, _StrictWebMCPContext_tools, "f").set(toolEntry.name, toolEntry);
+            if (signal) {
+                const onAbort = () => {
+                    __classPrivateFieldGet(this, _StrictWebMCPContext_instances, "m", _StrictWebMCPContext_removeTool).call(this, toolEntry.name);
+                    __classPrivateFieldGet(this, _StrictWebMCPContext_instances, "m", _StrictWebMCPContext_notifyToolsChanged).call(this);
+                };
+                toolEntry[REGISTRATION_SIGNAL_SYMBOL] = signal;
+                toolEntry[REGISTRATION_ABORT_SYMBOL] = onAbort;
+                signal.addEventListener('abort', onAbort, { once: true });
+            }
+            await __classPrivateFieldGet(this, _StrictWebMCPContext_instances, "m", _StrictWebMCPContext_notifyToolsChanged).call(this);
+        }
+        async unregisterTool(name) {
+            const removed = __classPrivateFieldGet(this, _StrictWebMCPContext_instances, "m", _StrictWebMCPContext_removeTool).call(this, name);
+            if (removed) {
+                await __classPrivateFieldGet(this, _StrictWebMCPContext_instances, "m", _StrictWebMCPContext_notifyToolsChanged).call(this);
+            }
+            return removed;
+        }
+        async getTools(options) {
+            const tools = [];
+            for (const tool of __classPrivateFieldGet(this, _StrictWebMCPContext_tools, "f").values()) {
+                const schema = tool[REGISTERED_INPUT_SCHEMA_SYMBOL]
+                    ? JSON.parse(tool[REGISTERED_INPUT_SCHEMA_SYMBOL])
+                    : tool.inputSchema;
+                tools.push({
+                    name: tool.name,
+                    title: tool.title ?? '',
+                    description: tool.description,
+                    inputSchema: schema,
+                    origin: currentOrigin(),
+                    window: globalThis.window,
+                    ...(tool.annotations ? { annotations: tool.annotations } : {})
+                });
+            }
+            tools.sort((a, b) => a.name.localeCompare(b.name));
+            return tools;
+        }
+        async executeTool(toolOrName, inputArgsJson, options) {
+            options?.signal?.throwIfAborted?.();
+            const toolName = typeof toolOrName === 'string' ? toolOrName : toolOrName?.name;
+            if (!toolName) {
+                throw new TypeError('executeTool requires tool name');
+            }
+            const tool = __classPrivateFieldGet(this, _StrictWebMCPContext_tools, "f").get(toolName);
+            if (!tool) {
+                throw new Error(`WebMCP Tool not found: ${toolName}`);
+            }
+            const args = parseInputArguments(inputArgsJson);
+            const result = await Promise.resolve(tool.execute(args));
+            return serializeOutputResult(result);
+        }
+        static dispose(context) {
+            for (const name of Array.from(__classPrivateFieldGet(context, _StrictWebMCPContext_tools, "f").keys())) {
+                __classPrivateFieldGet(context, _StrictWebMCPContext_instances, "m", _StrictWebMCPContext_removeTool).call(context, name);
+            }
+            context.ontoolchange = null;
+        }
+    }
+    _StrictWebMCPContext_tools = new WeakMap(), _StrictWebMCPContext_testingShim = new WeakMap(), _StrictWebMCPContext_ontoolchangeHandler = new WeakMap(), _StrictWebMCPContext_ownerDocument = new WeakMap(), _StrictWebMCPContext_instances = new WeakSet(), _StrictWebMCPContext_removeTool = function _StrictWebMCPContext_removeTool(name) {
+        const tool = __classPrivateFieldGet(this, _StrictWebMCPContext_tools, "f").get(name);
+        if (!tool)
+            return false;
+        const signal = tool[REGISTRATION_SIGNAL_SYMBOL];
+        const onAbort = tool[REGISTRATION_ABORT_SYMBOL];
+        if (signal && onAbort) {
+            signal.removeEventListener('abort', onAbort);
+        }
+        return __classPrivateFieldGet(this, _StrictWebMCPContext_tools, "f").delete(name);
+    }, _StrictWebMCPContext_notifyToolsChanged = async function _StrictWebMCPContext_notifyToolsChanged() {
+        this.dispatchEvent(new Event('toolchange'));
+        if (__classPrivateFieldGet(this, _StrictWebMCPContext_testingShim, "f") && typeof __classPrivateFieldGet(this, _StrictWebMCPContext_testingShim, "f").dispatchToolChange === 'function') {
+            __classPrivateFieldGet(this, _StrictWebMCPContext_testingShim, "f").dispatchToolChange();
+        }
+    };
+    // 全局单例与安装状态
+    const installedProperties = [];
+    let installedContext = null;
+    let declarativeFormsCleanup = null;
+    function installProperty(target, key, descriptor) {
+        const previous = Object.getOwnPropertyDescriptor(target, key);
+        try {
+            Object.defineProperty(target, key, descriptor);
+        }
+        catch (e) {
+            cleanupWebMCPPolyfill();
+            throw e;
+        }
+        installedProperties.push({ target, key, previous });
+    }
+    /**
+     * 现代轻量化声明式表单监听器 (仅对 form[toolname] 执行目标感知，彻底避免全文档 querySelectorAll('*') 遍历)
+     */
+    function installOptimizedDeclarativeForms(document, context) {
+        let active = true;
+        let cancelIdleSync = null;
+        const runSync = () => {
+            if (!active)
+                return;
+            try {
+                // 采用精确定位选择器代替全量 document.querySelectorAll('*')
+                const forms = Array.from(document.querySelectorAll('form[toolname]'));
+                // 探查潜在的自定义元素 Open ShadowRoot (利用 WeakMap memoized lookup 极速命中，零递归)
+                const potentialHosts = document.querySelectorAll(':not(:defined), [data-has-shadow]');
+                potentialHosts.forEach(host => {
+                    const root = getOpenShadowRoot(host);
+                    if (root) {
+                        const shadowForms = Array.from(root.querySelectorAll('form[toolname]'));
+                        forms.push(...shadowForms);
+                    }
+                });
+                forms.forEach(form => {
+                    const toolName = form.getAttribute('toolname');
+                    const toolDescription = form.getAttribute('tooldescription') || '';
+                    if (!toolName)
+                        return;
+                    // 注册表单工具
+                    context.registerTool({
+                        name: toolName,
+                        description: toolDescription,
+                        execute: async (input) => {
+                            // 触发原生表单提交
+                            form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+                            return { success: true, toolName };
+                        }
+                    }).catch(() => { });
+                });
+            }
+            catch { }
+        };
+        const debouncedSync = () => {
+            if (cancelIdleSync)
+                cancelIdleSync();
+            cancelIdleSync = scheduleIdleTask(runSync, 200);
+        };
+        // 仅监听 DOM 添加子树中是否存在表单，避免监听全文档 attributes 和 characterData 造成每秒千次触发
+        let observer = null;
+        try {
+            observer = new MutationObserver((mutations) => {
+                let hasFormMutation = false;
+                for (const m of mutations) {
+                    if (m.type === 'childList') {
+                        for (let i = 0; i < m.addedNodes.length; i++) {
+                            const node = m.addedNodes[i];
+                            if (node.nodeType === Node.ELEMENT_NODE) {
+                                const el = node;
+                                if (el.tagName === 'FORM' || (el.querySelector && el.querySelector('form[toolname]'))) {
+                                    hasFormMutation = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if (hasFormMutation)
+                        break;
+                }
+                if (hasFormMutation)
+                    debouncedSync();
+            });
+            if (document.body) {
+                observer.observe(document.body, { childList: true, subtree: true });
+            }
+        }
+        catch { }
+        // 初始执行一次空闲扫描
+        debouncedSync();
+        return () => {
+            active = false;
+            if (cancelIdleSync)
+                cancelIdleSync();
+            if (observer)
+                observer.disconnect();
+        };
+    }
+    /**
+     * 激活 WebMCP Polyfill 环境 (支持可选 options)
+     */
+    function initializeWebMCPPolyfill(options = {}) {
+        if (typeof window === 'undefined' || typeof document === 'undefined')
+            return;
+        const doc = document;
+        if (doc.modelContext) {
+            return;
+        }
+        if (installedProperties.length > 0) {
+            cleanupWebMCPPolyfill();
+        }
+        const context = new StrictWebMCPContext(doc);
+        installedContext = context;
+        window.getOpenShadowRoot = getOpenShadowRoot;
+        context.getOpenShadowRoot = getOpenShadowRoot;
+        // 1. 安装 ModelContext 全局类
+        const modelContextConstructor = function ModelContext() {
+            throw new TypeError('Illegal constructor');
+        };
+        Object.defineProperty(modelContextConstructor, 'name', { value: 'ModelContext' });
+        Object.defineProperty(modelContextConstructor, 'prototype', {
+            value: StrictWebMCPContext.prototype,
+            writable: false
+        });
+        installProperty(window, 'ModelContext', {
+            configurable: true,
+            enumerable: false,
+            writable: true,
+            value: modelContextConstructor
+        });
+        // 2. 安装 document.modelContext
+        installProperty(Document.prototype, 'modelContext', {
+            configurable: true,
+            enumerable: true,
+            get() {
+                return context;
+            }
+        });
+        // 3. 安装兼容性 navigator.modelContext
+        if (typeof navigator !== 'undefined') {
+            installProperty(navigator, 'modelContext', {
+                configurable: true,
+                enumerable: true,
+                get() {
+                    return context;
+                }
+            });
+        }
+        // 4. 仅在显式声明或需要时挂载声明式表单监听，默认避免全文档属性轰炸
+        if (options.declarativeForms !== false) {
+            declarativeFormsCleanup = installOptimizedDeclarativeForms(doc, context);
+        }
+    }
+    /**
+     * 卸载清理 WebMCP Polyfill
+     */
+    function cleanupWebMCPPolyfill() {
+        if (declarativeFormsCleanup) {
+            declarativeFormsCleanup();
+            declarativeFormsCleanup = null;
+        }
+        if (installedContext) {
+            StrictWebMCPContext.dispose(installedContext);
+            installedContext = null;
+        }
+        for (const { target, key, previous } of [...installedProperties].reverse()) {
+            if (previous) {
+                Object.defineProperty(target, key, previous);
+            }
+            else {
+                Reflect.deleteProperty(target, key);
+            }
+        }
+        installedProperties.length = 0;
+    }
+
+    let keepaliveTimer = null;
+    let isPinging = false;
+    let lastPingTime = 0;
+    /**
+     * 执行轻量级心跳请求，向系统服务端报活以刷新 Session 会话空闲倒计时 (30分钟超时防跌落)
+     * 接口选用 YuanNian 极为轻量的只读接口：/expenseClaim/expenseRecord/countAlreadyRecoverExpenseRecord
+     */
+    async function touchSessionKeepalive(state, win) {
+        if (isPinging)
+            return true;
+        isPinging = true;
+        try {
+            // 1. 每次心跳前动态嗅探提取最新 Token
+            extractLatestTokens(state);
+            // 2. 优先通过宿主原生 HTTP/Axios 客户端触发保活（与官方 UI 行为完全一致，该端点为 GET）
+            let res = await callNativeHttp('/expenseClaim/expenseRecord/countAlreadyRecoverExpenseRecord', 'GET', null, win);
+            // 3. 仅当原生客户端完全未连接时，降级使用备用 apiRequest 保活
+            if (res === null) {
+                res = await apiRequest('/fssc/expenseClaim/expenseRecord/countAlreadyRecoverExpenseRecord', 'GET', null, state);
+            }
+            const isSuccess = Boolean(res && res.success !== false && res.code !== '401');
+            if (isSuccess) {
+                lastPingTime = Date.now();
+                AutopilotLogger.info(`[SessionKeepalive] 会话心跳保活成功，Session 空闲倒计时已刷新 (${new Date().toLocaleTimeString()})`);
+            }
+            else {
+                AutopilotLogger.warn(`[SessionKeepalive] 会话心跳响应异常: ${res?.message || '未知状态'}`);
+            }
+            return isSuccess;
+        }
+        catch (err) {
+            AutopilotLogger.warn(`[SessionKeepalive] 会话心跳保活失败: ${err.message}`);
+            return false;
+        }
+        finally {
+            isPinging = false;
+        }
+    }
+    /**
+     * 启动定时会话保活循环 (默认每 2.5 分钟保活一次，彻底杜绝长时间编辑导致的“登录失效”)
+     */
+    function startSessionKeepalive(state, intervalMs = 150000, win) {
+        if (keepaliveTimer) {
+            clearInterval(keepaliveTimer);
+            keepaliveTimer = null;
+        }
+        AutopilotLogger.info(`[SessionKeepalive] 启动后台会话保活守护进程 (心跳间隔: ${Math.round(intervalMs / 1000)}s)`);
+        // 立即执行一次初次保活与 Token 刷新
+        touchSessionKeepalive(state, win);
+        keepaliveTimer = setInterval(() => {
+            touchSessionKeepalive(state, win);
+        }, intervalMs);
+    }
+
+    async function mapConcurrent(items, concurrency, asyncFn) {
+        const results = new Array(items.length);
+        let currentIndex = 0;
+        const worker = async () => {
+            while (currentIndex < items.length) {
+                const idx = currentIndex++;
+                try {
+                    results[idx] = await asyncFn(items[idx], idx);
+                }
+                catch (err) {
+                    console.error(`Error in mapConcurrent at index ${idx}:`, err);
+                    results[idx] = null;
+                }
+            }
+        };
+        const workers = [];
+        const actualConcurrency = Math.min(concurrency, items.length);
+        for (let i = 0; i < actualConcurrency; i++) {
+            workers.push(worker());
+        }
+        await Promise.all(workers);
+        return results;
+    }
+
+    /**
+     * 将不同来源的发票对象统一解构并扁平化为标准化字段结构
+     */
+    function normalizeInvoiceData(raw) {
+        if (!raw) {
+            return {
+                id: '',
+                invoiceNo: '',
+                invoiceCode: '',
+                invoiceDate: '',
+                amount: 0,
+                typeName: '',
+                sellerName: '',
+                goodsName: '',
+                timeGetOn: '',
+                timeGetOff: '',
+                detailChecked: false
+            };
+        }
+        // 1. 如果是原生发票池行结构 (包含 datas 字典)
+        if (raw.datas && typeof raw.datas === 'object') {
+            const d = raw.datas;
+            const res = {
+                id: raw.boSourceRowId || raw.rowId || (d.ID ? d.ID.value : '') || '',
+                invoiceNo: '',
+                invoiceCode: '',
+                invoiceDate: '',
+                amount: 0,
+                typeName: '',
+                sellerName: '',
+                goodsName: '',
+                timeGetOn: '',
+                timeGetOff: '',
+                detailChecked: Boolean(raw.detailChecked)
+            };
+            Object.values(d).forEach((field) => {
+                if (!field || !field.columnCode)
+                    return;
+                const code = field.columnCode;
+                const val = field.value;
+                if (code === 'INVOICE_NO') {
+                    res.invoiceNo = (typeof val === 'string' ? val : (val ? String(val) : '')).trim();
+                }
+                else if (code === 'INVOICE_CODE') {
+                    res.invoiceCode = (typeof val === 'string' ? val : (val ? String(val) : '')).trim();
+                }
+                else if (code === 'INVOICE_DATE') {
+                    res.invoiceDate = normalizeDate(typeof val === 'string' ? val : (val ? String(val) : ''));
+                }
+                else if (code === 'AMOUNT_TAX' || code === 'TOTAL_AMOUNT') {
+                    if (val && typeof val === 'object' && val.amount !== undefined) {
+                        const parsed = parseFloat(val.amount);
+                        if (!isNaN(parsed) && parsed > 0)
+                            res.amount = parsed;
+                    }
+                    else if (val !== undefined && val !== null && typeof val !== 'object') {
+                        const parsed = parseFloat(String(val).replace(/[^0-9.]/g, ''));
+                        if (!isNaN(parsed) && parsed > 0)
+                            res.amount = parsed;
+                    }
+                }
+                else if (code === 'BO_TYPE_DEFINE_ID') {
+                    if (val && typeof val === 'object') {
+                        res.typeName = val.onlyTitle?.zh_CN || val.title?.zh_CN || val.name || '';
+                    }
+                    else if (typeof val === 'string') {
+                        res.typeName = val;
+                    }
+                }
+                else if (code === 'SELLER_NAME' || code === 'SALES_NAME') {
+                    res.sellerName = (typeof val === 'string' ? val : '').trim();
+                }
+                else if (code === 'GOODS_NAME' || code === 'COMMODITY_NAME') {
+                    res.goodsName = (typeof val === 'string' ? val : '').trim();
+                }
+            });
+            // 二次回填：如果 AMOUNT_TAX 没取到有效值，再看 raw.datas 里有没有其他金额字段
+            if (res.amount <= 0 && d.AMOUNT_TAX && d.AMOUNT_TAX.value) {
+                const parsed = parseFloat(d.AMOUNT_TAX.value.amount || d.AMOUNT_TAX.value);
+                if (!isNaN(parsed) && parsed > 0)
+                    res.amount = parsed;
+            }
+            return res;
+        }
+        // 2. 如果是发票穿透详情 (invDetail / invoiceVO) 或标准 InvoiceItem
+        const invVO = raw.invoiceVO || raw;
+        const rawAmt = raw.amount !== undefined
+            ? raw.amount
+            : (invVO.amountTax !== undefined ? invVO.amountTax : (invVO.totalAmount !== undefined ? invVO.totalAmount : 0));
+        const parsedAmt = typeof rawAmt === 'number' ? rawAmt : (parseFloat(String(rawAmt).replace(/[^0-9.]/g, '')) || 0);
+        const rawDate = raw.invoiceDate || invVO.invoiceDate || raw.businessDate || '';
+        const normDate = normalizeDate(typeof rawDate === 'string' ? rawDate : (rawDate ? String(rawDate) : ''));
+        const no = (raw.invoiceNo || invVO.invoiceNo || invVO.invoiceNumber || '').trim();
+        const code = (raw.invoiceCode || invVO.invoiceCode || '').trim();
+        const typeName = raw.typeName || raw.expenseTypeName || invVO.invoiceTypeName || invVO.typeName || '';
+        const seller = (raw.salesName || invVO.salesName || invVO.seller || invVO.sellerName || '').trim();
+        const goods = (raw.invoiceDetails || invVO.goodsName || invVO.commodityNames || invVO.cargoInformation || '').trim();
+        return {
+            id: raw.id || raw.expenseRecordId || raw.boDataId || raw.boSourceRowId || invVO.invoiceDataId || '',
+            invoiceNo: no,
+            invoiceCode: code,
+            invoiceDate: normDate,
+            amount: parsedAmt,
+            typeName,
+            sellerName: seller,
+            goodsName: goods,
+            timeGetOn: raw.timeGetOn || invVO.timeGetOn || '',
+            timeGetOff: raw.timeGetOff || invVO.timeGetOff || '',
+            detailChecked: Boolean(raw.detailChecked || invVO.detailChecked)
+        };
+    }
+    /**
+     * 对单张发票执行完整性与合规校验
+     */
+    function validateSingleInvoice(rawInvoice) {
+        const data = normalizeInvoiceData(rawInvoice);
+        const issues = [];
+        // 1. 发票金额校验 (🔴 阻断性必要字段)
+        if (!data.amount || isNaN(data.amount) || data.amount <= 0) {
+            issues.push({
+                field: 'amount',
+                severity: 'error',
+                message: '发票金额未识别或金额为 0 元，请核实发票实付金额',
+                shortBadge: '缺金额'
+            });
+        }
+        // 2. 开票日期校验 (🔴 阻断性必要字段)
+        if (!data.invoiceDate || data.invoiceDate.trim().length === 0) {
+            issues.push({
+                field: 'date',
+                severity: 'error',
+                message: '未识别到有效开票日期，报销与记费用必须具备开票日期',
+                shortBadge: '缺日期'
+            });
+        }
+        else {
+            // 校验日期格式与合理年份 (避免 OCR 错识出如 2002 年、1990 年或未来年份)
+            const dateMatch = data.invoiceDate.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+            if (!dateMatch) {
+                issues.push({
+                    field: 'date',
+                    severity: 'error',
+                    message: `开票日期格式非法 (${data.invoiceDate})，无法作为有效财务期间`,
+                    shortBadge: '日期非法'
+                });
+            }
+            else {
+                const year = parseInt(dateMatch[1], 10);
+                const month = parseInt(dateMatch[2], 10);
+                const day = parseInt(dateMatch[3], 10);
+                const currentYear = new Date().getFullYear();
+                // 基础日历真实性校验
+                const d = new Date(year, month - 1, day);
+                if (isNaN(d.getTime()) || d.getFullYear() !== year || d.getMonth() !== month - 1 || d.getDate() !== day) {
+                    issues.push({
+                        field: 'date',
+                        severity: 'error',
+                        message: `开票日期(${data.invoiceDate})为无效日历日期`,
+                        shortBadge: '无效日期'
+                    });
+                }
+                else if (year < currentYear - 2) {
+                    // 偏离 2 年以上（例如 2002 年），属于严重超期或 OCR 识别失真，阻断级错误
+                    issues.push({
+                        field: 'date',
+                        severity: 'error',
+                        message: `开票年份严重偏离当前财务期间 (${year}年)，可能为 OCR 识别失真或超期失效发票，请核验修改`,
+                        shortBadge: '年份存疑'
+                    });
+                }
+                else if (year < currentYear) {
+                    // 上一年度跨年发票
+                    issues.push({
+                        field: 'date',
+                        severity: 'warning',
+                        message: `开票年份为往年 (${year}年)，请确认是否在跨年财务报销有效期内`,
+                        shortBadge: '跨年发票'
+                    });
+                }
+                else if (year > currentYear) {
+                    issues.push({
+                        field: 'date',
+                        severity: 'error',
+                        message: `开票年份为未来时间 (${year}年)，OCR 识别明显异常`,
+                        shortBadge: '未来日期'
+                    });
+                }
+            }
+        }
+        // 3. 发票号码校验 (🔴 阻断性必要字段)
+        if (!data.invoiceNo || data.invoiceNo.trim().length === 0) {
+            issues.push({
+                field: 'invoiceNo',
+                severity: 'error',
+                message: '未识别到发票号码，系统无法进行发票查验与防重报销',
+                shortBadge: '缺发票号'
+            });
+        }
+        else if (data.invoiceNo.length < 4) {
+            issues.push({
+                field: 'invoiceNo',
+                severity: 'warning',
+                message: `发票号码位数过短 (${data.invoiceNo})，可能存在识别残缺`,
+                shortBadge: '票号残缺'
+            });
+        }
+        // 4. 发票类型校验 (🟡 建议完备字段)
+        if (!data.typeName || data.typeName.includes('未识别') || data.typeName === 'OTHER' || data.typeName === 'None') {
+            issues.push({
+                field: 'invoiceType',
+                severity: 'warning',
+                message: '发票类型未明确归类，可能影响税率及报销科目自动匹配',
+                shortBadge: '类型待定'
+            });
+        }
+        // 5. 销售方与品名校验 (🟡 辅助校验：交通通行类票据免除此校验)
+        const transportKeywords = [
+            '出租车', '网约车', '客运', '火车', '铁路', '高铁', '动车',
+            '机票', '航空', '行程单', '过路费', '通行费', '高速', 'ETC',
+            '轮渡', '船票', '公交', '地铁', '轨道交通', '停车', '泊车', '客票'
+        ];
+        const isTransport = transportKeywords.some(kw => data.typeName.includes(kw));
+        if (!isTransport && !data.sellerName && !data.goodsName) {
+            issues.push({
+                field: 'seller',
+                severity: 'warning',
+                message: '销售方名称与货物品名均未识别，建议点击修改补充',
+                shortBadge: '缺销方品名'
+            });
+        }
+        // 6. 出租车打车票乘车时间提示 (🟡 警示级提示：缺失将无法自动对齐差旅/考勤行程)
+        // 状态守卫：仅当发票详情接口核验完毕 (detailChecked === true) 且确认未提取到上下车时间时才提示，杜绝未请求前抢跑误报
+        if (data.typeName.includes('出租车')) {
+            if (data.detailChecked) {
+                if (!data.timeGetOn && !data.timeGetOff) {
+                    issues.push({
+                        field: 'time',
+                        severity: 'warning',
+                        message: '发票详情接口(/getBoDataAndTemplateWF)已核验：发票底层数据中未提取到上下车时间，无法自动对齐差旅与考勤行程，建议点击修改补充',
+                        shortBadge: '缺乘车时间'
+                    });
+                }
+            }
+        }
+        const hasErrors = issues.some(i => i.severity === 'error');
+        const hasWarnings = issues.some(i => i.severity === 'warning');
+        const errorBadges = issues
+            .filter(i => i.severity === 'error')
+            .map(i => i.shortBadge);
+        const warningBadges = issues
+            .filter(i => i.severity === 'warning')
+            .map(i => i.shortBadge);
+        const descList = [...errorBadges, ...warningBadges];
+        const missingFieldsDesc = descList.length > 0 ? descList.join(' · ') : '信息完备';
+        return {
+            id: data.id,
+            invoiceNo: data.invoiceNo,
+            invoiceCode: data.invoiceCode,
+            invoiceDate: data.invoiceDate,
+            amount: data.amount,
+            typeName: data.typeName,
+            isValid: !hasErrors,
+            hasWarnings: hasWarnings,
+            issues,
+            missingFieldsDesc
+        };
+    }
+    /**
+     * 批量校验发票列表并输出汇总结算体检报告
+     */
+    function validateInvoiceList(invoices) {
+        const list = Array.isArray(invoices) ? invoices : [];
+        const results = [];
+        const invalidList = [];
+        let missingAmountCount = 0;
+        let missingDateCount = 0;
+        let missingInvoiceNoCount = 0;
+        let missingTypeCount = 0;
+        let missingTimeCount = 0;
+        let warningCount = 0;
+        list.forEach(inv => {
+            const res = validateSingleInvoice(inv);
+            results.push(res);
+            if (!res.isValid) {
+                invalidList.push(res);
+            }
+            if (res.hasWarnings) {
+                warningCount++;
+            }
+            res.issues.forEach(issue => {
+                if (issue.severity === 'error') {
+                    if (issue.field === 'amount')
+                        missingAmountCount++;
+                    if (issue.field === 'date')
+                        missingDateCount++;
+                    if (issue.field === 'invoiceNo')
+                        missingInvoiceNoCount++;
+                }
+                else if (issue.field === 'invoiceType') {
+                    missingTypeCount++;
+                }
+                else if (issue.field === 'time') {
+                    missingTimeCount++;
+                }
+            });
+        });
+        return {
+            totalCount: list.length,
+            validCount: results.filter(r => r.isValid).length,
+            invalidCount: invalidList.length,
+            warningCount,
+            missingAmountCount,
+            missingDateCount,
+            missingInvoiceNoCount,
+            missingTypeCount,
+            missingTimeCount,
+            results,
+            invalidList
+        };
+    }
+    /**
+     * 将校验结果回填并富化至 InvoiceItem 实体中
+     */
+    function enrichInvoiceWithValidation(item) {
+        const report = validateSingleInvoice(item);
+        item.validationIssues = report.issues;
+        item.isValidInvoice = report.isValid;
+        item.missingFieldsDesc = report.missingFieldsDesc;
+        if (!report.isValid) {
+            item.status = '残缺';
+        }
+        return item;
+    }
+
+    function normalizeTimeHelper(t) {
+        if (!t)
+            return '';
+        const clean = t.toString().trim();
+        const parts = clean.split(':');
+        if (parts.length >= 2) {
+            return `${parts[0].trim().padStart(2, '0')}:${parts[1].trim().padStart(2, '0')}`;
+        }
+        return clean;
+    }
+    function sortInvoices(list) {
+        return list.sort((a, b) => {
+            const dateA = normalizeDate(a.invoiceDate || '') || '9999-99-99';
+            const dateB = normalizeDate(b.invoiceDate || '') || '9999-99-99';
+            if (dateA !== dateB)
+                return dateA.localeCompare(dateB);
+            const timeA = normalizeTimeHelper(a.timeGetOn) || '99:99';
+            const timeB = normalizeTimeHelper(b.timeGetOn) || '99:99';
+            return timeA.localeCompare(timeB);
+        });
+    }
+    /**
+     * 全量同步发票夹与未报销费用记录列表（带多级容灾与 DOM 降级兜底）
+     */
+    async function loadAllInvoicesAndExpenses(state) {
+        // 0. 刷新当前真实登录人信息
+        try {
+            await fetchLoginUserInfo(state);
+        }
+        catch (e) { }
+        const loaded = [];
+        const processedRecordIds = new Set();
+        const processedInvoiceDataIds = new Set();
+        const processedInvoiceNos = new Set();
+        // 1. 发票夹池
+        const poolList = await queryInvoicePoolListApi(state);
+        const poolInvoices = await mapConcurrent(poolList, 8, async (pItem) => {
+            const dataId = pItem.boSourceRowId || (pItem.datas && pItem.datas.ID ? pItem.datas.ID.value : '');
+            if (!dataId)
+                return null;
+            try {
+                const invDetail = await getInvoiceDetailByDataIdApi(dataId, state);
+                return { dataId, invDetail, pItem };
+            }
+            catch (e) {
+                return null;
+            }
+        });
+        const invoiceOcrMap = new Map();
+        poolInvoices.forEach(item => {
+            if (!item || !item.invDetail)
+                return;
+            const inv = item.invDetail;
+            if (inv.invoiceNo)
+                invoiceOcrMap.set(inv.invoiceNo, inv);
+            if (item.dataId)
+                invoiceOcrMap.set(item.dataId, inv);
+            if (inv.invoiceDate && inv.amountTax !== undefined) {
+                invoiceOcrMap.set(`${normalizeDate(inv.invoiceDate)}_${inv.amountTax}`, inv);
+            }
+        });
+        // 2. 未报销费用明细
+        const recordList = await queryExpenseRecordListApi(state);
+        const parsedRecords = await mapConcurrent(recordList, 8, async (item) => {
+            const recId = item.expenseRecordId;
+            if (!recId)
+                return null;
+            try {
+                const ruleData = await getExpenseTypeRuleAndRowDatasApi(recId, item.expenseTypeId || 'UNIDENTIFIED', state);
+                const rowDatas = ruleData.rowDatas || {};
+                const v = ruleData.version || 1;
+                let invVO = {};
+                const invListField = rowDatas.expenseRecordInvoiceList;
+                if (invListField && invListField.value && invListField.value.length > 0) {
+                    invVO = invListField.value[0].invoiceVO || {};
+                }
+                let matchedInv = null;
+                if (invVO.invoiceNo && invoiceOcrMap.has(invVO.invoiceNo))
+                    matchedInv = invoiceOcrMap.get(invVO.invoiceNo);
+                else if (invVO.invoiceDataId && invoiceOcrMap.has(invVO.invoiceDataId))
+                    matchedInv = invoiceOcrMap.get(invVO.invoiceDataId);
+                else if (item.businessDate && item.amountObj) {
+                    const key = `${normalizeDate(item.businessDate)}_${item.amountObj.amount}`;
+                    if (invoiceOcrMap.has(key))
+                        matchedInv = invoiceOcrMap.get(key);
+                }
+                if (matchedInv) {
+                    if (!invVO.timeGetOn && matchedInv.timeGetOn)
+                        invVO.timeGetOn = matchedInv.timeGetOn;
+                    if (!invVO.timeGetOff && matchedInv.timeGetOff)
+                        invVO.timeGetOff = matchedInv.timeGetOff;
+                    if (!invVO.mileage && matchedInv.mileage)
+                        invVO.mileage = matchedInv.mileage;
+                    if (!invVO.salesName && (matchedInv.salesName || matchedInv.seller))
+                        invVO.salesName = matchedInv.salesName || matchedInv.seller;
+                    if (!invVO.seller && (matchedInv.seller || matchedInv.salesName))
+                        invVO.seller = matchedInv.seller || matchedInv.salesName;
+                    if (!invVO.invoiceNo && matchedInv.invoiceNo)
+                        invVO.invoiceNo = matchedInv.invoiceNo;
+                    if (!invVO.invoiceCode && matchedInv.invoiceCode)
+                        invVO.invoiceCode = matchedInv.invoiceCode;
+                    if (matchedInv.invoiceDataId)
+                        invVO.invoiceDataId = matchedInv.invoiceDataId;
+                    if (!invVO.commodityNames && matchedInv.commodityNames)
+                        invVO.commodityNames = matchedInv.commodityNames;
+                    if (!invVO.cargoInformation && matchedInv.cargoInformation)
+                        invVO.cargoInformation = matchedInv.cargoInformation;
+                    if (!invVO.invoiceDetails && matchedInv.invoiceDetails)
+                        invVO.invoiceDetails = matchedInv.invoiceDetails;
+                    if (!invVO.goodsName && matchedInv.goodsName)
+                        invVO.goodsName = matchedInv.goodsName;
+                    if (!invVO.invoiceTypeAbbreviation && matchedInv.invoiceTypeAbbreviation)
+                        invVO.invoiceTypeAbbreviation = matchedInv.invoiceTypeAbbreviation;
+                    if (!invVO.invoiceTypeCode && matchedInv.invoiceTypeCode)
+                        invVO.invoiceTypeCode = matchedInv.invoiceTypeCode;
+                }
+                let attachList = [];
+                if (rowDatas.expenseRecordAttachmentList && rowDatas.expenseRecordAttachmentList.value) {
+                    attachList = rowDatas.expenseRecordAttachmentList.value;
+                }
+                const cat = detectInvoiceCategory(invVO, item, item.expenseTypeName || '');
+                const rawDate = invVO.invoiceDate || (item.businessDate ? item.businessDate.split(' ')[0] : '');
+                const invDate = normalizeDate(rawDate);
+                const amt = item.amountObj ? item.amountObj.amount : (invVO.amountTax || 0);
+                const isComm = cat === 'COMMUNICATION';
+                let cleanPeriod = '';
+                const existingPeriod = (rowDatas.F_ZY_DEF_001 ? rowDatas.F_ZY_DEF_001.value : '').replace(/^期间[：:]\s*/, '').trim();
+                cleanPeriod = (existingPeriod && existingPeriod.length === 7) ? existingPeriod : computePeriod(invDate, isComm);
+                return {
+                    expenseRecordId: recId,
+                    version: v,
+                    invoiceVO: invVO,
+                    invoiceNo: invVO.invoiceNo || '',
+                    invoiceCode: invVO.invoiceCode || '',
+                    invoiceDate: invDate,
+                    fileName: invVO.fileName || '',
+                    salesName: invVO.salesName || invVO.seller || '',
+                    timeGetOn: normalizeTimeHelper(invVO.timeGetOn),
+                    timeGetOff: normalizeTimeHelper(invVO.timeGetOff),
+                    mileage: invVO.mileage ? `${invVO.mileage}km` : '',
+                    amount: amt,
+                    type: cat,
+                    expenseTypeId: item.expenseTypeId || '',
+                    expenseTypeName: item.expenseTypeName || '',
+                    startAddress: rowDatas.START_ADDRESS ? (rowDatas.START_ADDRESS.value || '') : '',
+                    endAddress: rowDatas.END_ADDRESS ? (rowDatas.END_ADDRESS.value || '') : '',
+                    description: item.description || (rowDatas.DESCRIPTION ? rowDatas.DESCRIPTION.value || '' : ''),
+                    period: cleanPeriod,
+                    attachments: attachList,
+                    errorMessages: item.expenseRecordTypeMessageVO?.errorMessages || [],
+                    status: (item.expenseRecordTypeMessageVO?.errorMessages && item.expenseRecordTypeMessageVO.errorMessages.length > 0)
+                        ? '异常'
+                        : ((item.expenseTypeName && item.expenseTypeName !== 'None') ? '成功' : '就绪')
+                };
+            }
+            catch (e) {
+                AutopilotLogger.warn(`[ExpenseService] 解析单笔费用记录详情异常 (${recId}): ${e.message}`);
+                const invDate = normalizeDate(item.businessDate ? item.businessDate.split(' ')[0] : '');
+                const amt = item.amountObj ? item.amountObj.amount : 0;
+                const fallbackCat = detectInvoiceCategory({}, item, item.expenseTypeName || '');
+                return {
+                    expenseRecordId: recId,
+                    version: item.version || 1,
+                    invoiceVO: {},
+                    invoiceNo: '',
+                    invoiceCode: '',
+                    invoiceDate: invDate,
+                    timeGetOn: '',
+                    timeGetOff: '',
+                    mileage: '',
+                    amount: amt,
+                    type: fallbackCat !== 'OTHER' ? fallbackCat : (amt >= 350 ? 'HOTEL' : 'TAXI'),
+                    startAddress: '',
+                    endAddress: '',
+                    description: item.description || '',
+                    period: computePeriod(invDate, false),
+                    attachments: [],
+                    errorMessages: item.expenseRecordTypeMessageVO?.errorMessages || [],
+                    status: (item.expenseRecordTypeMessageVO?.errorMessages && item.expenseRecordTypeMessageVO.errorMessages.length > 0) ? '异常' : '就绪'
+                };
+            }
+        });
+        parsedRecords.forEach(r => {
+            if (r) {
+                loaded.push(r);
+                if (r.expenseRecordId)
+                    processedRecordIds.add(r.expenseRecordId);
+                if (r.invoiceVO && r.invoiceVO.invoiceDataId)
+                    processedInvoiceDataIds.add(r.invoiceVO.invoiceDataId);
+                if (r.invoiceNo)
+                    processedInvoiceNos.add(r.invoiceNo);
+            }
+        });
+        poolInvoices.forEach(item => {
+            if (!item || !item.invDetail)
+                return;
+            const invDetail = item.invDetail;
+            const dataId = item.dataId;
+            const invNo = invDetail.invoiceNo || '';
+            if (processedInvoiceDataIds.has(dataId) || (invNo && processedInvoiceNos.has(invNo)))
+                return;
+            const invDate = normalizeDate(invDetail.invoiceDate || '');
+            const amt = invDetail.amountTax !== undefined ? invDetail.amountTax : 0;
+            const cat = detectInvoiceCategory(invDetail, {}, '');
+            const isComm = cat === 'COMMUNICATION';
+            loaded.push({
+                expenseRecordId: '',
+                version: 1,
+                boDataId: dataId,
+                invoiceVO: invDetail,
+                invoiceNo: invNo,
+                invoiceCode: invDetail.invoiceCode || '',
+                invoiceDate: invDate,
+                timeGetOn: normalizeTimeHelper(invDetail.timeGetOn),
+                timeGetOff: normalizeTimeHelper(invDetail.timeGetOff),
+                mileage: invDetail.mileage ? `${invDetail.mileage}km` : '',
+                amount: amt,
+                type: cat,
+                startAddress: '',
+                endAddress: '',
+                description: '',
+                period: computePeriod(invDate, isComm),
+                attachments: [],
+                status: '待流转'
+            });
+        });
+        // 智能容灾层 1：若发票池和费用记录均为 0，检测是否在报销单编辑页 (#billWrite)
+        if (loaded.length === 0) {
+            let billMainId = state.currentBillMainId;
+            if (!billMainId && typeof window !== 'undefined') {
+                const hash = window.location.hash || '';
+                const match = hash.match(/billMainId=([a-zA-Z0-9_\-]+)/) || hash.match(/id=([a-zA-Z0-9_\-]+)/);
+                if (match)
+                    billMainId = match[1];
+                if (!billMainId) {
+                    const search = window.location.search || '';
+                    const m2 = search.match(/billMainId=([a-zA-Z0-9_\-]+)/) || search.match(/id=([a-zA-Z0-9_\-]+)/);
+                    if (m2)
+                        billMainId = m2[1];
+                }
+            }
+            if (billMainId && (!state.billRows || state.billRows.length === 0)) {
+                try {
+                    const { billData } = await fetchBillDataAndTemplateApi(billMainId, state);
+                    state.currentBillData = billData;
+                    const parsed = parseBillDataStructure(billData);
+                    state.billRows = parsed.billRows;
+                    state.billTags = parsed.billTags;
+                }
+                catch (e) {
+                    AutopilotLogger.warn(`[ExpenseService] 自动拉取报销单明细行失败: ${e.message}`);
+                }
+            }
+            if (state.billRows && state.billRows.length > 0) {
+                state.billRows.forEach((row, idx) => {
+                    loaded.push({
+                        id: row.claimRowId || `bill-row-${idx}`,
+                        expenseRecordId: row.claimRowId,
+                        version: 1,
+                        invoiceVO: {},
+                        invoiceNo: '',
+                        invoiceCode: '',
+                        invoiceDate: '',
+                        timeGetOn: '',
+                        timeGetOff: '',
+                        mileage: '',
+                        amount: row.amount,
+                        type: detectInvoiceCategory({}, {}, row.expTypeName),
+                        expenseTypeName: row.expTypeName || '市内交通费',
+                        startAddress: '',
+                        endAddress: '',
+                        description: row.recDesc || '',
+                        period: '',
+                        attachments: [],
+                        status: '就绪',
+                        isModified: false
+                    });
+                });
+            }
+        }
+        // 智能融合层：从当前宿主页面 DOM / React Fiber 中增量融合发票（保障 100% 提取发票夹全部发票）
+        const domItems = scrapeInvoicesFromDom();
+        if (domItems.length > 0) {
+            domItems.forEach(d => {
+                const dataId = d.boDataId || d.id;
+                const invNo = d.invoiceNo || '';
+                if (dataId && processedInvoiceDataIds.has(dataId))
+                    return;
+                if (invNo && processedInvoiceNos.has(invNo))
+                    return;
+                loaded.push(d);
+                if (dataId)
+                    processedInvoiceDataIds.add(dataId);
+                if (invNo)
+                    processedInvoiceNos.add(invNo);
+            });
+        }
+        const sorted = sortInvoices(loaded);
+        // 对每条发票执行完整性体检与残缺字段标记
+        sorted.forEach(item => enrichInvoiceWithValidation(item));
+        state.invoices = sorted;
+        state.selectedIndices.clear();
+        sorted.forEach((_, idx) => state.selectedIndices.add(idx));
+        return sorted;
+    }
+    /**
+     * 宿主页面 DOM 表格穿透兜底爬取
+     * 当后端接口因权限、状态过滤返回 0 条时，直接从用户屏幕可见的表格中提取数据
+     */
+    function scrapeInvoicesFromDom(state) {
+        if (typeof document === 'undefined')
+            return [];
+        const results = [];
+        const seenIds = new Set();
+        const seenNos = new Set();
+        // 辅助：从 DOM 节点探测 React Fiber
+        function findFiber(el) {
+            if (!el)
+                return null;
+            const key = Object.keys(el).find(k => k.startsWith('__reactInternalInstance$') || k.startsWith('__reactFiber$'));
+            return key ? el[key] : null;
+        }
+        // 辅助：从单个 document 中提取 React Table dataSource
+        function extractFromDocFiber(doc) {
+            if (!doc)
+                return null;
+            const trs = Array.from(doc.querySelectorAll('tbody tr'));
+            for (const tr of trs) {
+                let fiber = findFiber(tr);
+                while (fiber) {
+                    if (fiber.memoizedProps?.dataSource && Array.isArray(fiber.memoizedProps.dataSource) && fiber.memoizedProps.dataSource.length > 0) {
+                        return fiber.memoizedProps.dataSource;
+                    }
+                    fiber = fiber.return;
+                }
+            }
+            return null;
+        }
+        // 收集主文档及所有同源 iframe 文档
+        const docs = [document];
+        document.querySelectorAll('iframe').forEach(f => {
+            try {
+                const d = f.contentDocument || f.contentWindow?.document;
+                if (d && !docs.includes(d))
+                    docs.push(d);
+            }
+            catch (e) { }
+        });
+        // 辅助：从 Fiber 节点数据对象中按 columnCode 动态提取值
+        function getColumnValue(record, code) {
+            if (!record || typeof record !== 'object')
+                return undefined;
+            if (record[code]?.value !== undefined)
+                return record[code].value;
+            for (const key of Object.keys(record)) {
+                const item = record[key];
+                if (item && typeof item === 'object' && item.columnCode === code) {
+                    return item.value;
+                }
+            }
+            return undefined;
+        }
+        // 1. 优先从 React Fiber 提取最完整的发票池原生数据 (穿透发票夹 iframe 与宿主页面)
+        for (const doc of docs) {
+            const dataSource = extractFromDocFiber(doc);
+            if (dataSource && dataSource.length > 0) {
+                for (let idx = 0; idx < dataSource.length; idx++) {
+                    const d = dataSource[idx];
+                    const dataId = d.ID?.value || d.boSourceRowId?.value || d.boSourceRowId || getColumnValue(d, 'ID') || `inv-fiber-${idx}`;
+                    const typeName = d.BO_TYPE_DEFINE_ID?.value?.onlyTitle?.zh_CN || d.BO_TYPE_DEFINE_ID?.value?.title?.zh_CN || d.BO_TYPE_DEFINE_ID?.title?.zh_CN || '';
+                    const invCode = getColumnValue(d, 'INVOICE_CODE') || d['8f8eb6197a4411e9b0eddf7f464b08f2']?.value || '';
+                    const invNo = getColumnValue(d, 'INVOICE_NO') || d['9b1993717a4411e9b0ed17d010f97c63']?.value || '';
+                    const rawDate = getColumnValue(d, 'INVOICE_DATE') || d['ba31ef167a4411e9b0ed9162dd502459']?.value || '';
+                    const invDate = normalizeDate(rawDate);
+                    const taxAmtObj = getColumnValue(d, 'AMOUNT_TAX') ?? d['d3f7fcbc7a4411e9b0ed576d29ce88e9']?.value;
+                    const amt = typeof taxAmtObj === 'object' ? (taxAmtObj?.amount ?? 0) : (Number(taxAmtObj) || 0);
+                    const rawSales = getColumnValue(d, 'SALES_NAME');
+                    const salesName = typeof rawSales === 'string' ? rawSales : (rawSales?.title?.zh_CN || rawSales?.[0]?.title?.zh_CN || '');
+                    const rawPurchaser = getColumnValue(d, 'PURCHASER_NAME');
+                    const purchaserName = typeof rawPurchaser === 'string' ? rawPurchaser : (rawPurchaser?.title?.zh_CN || rawPurchaser?.[0]?.title?.zh_CN || '');
+                    if (seenIds.has(dataId) || (invNo && seenNos.has(invNo)))
+                        continue;
+                    if (dataId)
+                        seenIds.add(dataId);
+                    if (invNo)
+                        seenNos.add(invNo);
+                    const invoiceVO = {
+                        invoiceDataId: dataId,
+                        invoiceNo: invNo,
+                        invoiceCode: invCode,
+                        invoiceDate: invDate,
+                        amountTax: amt,
+                        salesName: salesName,
+                        seller: salesName,
+                        purchaserName: purchaserName,
+                        invoiceTypeAbbreviation: typeName,
+                        commodityNames: typeName,
+                        fileName: `${invDate}_${typeName}_¥${amt}`
+                    };
+                    const cat = detectInvoiceCategory(invoiceVO, {}, typeName);
+                    const isComm = cat === 'COMMUNICATION';
+                    results.push({
+                        id: dataId,
+                        boDataId: dataId,
+                        expenseRecordId: '',
+                        version: 1,
+                        invoiceVO: invoiceVO,
+                        invoiceNo: invNo,
+                        invoiceCode: invCode,
+                        invoiceDate: invDate,
+                        salesName: salesName,
+                        timeGetOn: '',
+                        timeGetOff: '',
+                        mileage: '',
+                        amount: amt,
+                        type: cat,
+                        expenseTypeName: typeName || (cat === 'HOTEL' ? '住宿费' : cat === 'FLIGHT' ? '飞机票' : cat === 'TRAIN' ? '火车票' : '市内交通费'),
+                        startAddress: '',
+                        endAddress: '',
+                        description: '',
+                        period: computePeriod(invDate, isComm),
+                        attachments: [],
+                        status: '待流转',
+                        isModified: false
+                    });
+                }
+                if (results.length > 0) {
+                    AutopilotLogger.info(`[ExpenseService] 成功通过 React Fiber 穿透提取发票池数据 (${results.length} 笔记录)`);
+                    return results;
+                }
+            }
+        }
+        // 2. 降级：从 HTML 表格 DOM 中爬取
+        for (const doc of docs) {
+            const allTables = Array.from(doc.querySelectorAll('table')).filter(t => {
+                const id = t.id || '';
+                const cls = t.className || '';
+                return !id.includes('yn-') && !cls.includes('webmcp') && !id.includes('webmcp') && !id.includes('trip-');
+            });
+            for (const table of allTables) {
+                const rows = Array.from(table.querySelectorAll('tbody tr'));
+                if (rows.length === 0)
+                    continue;
+                const headers = Array.from(table.querySelectorAll('thead th, thead td')).map(h => (h.textContent || '').trim());
+                const dateColIdx = headers.findIndex(h => /日期|时间|date/i.test(h));
+                const typeColIdx = headers.findIndex(h => /类型|类别|科目|type|category/i.test(h));
+                const amtColIdx = headers.findIndex(h => /金额|价税|含税|amount|price/i.test(h));
+                const descColIdx = headers.findIndex(h => /说明|事由|描述|备注|desc/i.test(h));
+                const startColIdx = headers.findIndex(h => /出发|起点|origin|from/i.test(h));
+                const endColIdx = headers.findIndex(h => /到达|目的|destination|to/i.test(h));
+                const invNoColIdx = headers.findIndex(h => /发票号|单据号|no|code/i.test(h));
+                for (let i = 0; i < rows.length; i++) {
+                    const tr = rows[i];
+                    const cells = Array.from(tr.querySelectorAll('td'));
+                    if (cells.length < 3)
+                        continue;
+                    const getCellText = (idx) => (idx !== -1 && idx < cells.length ? (cells[idx].textContent || '').trim() : '');
+                    const fullRowText = cells.map(c => c.textContent || '').join(' ');
+                    let invDate = '';
+                    if (dateColIdx !== -1) {
+                        invDate = normalizeDate(getCellText(dateColIdx));
+                    }
+                    if (!invDate) {
+                        const m = fullRowText.match(/\b(20\d{2}[-/.]\d{1,2}[-/.]\d{1,2})\b/);
+                        if (m)
+                            invDate = normalizeDate(m[1]);
+                    }
+                    let amount = 0;
+                    if (amtColIdx !== -1) {
+                        const amtStr = getCellText(amtColIdx).replace(/[^\d.]/g, '');
+                        amount = parseFloat(amtStr) || 0;
+                    }
+                    if (!amount) {
+                        const m = fullRowText.match(/(?:¥|￥)\s*(\d+(?:\.\d{1,2})?)/);
+                        if (m)
+                            amount = parseFloat(m[1]) || 0;
+                    }
+                    const typeName = typeColIdx !== -1 ? getCellText(typeColIdx) : '';
+                    const cat = detectInvoiceCategory({}, {}, typeName || fullRowText);
+                    let startAddress = startColIdx !== -1 ? getCellText(startColIdx) : '';
+                    let endAddress = endColIdx !== -1 ? getCellText(endColIdx) : '';
+                    if (!startAddress && !endAddress) {
+                        const m = fullRowText.match(/([^\s,，]+)\s*(?:至|➔|->|-->|到)\s*([^\s,，]+)/);
+                        if (m) {
+                            startAddress = m[1].trim();
+                            endAddress = m[2].trim();
+                        }
+                    }
+                    const description = descColIdx !== -1 ? getCellText(descColIdx) : '';
+                    const invoiceNo = invNoColIdx !== -1 ? getCellText(invNoColIdx) : '';
+                    const rowId = tr.getAttribute('data-id') || tr.getAttribute('row-key') || tr.getAttribute('id') || `dom-row-${i}`;
+                    if (amount > 0 || invDate || typeName) {
+                        results.push({
+                            id: rowId,
+                            expenseRecordId: rowId,
+                            version: 1,
+                            invoiceVO: {},
+                            invoiceNo: invoiceNo,
+                            invoiceCode: '',
+                            invoiceDate: invDate,
+                            timeGetOn: '',
+                            timeGetOff: '',
+                            mileage: '',
+                            amount,
+                            type: cat,
+                            expenseTypeName: typeName || (cat === 'HOTEL' ? '住宿费' : cat === 'FLIGHT' ? '飞机票' : cat === 'TRAIN' ? '火车票' : '市内交通费'),
+                            startAddress,
+                            endAddress,
+                            description,
+                            period: computePeriod(invDate, cat === 'COMMUNICATION'),
+                            attachments: [],
+                            status: '待流转',
+                            isModified: false
+                        });
+                    }
+                }
+                if (results.length > 0)
+                    break;
+            }
+            if (results.length > 0)
+                break;
+        }
+        if (results.length > 0) {
+            AutopilotLogger.info(`[ExpenseService] 从宿主 DOM 表格中兜底爬取成功 (${results.length} 笔记录)`);
+        }
+        return results;
+    }
+    async function queryInvoicePoolListApi(state) {
+        if (state.lastInterceptedInvoicePool && state.lastInterceptedInvoicePool.length > 0) {
+            AutopilotLogger.info(`[ExpenseService] 复用最近拦截到的发票池数据 (${state.lastInterceptedInvoicePool.length} 条)`);
+            return state.lastInterceptedInvoicePool;
+        }
+        const payload = {
+            boDefineId: '5f0971df7a4411e9b0edd9fcadd69462',
+            appId: state.appId || 'e3d5e4787ff911e88b1997bee3518b4d',
+            relationBO: {
+                boType: 'OBJECT_TYPE',
+                boDefineId: '5f0971df7a4411e9b0edd9fcadd69462'
+            },
+            conditions: '',
+            conditionMap: {},
+            pageOrderParam: {
+                pageNum: 1,
+                pageSize: 500,
+                enableCountLimit: true,
+                countLimit: 1000,
+                count: false,
+                orderList: {
+                    column: 'ba31ef167a4411e9b0ed9162dd502459',
+                    desc: false
+                }
+            },
+            boQuerySheetId: '026ef6e4a8a56756ace70c2002000001',
+            authority: 0
+        };
+        try {
+            let res = await apiRequest('/fssc/bo/boQuery/getBOQueryDataList', 'POST', payload, state);
+            let list = res.data && (res.data.pageInfoBOQueryRowDataList?.list || res.data.boQueryRowDataList || res.data.rowDatas)
+                ? (res.data.pageInfoBOQueryRowDataList?.list || res.data.boQueryRowDataList || res.data.rowDatas)
+                : [];
+            return list;
+        }
+        catch (e) {
+            AutopilotLogger.warn(`[ExpenseService] 查询发票池异常: ${e.message}`);
+            return [];
+        }
+    }
+    async function getInvoiceDetailByDataIdApi(dataId, state) {
+        const res = await apiRequest('/fssc/expenseClaim/expenseRecordInvoice/getInvoiceByDataId', 'POST', { invoiceDataId: dataId }, state);
+        return res.data;
+    }
+    async function queryExpenseRecordListApi(state, win, forceRefresh = true, statusList) {
+        // 只有在非强制刷新模式下，才允许复用最近拦截到的记录
+        if (!forceRefresh && state.lastInterceptedExpenseRecords && state.lastInterceptedExpenseRecords.length > 0) {
+            AutopilotLogger.info(`[ExpenseService] 复用最近拦截到的宿主费用记录 (${state.lastInterceptedExpenseRecords.length} 条)`);
+            return state.lastInterceptedExpenseRecords;
+        }
+        const applicantId = state.currentUser?.userId || state.applicantId;
+        // 1. 标准分页结构请求 (大分页 200 条)
+        // statusList 传 undefined 时默认查询未报销与报销中；传 [] 时代表全量查询全部状态 (含未报销、报销中、已报销)
+        const statusParam = statusList === undefined ? ['NO_REIMBURSE', 'REIMBURSING'] : [...statusList];
+        const standardPayload = {
+            pageOrderParam: { pageNum: 1, pageSize: 200 },
+            status: statusParam,
+            requestDate: null,
+            sortOrder: 'DESC',
+            sortColumnCode: 'CREATE_DATE'
+        };
+        try {
+            // 优先使用原生 HTTP 客户端 (100% 具备 session 与安全鉴权)
+            const nativeRes = await callNativeHttp('/expenseClaim/expenseRecord/getExpenseRecordListBySearchVO', 'POST', standardPayload, win);
+            if (nativeRes && nativeRes.success && nativeRes.data) {
+                let list = nativeRes.data.list || nativeRes.data.expenseRecordList || [];
+                if (list.length === 0 && statusParam.length > 0) {
+                    // 若指定状态查询为 0 条，尝试全部状态查询
+                    standardPayload.status = [];
+                    const allRes = await callNativeHttp('/expenseClaim/expenseRecord/getExpenseRecordListBySearchVO', 'POST', standardPayload, win);
+                    list = (allRes?.data?.list || allRes?.data?.expenseRecordList) || [];
+                }
+                // 自动多页循环拼接 (当记录数超过一页 pageSize 时)
+                const totalPages = nativeRes.data.pages || 1;
+                if (totalPages > 1) {
+                    for (let p = 2; p <= totalPages; p++) {
+                        standardPayload.pageOrderParam.pageNum = p;
+                        try {
+                            const nextRes = await callNativeHttp('/expenseClaim/expenseRecord/getExpenseRecordListBySearchVO', 'POST', standardPayload, win);
+                            const nextItems = nextRes?.data && (nextRes.data.list || nextRes.data.expenseRecordList) ? (nextRes.data.list || nextRes.data.expenseRecordList) : [];
+                            list = list.concat(nextItems);
+                        }
+                        catch (e) {
+                            AutopilotLogger.warn(`[ExpenseService] 原生 HTTP 拉取第 ${p} 页失败: ${e.message}`);
+                        }
+                    }
+                }
+                if (list.length > 0) {
+                    const uniqueMap = new Map();
+                    for (const item of list) {
+                        if (item && item.expenseRecordId) {
+                            uniqueMap.set(item.expenseRecordId, item);
+                        }
+                    }
+                    const deduplicated = Array.from(uniqueMap.values());
+                    state.lastInterceptedExpenseRecords = deduplicated;
+                    AutopilotLogger.info(`[ExpenseService] 成功通过原生 HTTP 获取费用记录列表共 ${deduplicated.length} 条`);
+                    return deduplicated;
+                }
+            }
+            let res = await apiRequest('/fssc/expenseClaim/expenseRecord/getExpenseRecordListBySearchVO', 'POST', standardPayload, state);
+            let list = (res.data && (res.data.list || res.data.expenseRecordList)) ? (res.data.list || res.data.expenseRecordList) : [];
+            // 智能容灾 1：若 status=['NO_REIMBURSE'] 查询为 0 条，尝试全部状态 (status: []) 查询
+            if (list.length === 0) {
+                standardPayload.status = [];
+                res = await apiRequest('/fssc/expenseClaim/expenseRecord/getExpenseRecordListBySearchVO', 'POST', standardPayload, state);
+                list = (res.data && (res.data.list || res.data.expenseRecordList)) ? (res.data.list || res.data.expenseRecordList) : [];
+            }
+            // 自动多页拼接 (当记录数超过一页 pageSize 时)
+            if (res.data && res.data.pages && res.data.pages > 1 && res.data.list) {
+                const totalPages = res.data.pages;
+                for (let p = 2; p <= totalPages; p++) {
+                    standardPayload.pageOrderParam.pageNum = p;
+                    try {
+                        const nextRes = await apiRequest('/fssc/expenseClaim/expenseRecord/getExpenseRecordListBySearchVO', 'POST', standardPayload, state);
+                        const nextItems = nextRes.data && (nextRes.data.list || nextRes.data.expenseRecordList) ? (nextRes.data.list || nextRes.data.expenseRecordList) : [];
+                        list = list.concat(nextItems);
+                    }
+                    catch (e) { }
+                }
+            }
+            // 智能容灾 2：若标准结构仍为 0，尝试历史兼容扁平结构
+            if (list.length === 0) {
+                const legacyPayload = {
+                    applicantId: applicantId,
+                    costCenterId: '',
+                    dateInterval: { dateType: 'ALL' },
+                    departmentId: '',
+                    expenseTypeId: '',
+                    hasBill: '',
+                    isAsc: true,
+                    orderField: 'CREATE_DATE',
+                    pageNo: 1,
+                    pageSize: 500,
+                    queryType: 'MY_CREATE',
+                    status: 'NO_REIMBURSE',
+                    subCompanyId: ''
+                };
+                const legRes = await apiRequest('/fssc/expenseClaim/expenseRecord/getExpenseRecordListBySearchVO', 'POST', legacyPayload, state);
+                const legList = legRes.data && (legRes.data.list || legRes.data.expenseRecordList) ? (legRes.data.list || legRes.data.expenseRecordList) : [];
+                if (legList.length > 0)
+                    list = legList;
+            }
+            if (list.length > 0) {
+                const uniqueMap = new Map();
+                for (const item of list) {
+                    if (item && item.expenseRecordId) {
+                        uniqueMap.set(item.expenseRecordId, item);
+                    }
+                }
+                const deduplicated = Array.from(uniqueMap.values());
+                state.lastInterceptedExpenseRecords = deduplicated;
+                AutopilotLogger.info(`[ExpenseService] 成功获取费用记录列表共 ${deduplicated.length} 条`);
+                return deduplicated;
+            }
+            return [];
+        }
+        catch (e) {
+            AutopilotLogger.warn(`[ExpenseService] 查询费用记录列表异常: ${e.message}`);
+            // 灾备兜底：若网络请求异常且本地有历史拦截记录，作为离线灾备返回
+            if (state.lastInterceptedExpenseRecords && state.lastInterceptedExpenseRecords.length > 0) {
+                AutopilotLogger.warn(`[ExpenseService] 网络查询失败，降级使用历史缓存的 ${state.lastInterceptedExpenseRecords.length} 笔记录`);
+                return state.lastInterceptedExpenseRecords;
+            }
+            return [];
+        }
+    }
+    async function getExpenseTypeRuleAndRowDatasApi(expenseRecordId, expenseTypeId, state, win) {
+        const payload = {
+            expenseRecordId,
+            expenseTypeId: expenseTypeId || 'UNIDENTIFIED',
+            intersectionScope: null,
+            dimensionMappingQueryVOList: [],
+            accountCurrencyId: state.accountCurrencyId || '6e589eb2dd9f11e8b5a69590a14a4e34'
+        };
+        // 优先尝试宿主原生 Axios/HTTP 客户端 (自带动态签名拦截器，100% 鉴权与防伪失效维持)
+        const nativeRes = await callNativeHttp('/expenseClaim/expenseRecord/getExpenseTypeFieldRuleListAndAllValueVO', 'POST', payload, win);
+        if (nativeRes) {
+            if (nativeRes.success && nativeRes.data) {
+                return {
+                    rowDatas: nativeRes.data.rowDatas || {},
+                    version: nativeRes.data.version !== undefined ? nativeRes.data.version : 1,
+                    fullData: nativeRes.data
+                };
+            }
+            if (nativeRes.success === false) {
+                throw new Error(`获取费用详情与规则失败: ${nativeRes.message || '后端异常'}`);
+            }
+        }
+        // 仅在完全没有原生客户端的环境下使用备用请求
+        const res = await apiRequest('/fssc/expenseClaim/expenseRecord/getExpenseTypeFieldRuleListAndAllValueVO', 'POST', payload, state);
+        if (res && res.success && res.data) {
+            return {
+                rowDatas: res.data.rowDatas || {},
+                version: res.data.version !== undefined ? res.data.version : 1,
+                fullData: res.data
+            };
+        }
+        throw new Error(res?.message || '获取费用详情与规则失败，请刷新重试');
+    }
+    async function initExpenseRecordWithTypeApi(expenseRecordId, targetExpenseTypeId, baseRowDatas = {}, state, win) {
+        const applicantId = baseRowDatas?.APPLICANT_ID?.value?.value ||
+            state.currentUser?.userId ||
+            state.applicantId ||
+            (typeof sessionStorage !== 'undefined' ? (sessionStorage.getItem('userId') || sessionStorage.getItem('loginUserId')) : '') || '';
+        const payload = {
+            accountCurrencyId: state.accountCurrencyId || '6e589eb2dd9f11e8b5a69590a14a4e34',
+            applicantId: applicantId || undefined,
+            expenseRecordId,
+            expenseTypeId: targetExpenseTypeId,
+            executeType: 'CHANGE_EXPENSE_TYPE',
+            triggerTiming: 'ADD_ROW',
+            source: 'CHANGE_EXPENSE_TYPE',
+            rowDatas: baseRowDatas
+        };
+        let res = await callNativeHttp('/expenseClaim/expenseRecord/initExpenseRecordData', 'POST', payload, win);
+        if (res) {
+            if (res.success && res.data) {
+                return res.data;
+            }
+            if (res.success === false) {
+                throw new Error(`初始化费用类型失败: ${res.message || '后端异常'}`);
+            }
+        }
+        res = await apiRequest('/fssc/expenseClaim/expenseRecord/initExpenseRecordData', 'POST', payload, state);
+        if (!res || !res.success) {
+            throw new Error(res?.message || '初始化费用类型失败');
+        }
+        return res.data || {};
+    }
+    async function createDraftExpenseRecordFromInvoiceApi(invoiceVO, boDataId, state, subInvoices) {
+        const list = [{
+                invoiceVO: invoiceVO || {},
+                invoiceDataId: boDataId || (invoiceVO ? (invoiceVO.invoiceDataId || invoiceVO.invoiceId) : '')
+            }];
+        if (subInvoices && subInvoices.length > 0) {
+            for (const sub of subInvoices) {
+                list.push({
+                    invoiceVO: sub.invoiceVO || {},
+                    invoiceDataId: sub.boDataId || (sub.invoiceVO ? (sub.invoiceVO.invoiceDataId || sub.invoiceVO.invoiceId) : '')
+                });
+            }
+        }
+        const payload = {
+            expenseRecordInvoiceList: list
+        };
+        const res = await apiRequest('/fssc/expenseClaim/expenseRecord/initAndSaveExpenseRecordData', 'POST', payload, state);
+        if (res.data && res.data.expenseRecordId) {
+            return res.data.expenseRecordId;
+        }
+        if (Array.isArray(res.data) && res.data.length > 0 && res.data[0]?.expenseRecordId) {
+            return res.data[0].expenseRecordId;
+        }
+        if (typeof res.data === 'string' && res.data.length > 10) {
+            return res.data;
+        }
+        throw new Error(res.message || '初始化发票草稿失败');
+    }
+    /**
+     * 执行费用记录规则联动重算 (Butterfly Effect / fieldValueChange)
+     * 典型场景：出差城市选择后，后端规则自动推导住宿城市类型 (F_ZSC_DEF_001) 与费用标准金额 (STANDARD_VALUE)
+     */
+    async function executeExpenseRecordFieldValueChangeApi(fieldId, fieldName, columnCode, fieldValue, expenseTypeId, rowDatas, state, win) {
+        const payload = {
+            fieldId: fieldId || '0356c803fdbde1653e55bb00bc610006',
+            fieldName: fieldName,
+            columnCode: columnCode,
+            fieldValue: fieldValue,
+            recordDataVO: {
+                accountCurrencyId: state.accountCurrencyId || '6e589eb2dd9f11e8b5a69590a14a4e34',
+                expenseTypeId: expenseTypeId,
+                rowDatas: rowDatas,
+                expenseRecordMessageList: []
+            }
+        };
+        try {
+            const nativeRes = await callNativeHttp('/expenseClaim/expenseRecordRuleExecute/fieldValueChange', 'POST', payload, win);
+            if (nativeRes) {
+                if (nativeRes.success && nativeRes.data) {
+                    return nativeRes.data.rowDatas || nativeRes.data.recordDataVO?.rowDatas || nativeRes.data;
+                }
+                if (nativeRes.success === false) {
+                    AutopilotLogger.warn(`[expenseRecordFieldValueChange] 原生联动规则校验提示: ${nativeRes.message || ''}`);
+                    return null;
+                }
+            }
+        }
+        catch (e) {
+            AutopilotLogger.warn(`[expenseRecordFieldValueChange] 原生请求异常: ${e?.message || e}`);
+        }
+        try {
+            const res = await apiRequest('/fssc/expenseClaim/expenseRecordRuleExecute/fieldValueChange', 'POST', payload, state);
+            if (res && res.success && res.data) {
+                return res.data.rowDatas || res.data.recordDataVO?.rowDatas || res.data;
+            }
+        }
+        catch (e) {
+            AutopilotLogger.warn(`[expenseRecordFieldValueChange] API 请求异常: ${e?.message || e}`);
+        }
+        return null;
+    }
+    async function saveFinalExpenseRecordApi(expenseRecordId, expenseTypeId, rowDatas, version, state, fallbackApplicantId, win) {
+        const applicantId = fallbackApplicantId ||
+            rowDatas?.APPLICANT_ID?.value?.value ||
+            state.currentUser?.userId ||
+            state.applicantId ||
+            (typeof sessionStorage !== 'undefined' ? (sessionStorage.getItem('userId') || sessionStorage.getItem('loginUserId')) : '') || '';
+        const payload = {
+            expenseRecordId,
+            expenseTypeId,
+            rowDatas,
+            version: version || 1,
+            operationType: 'UPDATE',
+            applicantId: applicantId || undefined,
+            accountCurrencyId: state.accountCurrencyId || '6e589eb2dd9f11e8b5a69590a14a4e34',
+            dimensionMappingQueryVOList: [],
+            expenseRecordMessageList: []
+        };
+        const extractAndThrowValidationErrors = (resp) => {
+            if (!resp)
+                return;
+            const msgList = resp.data?.expenseRecordMessageList || resp.expenseRecordMessageList || [];
+            const errList = Array.isArray(msgList) ? msgList.filter((m) => m.messageType === 'ERROR' || m.messageType === 'FAIL') : [];
+            if (errList.length > 0) {
+                const detail = errList.map((e) => e.message || '未知错误').join('; ');
+                throw new Error(`保存校验拦截: ${detail}`);
+            }
+            if (resp.data?.expenseRecordTypeMessageVO?.errorMessages?.length > 0) {
+                throw new Error(`保存校验拦截: ${resp.data.expenseRecordTypeMessageVO.errorMessages.join('; ')}`);
+            }
+        };
+        let res = await callNativeHttp('/expenseClaim/expenseRecord/validateAndSaveExpenseRecord', 'POST', payload, win);
+        if (res) {
+            extractAndThrowValidationErrors(res);
+            if (res.success) {
+                return res.data;
+            }
+            // 原生客户端明确返回失败时，直接抛出真实业务报错，绝对不可降级到无签名的 apiRequest (防止网关将缺少 eicds 签名的请求误报为“登录失效”)
+            throw new Error(res.message || '保存费用明细失败');
+        }
+        // 仅在完全没有原生客户端的环境下进行备用降级
+        res = await apiRequest('/fssc/expenseClaim/expenseRecord/validateAndSaveExpenseRecord', 'POST', payload, state);
+        if (!res || !res.success) {
+            throw new Error(res?.message || '保存费用明细失败');
+        }
+        extractAndThrowValidationErrors(res);
+        return res.data;
+    }
+    async function deleteExpenseRecordListApi(selectedIds, state) {
+        if (!selectedIds || selectedIds.length === 0)
+            return { success: true };
+        return await apiRequest('/fssc/expenseClaim/expenseRecord/deleteExpenseRecordList', 'POST', selectedIds, state);
+    }
+    async function deleteInvoiceBOListApi(invoiceIds, state) {
+        if (!invoiceIds || invoiceIds.length === 0)
+            return { success: true };
+        try {
+            const res = await apiRequest('/fssc/expenseClaim/expenseRecordInvoice/invoiceBOListDelete', 'POST', invoiceIds, state);
+            if (res && res.success) {
+                return res;
+            }
+        }
+        catch (e) {
+            // 若发票处于“已生成费用但下游费用已死”的死锁状态，接口会拦截并提示“该发票已报销，禁止删除”
+            // 此时自动降级至 BO 底座物理删除接口 deleteBoByBoMainId 强制解套
+        }
+        for (const id of invoiceIds) {
+            await apiRequest('/fssc/bo/bodata/deleteBoByBoMainId', 'POST', `boMainId=${encodeURIComponent(id)}`, state, true);
+        }
+        return { data: [], message: '删除成功！', success: true };
+    }
+    /**
+     * 通用单条费用记录保存入库（支持全部 15 种费用类型，支持一笔费用多张发票）
+     */
+    async function saveSingleExpenseItemApi(row, state) {
+        // 1. 确定 targetExpenseType
+        let targetTypeConfig = ALL_EXPENSE_TYPE_LIST.find(t => t.id === row.expenseTypeId || t.code === row.expenseTypeCode);
+        if (!targetTypeConfig) {
+            if (row.type && EXPENSE_TYPES[row.type]) {
+                targetTypeConfig = EXPENSE_TYPES[row.type];
+            }
+            else {
+                targetTypeConfig = EXPENSE_TYPES.TAXI;
+            }
+        }
+        // 2. 检查并实例化草稿（支持一笔费用挂载多张发票草稿初始化）
+        let recordId = row.expenseRecordId;
+        if (!recordId) {
+            recordId = await createDraftExpenseRecordFromInvoiceApi(row.invoiceVO, row.boDataId || row.invoiceVO?.invoiceDataId, state, row.subInvoices);
+            row.expenseRecordId = recordId;
+        }
+        // 3. 获取版本与基础数据 (乐观锁)
+        const ruleData = await getExpenseTypeRuleAndRowDatasApi(recordId, 'UNIDENTIFIED', state);
+        const version = ruleData.version !== undefined ? ruleData.version : 1;
+        const baseRowDatas = ruleData.rowDatas || {};
+        // 4. 切换费用类型初始化 rowDatas
+        const initData = await initExpenseRecordWithTypeApi(recordId, targetTypeConfig.id, baseRowDatas, state);
+        const rowDatas = initData.rowDatas || {};
+        // 5. 回填各类型字段数据
+        // 5. 回填各类型字段数据
+        const isHotel = targetTypeConfig?.code === EXPENSE_TYPES.HOTEL.code || targetTypeConfig?.id === EXPENSE_TYPES.HOTEL.id || row.type === 'HOTEL';
+        const isFlight = targetTypeConfig?.code === EXPENSE_TYPES.FLIGHT.code || targetTypeConfig?.id === EXPENSE_TYPES.FLIGHT.id || row.type === 'FLIGHT';
+        const isTrain = targetTypeConfig?.code === EXPENSE_TYPES.TRAIN.code || targetTypeConfig?.id === EXPENSE_TYPES.TRAIN.id || row.type === 'TRAIN';
+        const isComm = targetTypeConfig?.code === EXPENSE_TYPES.COMMUNICATION.code || targetTypeConfig?.code === EXPENSE_TYPES.COMMUNICATION_FAX.code || row.type === 'COMMUNICATION';
+        const cleanPeriod = (row.period || computePeriod(row.invoiceDate || '', isComm)).replace(/^期间[：:]\s*/, '').trim();
+        if (rowDatas.DESCRIPTION) {
+            rowDatas.DESCRIPTION.value = row.description ? row.description.trim() : '';
+        }
+        if (rowDatas.F_ZY_DEF_001) {
+            rowDatas.F_ZY_DEF_001.value = isComm ? (cleanPeriod.length >= 7 ? cleanPeriod.substring(0, 7) : cleanPeriod) : cleanPeriod;
+        }
+        const normDate = row.invoiceDate ? normalizeDate(row.invoiceDate) : '';
+        if (rowDatas.BUSINESS_DATE && normDate && !rowDatas.BUSINESS_DATE.value) {
+            rowDatas.BUSINESS_DATE.value = `${normDate} 00:00:00`;
+        }
+        if (isComm) {
+            const yyyy_mm = cleanPeriod.length >= 7 ? cleanPeriod.substring(0, 7) : computePeriod(row.invoiceDate || '', true);
+            if (rowDatas.FLIGHT_START_DATE)
+                rowDatas.FLIGHT_START_DATE.value = `${yyyy_mm}-01 00:00:00`;
+            if (row.attachments && row.attachments.length > 0) {
+                rowDatas.expenseRecordAttachmentList = { value: row.attachments };
+                const firstAtt = row.attachments[0];
+                if (rowDatas.ATTACH_NAME)
+                    rowDatas.ATTACH_NAME.value = (firstAtt.fileName || '账单').replace(/\.[^/.]+$/, "");
+                if (rowDatas.ATTACH_COUNT)
+                    rowDatas.ATTACH_COUNT.value = row.attachments.length;
+            }
+        }
+        else if (isHotel) {
+            const checkIn = row.checkInDate ? normalizeDate(row.checkInDate) : normDate;
+            const checkOut = row.checkOutDate ? normalizeDate(row.checkOutDate) : normDate;
+            let stayDays = row.stayDays || 1;
+            if ((!stayDays || stayDays <= 0) && checkIn && checkOut) {
+                const d1 = new Date(checkIn).getTime();
+                const d2 = new Date(checkOut).getTime();
+                const diff = Math.round((d2 - d1) / (1000 * 60 * 60 * 24));
+                stayDays = diff > 0 ? diff : 1;
+            }
+            const roomNum = Math.max(1, Number(row.roomNum) || 1);
+            const totalAmount = (row.amount && row.amount > 0) ? row.amount : (rowDatas.AMOUNT?.value?.amount || 0);
+            const totalRoomNights = Math.max(1, stayDays * roomNum);
+            const unitPriceVal = Math.round((totalAmount / totalRoomNights) * 100) / 100;
+            if (rowDatas.HOTEL_NAME)
+                rowDatas.HOTEL_NAME.value = row.hotelName || row.endAddress || '';
+            if (rowDatas.CHECK_IN_DATE && checkIn)
+                rowDatas.CHECK_IN_DATE.value = `${checkIn} 00:00:00`;
+            if (rowDatas.CHECK_OUT_DATE && checkOut)
+                rowDatas.CHECK_OUT_DATE.value = `${checkOut} 00:00:00`;
+            if (rowDatas.STAY_DAYS)
+                rowDatas.STAY_DAYS.value = stayDays;
+            if (rowDatas.ROOM_NUM)
+                rowDatas.ROOM_NUM.value = roomNum;
+            if (rowDatas.UNIT_PRICE) {
+                rowDatas.UNIT_PRICE.value = {
+                    amount: unitPriceVal,
+                    currencyId: state.accountCurrencyId || '6e589eb2dd9f11e8b5a69590a14a4e34',
+                    currencySymbol: '¥'
+                };
+            }
+            // 动态城市维表匹配与 IV住宿区分 联动
+            let targetCity = (row.city || row.startAddress || '').replace(/省|市|（.*）|\(.*\)/g, '').trim();
+            if ((!targetCity || /亚朵|全季|上引|如家|汉庭|锦江|美悦|出差/.test(targetCity)) && row.hotelName) {
+                const innerMatch = row.hotelName.match(/[（(]([\u4e00-\u9fa5]{2,3}?)(?:市|区|镇|县|店|新区|经开区|[\u4e00-\u9fa5]*?店)/);
+                if (innerMatch && !/金山|中山|国家|滨湖|云谷|金融|台山|白山|会展/.test(innerMatch[1])) {
+                    targetCity = innerMatch[1];
+                }
+                else {
+                    const prefixMatch = row.hotelName.match(/^([\u4e00-\u9fa5]{2,3}?)(?:市|酒店|宾馆|饭店|客栈)/);
+                    if (prefixMatch && !/亚朵|全季|上引|如家|汉庭|锦江|美悦|希尔|万豪|洲际|格林|维也|桔子|宜必|凯悦|喜来|香格/.test(prefixMatch[1])) {
+                        targetCity = prefixMatch[1];
+                    }
+                }
+            }
+            if (targetCity === '金山')
+                targetCity = '上海';
+            if (targetCity) {
+                try {
+                    const cityVO = await fetchCityVO(targetCity, state, '6b8ff0649ebe11e88b72df10cd5db793');
+                    if (cityVO && cityVO.value) {
+                        rowDatas.CITY = {
+                            dataType: 'DROPDOWN',
+                            required: true,
+                            value: {
+                                value: cityVO.value,
+                                title: { zh_CN: (cityVO.title && cityVO.title.zh_CN) || targetCity }
+                            }
+                        };
+                    }
+                }
+                catch (e) { }
+                const isTier1 = /北京|上海|广州|深圳/.test(targetCity);
+                rowDatas.F_ZSC_DEF_001 = {
+                    dataType: 'DROPDOWN',
+                    required: true,
+                    value: {
+                        value: isTier1 ? '035a402fee2345af7f1906ec05cc0000' : '035a403ff62345af7f1906ec05cc0000',
+                        title: { zh_CN: isTier1 ? '境内-北上广深' : '境内-其他' }
+                    }
+                };
+            }
+        }
+        else if (isFlight) {
+            if (rowDatas.START_ADDRESS)
+                rowDatas.START_ADDRESS.value = row.startAddress || '';
+            if (rowDatas.END_ADDRESS)
+                rowDatas.END_ADDRESS.value = row.endAddress || '';
+            if (rowDatas.FLIGHT_START_DATE && normDate)
+                rowDatas.FLIGHT_START_DATE.value = `${normDate} 00:00:00`;
+            if (rowDatas.FLIGHT_END_DATE && normDate && !rowDatas.FLIGHT_END_DATE.value)
+                rowDatas.FLIGHT_END_DATE.value = `${normDate} 00:00:00`;
+            if (rowDatas.FLIGHT_FROM_CITY)
+                rowDatas.FLIGHT_FROM_CITY.value = row.startAddress || '';
+            if (rowDatas.FLIGHT_TO_CITY)
+                rowDatas.FLIGHT_TO_CITY.value = row.endAddress || '';
+        }
+        else if (isTrain) {
+            if (rowDatas.START_ADDRESS)
+                rowDatas.START_ADDRESS.value = row.startAddress || '';
+            if (rowDatas.END_ADDRESS)
+                rowDatas.END_ADDRESS.value = row.endAddress || '';
+            if (rowDatas.TRAIN_START_DATE && normDate)
+                rowDatas.TRAIN_START_DATE.value = `${normDate} 00:00:00`;
+        }
+        else {
+            // TAXI / TRIP_TAXI / OTHER
+            if (rowDatas.START_ADDRESS)
+                rowDatas.START_ADDRESS.value = row.startAddress || 'IVISION';
+            if (rowDatas.END_ADDRESS)
+                rowDatas.END_ADDRESS.value = row.endAddress || 'CMP';
+        }
+        if (rowDatas.AMOUNT && rowDatas.AMOUNT.value) {
+            if (rowDatas.AMOUNT.value.amount === undefined || rowDatas.AMOUNT.value.amount === null || rowDatas.AMOUNT.value.amount === 0) {
+                rowDatas.AMOUNT.value.amount = row.amount;
+            }
+        }
+        // 5.1 处理一笔费用多张发票绑定（例如出租车 + 过路费/通行费发票）
+        if (row.subInvoices && row.subInvoices.length > 0) {
+            // 先清理被合并子发票的冗余独立草稿记录，释放发票占用
+            const redundantDraftIds = row.subInvoices
+                .map(s => s.expenseRecordId)
+                .filter((id) => Boolean(id) && id !== recordId);
+            if (redundantDraftIds.length > 0) {
+                try {
+                    AutopilotLogger.info(`[ExpenseService] 释放被合并子发票原独立草稿: ${JSON.stringify(redundantDraftIds)}`);
+                    await deleteExpenseRecordListApi(redundantDraftIds, state);
+                    row.subInvoices.forEach(s => { s.expenseRecordId = undefined; });
+                }
+                catch (e) {
+                    AutopilotLogger.warn(`[ExpenseService] 释放子发票草稿异常: ${e.message}`);
+                }
+            }
+            if (!rowDatas.expenseRecordInvoiceList) {
+                rowDatas.expenseRecordInvoiceList = { value: [] };
+            }
+            if (!Array.isArray(rowDatas.expenseRecordInvoiceList.value)) {
+                rowDatas.expenseRecordInvoiceList.value = [];
+            }
+            const existingInvIds = new Set();
+            const existingInvNos = new Set();
+            rowDatas.expenseRecordInvoiceList.value.forEach((x) => {
+                if (x.invoiceId)
+                    existingInvIds.add(String(x.invoiceId));
+                if (x.invoiceVO?.invoiceId)
+                    existingInvIds.add(String(x.invoiceVO.invoiceId));
+                if (x.invoiceVO?.invoiceDataId)
+                    existingInvIds.add(String(x.invoiceVO.invoiceDataId));
+                if (x.invoiceVO?.invoiceNo)
+                    existingInvNos.add(String(x.invoiceVO.invoiceNo));
+            });
+            if (rowDatas.expenseRecordInvoiceList.value.length === 0 && row.invoiceVO) {
+                rowDatas.expenseRecordInvoiceList.value.push({
+                    invoiceVO: row.invoiceVO,
+                    invoiceId: row.invoiceVO.invoiceId || row.boDataId || '',
+                    position: 1
+                });
+            }
+            let pos = rowDatas.expenseRecordInvoiceList.value.length + 1;
+            for (const sub of row.subInvoices) {
+                const subVO = sub.invoiceVO || {
+                    amountTax: sub.amount,
+                    fileName: sub.fileName,
+                    salesName: sub.salesName,
+                    invoiceDate: sub.invoiceDate,
+                    invoiceDetails: sub.invoiceDetails || '过路费发票',
+                    invoiceTypeAbbreviation: '通行费'
+                };
+                const subId = sub.boDataId || subVO.invoiceDataId || subVO.invoiceId || '';
+                const subNo = subVO.invoiceNo || '';
+                if ((subId && existingInvIds.has(String(subId))) || (subNo && existingInvNos.has(String(subNo)))) {
+                    continue;
+                }
+                rowDatas.expenseRecordInvoiceList.value.push({
+                    invoiceVO: subVO,
+                    invoiceId: subId,
+                    position: pos++,
+                    createDate: subVO.createDate || new Date().toISOString().replace('T', ' ').substring(0, 19),
+                    version: 1
+                });
+                if (subId)
+                    existingInvIds.add(String(subId));
+                if (subNo)
+                    existingInvNos.add(String(subNo));
+            }
+            const totalInvoiceCount = rowDatas.expenseRecordInvoiceList.value.length;
+            if (rowDatas.INVOICE_COUNT) {
+                rowDatas.INVOICE_COUNT.value = totalInvoiceCount;
+            }
+            else {
+                rowDatas.INVOICE_COUNT = { dataType: 'NUMBER', hidden: true, readOnly: true, value: totalInvoiceCount };
+            }
+            if (rowDatas.NUM_INVOICE) {
+                rowDatas.NUM_INVOICE.value = totalInvoiceCount;
+            }
+            const totalCombinedAmount = row.amount;
+            if (rowDatas.AMOUNT && rowDatas.AMOUNT.value) {
+                rowDatas.AMOUNT.value.amount = totalCombinedAmount;
+                if (rowDatas.AMOUNT.value.accountAmount) {
+                    rowDatas.AMOUNT.value.accountAmount.amount = totalCombinedAmount;
+                }
+            }
+            if (rowDatas.F_FPJ_DEF_001 && rowDatas.F_FPJ_DEF_001.value) {
+                rowDatas.F_FPJ_DEF_001.value.amount = totalCombinedAmount;
+                if (rowDatas.F_FPJ_DEF_001.value.accountAmount) {
+                    rowDatas.F_FPJ_DEF_001.value.accountAmount.amount = totalCombinedAmount;
+                }
+            }
+            if (rowDatas.STANDARD_VALUE && rowDatas.STANDARD_VALUE.value !== undefined) {
+                rowDatas.STANDARD_VALUE.value = totalCombinedAmount;
+            }
+            if (rowDatas.BUDGET_DE_AMOUNT && rowDatas.BUDGET_DE_AMOUNT.value) {
+                rowDatas.BUDGET_DE_AMOUNT.value.amount = totalCombinedAmount;
+            }
+        }
+        // 6. 保存持久化
+        await saveFinalExpenseRecordApi(recordId, targetTypeConfig.id, rowDatas, version, state);
+        return recordId;
+    }
+    /**
+     * 批量持久化保存多条费用明细（带进度回调与容错）
+     */
+    async function batchSaveExpenseItemsApi(items, state, onProgress) {
+        const results = [];
+        const errors = [];
+        let successCount = 0;
+        let failCount = 0;
+        // 0. 前置批量物理清理：若存在已被合并入出租车的过路费独立草稿，提前释放
+        const redundantRecordIds = [];
+        for (const item of items) {
+            if (item.subInvoices && item.subInvoices.length > 0) {
+                for (const sub of item.subInvoices) {
+                    if (sub.expenseRecordId && !redundantRecordIds.includes(sub.expenseRecordId)) {
+                        redundantRecordIds.push(sub.expenseRecordId);
+                    }
+                }
+            }
+        }
+        if (redundantRecordIds.length > 0) {
+            AutopilotLogger.info(`[ExpenseService] 批量保存前释放 ${redundantRecordIds.length} 笔冗余过路费草稿`);
+            try {
+                await deleteExpenseRecordListApi(redundantRecordIds, state);
+                for (const item of items) {
+                    if (item.subInvoices) {
+                        item.subInvoices.forEach(s => { s.expenseRecordId = undefined; });
+                    }
+                }
+            }
+            catch (e) {
+                AutopilotLogger.warn(`[ExpenseService] 批量清理冗余过路费草稿异常: ${e.message}`);
+            }
+        }
+        for (let i = 0; i < items.length; i++) {
+            const item = items[i];
+            try {
+                const recId = await saveSingleExpenseItemApi(item, state);
+                item.status = '成功';
+                item.isModified = false;
+                successCount++;
+                results.push({
+                    recordId: recId,
+                    expenseTypeName: item.expenseTypeName || item.type || '',
+                    amount: item.amount,
+                    description: item.description || ''
+                });
+            }
+            catch (err) {
+                item.status = '失败';
+                failCount++;
+                errors.push({
+                    index: i,
+                    description: item.description || `第 ${i + 1} 笔`,
+                    error: err.message || '保存失败'
+                });
+            }
+            await new Promise(r => setTimeout(r, 200));
+        }
+        return {
+            total: items.length,
+            successCount,
+            failCount,
+            results,
+            errors
+        };
+    }
+    /**
+     * Agentic 全量主动审计费用记录（检测 getExpenseRecordListBySearchVO 返回的 errorMessages）
+     */
+    async function auditExpenseRecordsApi(state) {
+        // 强制穿透查询最新的宿主费用记录
+        state.lastInterceptedExpenseRecords = null;
+        const rawList = await queryExpenseRecordListApi(state);
+        const errorRecords = [];
+        const errorSummary = {};
+        for (const item of rawList) {
+            const msgs = item.expenseRecordTypeMessageVO?.errorMessages;
+            if (msgs && msgs.length > 0) {
+                errorRecords.push({
+                    recordId: item.expenseRecordId,
+                    expenseTypeName: item.expenseType?.title?.zh_CN || item.expenseTypeName || '未分类',
+                    amount: item.amountObj?.amount || 0,
+                    description: item.description || '',
+                    errorMessages: msgs
+                });
+                msgs.forEach((m) => {
+                    errorSummary[m] = (errorSummary[m] || 0) + 1;
+                });
+            }
+        }
+        return {
+            total: rawList.length,
+            errorCount: errorRecords.length,
+            validCount: rawList.length - errorRecords.length,
+            errorSummary,
+            errorRecords
+        };
+    }
+    /**
+     * Agentic 智能自愈修复费用记录错误（如补全出差城市维表、联动北上广深住宿区分）
+     */
+    async function autoFixExpenseRecordsApi(state) {
+        const audit = await auditExpenseRecordsApi(state);
+        const details = [];
+        let fixedCount = 0;
+        let failCount = 0;
+        if (audit.errorCount === 0) {
+            return {
+                fixedCount: 0,
+                failCount: 0,
+                details: [],
+                remainingAudit: audit
+            };
+        }
+        // 动态提取差旅波次中的目的城市集合
+        const dynamicTripCities = Array.from(new Set([
+            ...(state.tripApp?.configs || []).map(c => c.destination),
+            ...(state.expensePlan?.matchedTrips || []).map(t => t.destination || t.destCity),
+            ...(state.invoices || []).map(i => i.city)
+        ])).filter(Boolean);
+        for (const errRec of audit.errorRecords) {
+            const recId = errRec.recordId;
+            try {
+                // 获取最新 rowDatas 与版本号
+                const ruleData = await getExpenseTypeRuleAndRowDatasApi(recId, '0356c4e2b72de1653e55bb00bc610001', state);
+                const rowDatas = ruleData.rowDatas || {};
+                const version = ruleData.version || 1;
+                let fixApplied = '';
+                // 1. 修复【出差城市必填】
+                if (errRec.errorMessages.includes('出差城市必填')) {
+                    let targetCity = '';
+                    const desc = errRec.description || '';
+                    // 优先从已对齐行程波次或发票池中匹配
+                    if (state.expensePlan?.records) {
+                        const matchedInv = state.expensePlan.records.find(r => r.expenseRecordId === recId);
+                        if (matchedInv && matchedInv.city)
+                            targetCity = matchedInv.city;
+                    }
+                    if (!targetCity && state.invoices) {
+                        const matchedInv = state.invoices.find(r => r.expenseRecordId === recId);
+                        if (matchedInv && matchedInv.city)
+                            targetCity = matchedInv.city;
+                    }
+                    // 其次从当前已规划行程目的城市动态匹配
+                    if (!targetCity && dynamicTripCities.length > 0) {
+                        for (const c of dynamicTripCities) {
+                            const cleanC = c.replace(/市|区|县/g, '').trim();
+                            if (cleanC && desc.includes(cleanC)) {
+                                targetCity = cleanC;
+                                break;
+                            }
+                        }
+                    }
+                    // 再次从费用描述格式 [出差:姓名] YYYY-MM-DD~YYYY-MM-DD 城市客户 中抽取
+                    if (!targetCity) {
+                        const descMatch = desc.match(/\[(?:出差|外驻):[^\]]+\]\s*\d{4}-\d{2}-\d{2}~\d{4}-\d{2}-\d{2}\s*([\u4e00-\u9fa5]{2,4}?)(?:[A-Z0-9_\-]+|模具|工厂|据点|项目|\s)/);
+                        if (descMatch && descMatch[1]) {
+                            targetCity = descMatch[1];
+                        }
+                    }
+                    // 再次从酒店名称括号中智能抽取
+                    if (!targetCity && rowDatas.HOTEL_NAME && rowDatas.HOTEL_NAME.value) {
+                        const innerMatch = String(rowDatas.HOTEL_NAME.value).match(/[（(]([\u4e00-\u9fa5]{2,3}?)(?:市|区|镇|县|店|新区|经开区|[\u4e00-\u9fa5]*?店)/);
+                        if (innerMatch && !/金山|中山|国家|滨湖|云谷|金融|台山|白山|会展/.test(innerMatch[1])) {
+                            targetCity = innerMatch[1];
+                        }
+                    }
+                    // 兜底从行程波次的首个目的地推导
+                    if (!targetCity && dynamicTripCities.length > 0) {
+                        targetCity = dynamicTripCities[0].replace(/市|区|县/g, '').trim();
+                    }
+                    // 动态获取 DIM_CITY 城市维表对象
+                    const cityVO = targetCity ? await fetchCityVO(targetCity, state, '6b8ff0649ebe11e88b72df10cd5db793') : null;
+                    if (cityVO && cityVO.value) {
+                        rowDatas.CITY = {
+                            dataType: 'DROPDOWN',
+                            required: true,
+                            value: {
+                                value: cityVO.value,
+                                title: { zh_CN: (cityVO.title && cityVO.title.zh_CN) || targetCity }
+                            }
+                        };
+                        const isTier1 = /北京|上海|广州|深圳/.test(targetCity);
+                        rowDatas.F_ZSC_DEF_001 = {
+                            dataType: 'DROPDOWN',
+                            required: true,
+                            value: {
+                                value: isTier1 ? '035a402fee2345af7f1906ec05cc0000' : '035a403ff62345af7f1906ec05cc0000',
+                                title: { zh_CN: isTier1 ? '境内-北上广深' : '境内-其他' }
+                            }
+                        };
+                        fixApplied += `自动补齐出差城市【${targetCity}】(${cityVO.value})及住宿区分; `;
+                    }
+                }
+                if (fixApplied) {
+                    await saveFinalExpenseRecordApi(recId, '0356c4e2b72de1653e55bb00bc610001', rowDatas, version, state);
+                    fixedCount++;
+                    details.push({ recordId: recId, fixApplied, success: true });
+                }
+                else {
+                    details.push({ recordId: recId, fixApplied: '未匹配到可自动修复的规则', success: false });
+                }
+            }
+            catch (e) {
+                failCount++;
+                details.push({ recordId: recId, fixApplied: '自愈保存异常', success: false, error: e.message });
+            }
+            await new Promise(r => setTimeout(r, 150));
+        }
+        state.lastInterceptedExpenseRecords = null;
+        const remainingAudit = await auditExpenseRecordsApi(state);
+        return {
+            fixedCount,
+            failCount,
+            details,
+            remainingAudit
+        };
+    }
+    function extractDropdownText(val) {
+        if (!val)
+            return '';
+        if (typeof val === 'string')
+            return val.trim();
+        if (typeof val === 'number')
+            return String(val);
+        if (typeof val === 'object') {
+            if (val.title) {
+                if (typeof val.title === 'string' && val.title.trim())
+                    return val.title.trim();
+                if (val.title.zh_CN && String(val.title.zh_CN).trim())
+                    return String(val.title.zh_CN).trim();
+                if (val.title.zh_TW && String(val.title.zh_TW).trim())
+                    return String(val.title.zh_TW).trim();
+                if (val.title.en_US && String(val.title.en_US).trim())
+                    return String(val.title.en_US).trim();
+            }
+            if (val.label && typeof val.label === 'string' && val.label.trim())
+                return val.label.trim();
+            if (val.name && typeof val.name === 'string' && val.name.trim())
+                return val.name.trim();
+            if (val.value !== undefined && val.value !== null) {
+                const vStr = String(val.value).trim();
+                if (!/^[0-9a-fA-F]{32}$/.test(vStr) || (!val.title?.zh_CN && !val.label)) {
+                    return vStr;
+                }
+            }
+        }
+        return '';
+    }
+    function extractDateOnly(val) {
+        if (!val)
+            return '';
+        const str = String(val).trim();
+        return normalizeDate(str) || '';
+    }
+    /**
+     * 全方位探测并提取超标说明 (兼容 rowDatas、rec 列表项及详情 fullData 中的所有变体字段与数据包装)
+     */
+    function extractOverStandardDescription(rowDatas, rec, fullData) {
+        const isMeaningful = (s) => {
+            if (!s || typeof s !== 'string')
+                return false;
+            const clean = s.trim();
+            return clean.length > 0 && clean !== 'true' && clean !== 'false' && clean !== '是' && clean !== '否' && clean !== '[object Object]';
+        };
+        const tryExtract = (cand) => {
+            if (!cand)
+                return '';
+            if (typeof cand === 'string' && isMeaningful(cand))
+                return cand.trim();
+            if (typeof cand === 'object') {
+                if (cand.value !== undefined && cand.value !== null) {
+                    if (typeof cand.value === 'string' && isMeaningful(cand.value))
+                        return cand.value.trim();
+                    const dt = extractDropdownText(cand.value);
+                    if (isMeaningful(dt))
+                        return dt;
+                }
+                if (cand.showValue && typeof cand.showValue === 'string' && isMeaningful(cand.showValue))
+                    return cand.showValue.trim();
+                if (cand.text && typeof cand.text === 'string' && isMeaningful(cand.text))
+                    return cand.text.trim();
+                const dt = extractDropdownText(cand);
+                if (isMeaningful(dt))
+                    return dt;
+            }
+            return '';
+        };
+        // 1. rowDatas 常见别名
+        const rowCandidates = [
+            rowDatas?.OVER_STANDARD_DESCRIPTION,
+            rowDatas?.OVER_STANDARD_REASON,
+            rowDatas?.OVER_STANDARD_DESC,
+            rowDatas?.OVER_STAND_DESC,
+            rowDatas?.EXCEED_STANDARD_DESCRIPTION,
+            rowDatas?.EXCEED_STANDARD_REASON,
+            rowDatas?.OVER_REASON,
+            rowDatas?.REASON_OVER_STANDARD,
+            rowDatas?.OVER_STANDARD_MEMO,
+            rowDatas?.F_OVER_STANDARD_DESC,
+            rowDatas?.F_OVER_STANDARD_REASON,
+            rowDatas?.F_ZSC_DEF_002
+        ];
+        for (const c of rowCandidates) {
+            const val = tryExtract(c);
+            if (val)
+                return val;
+        }
+        // 2. rowDatas 正则模糊扫描 (防止租户自定义别名)
+        if (rowDatas && typeof rowDatas === 'object') {
+            for (const [key, field] of Object.entries(rowDatas)) {
+                if (/OVER.*STAND|EXCEED.*STAND|超标/i.test(key)) {
+                    const val = tryExtract(field);
+                    if (val)
+                        return val;
+                }
+            }
+        }
+        // 3. rec (宿主列表项) 探测
+        const recCandidates = [
+            rec?.overStandardDescription,
+            rec?.overStandardReason,
+            rec?.overStandardDesc,
+            rec?.overStandardRemark,
+            rec?.OVER_STANDARD_DESCRIPTION,
+            rec?.OVER_STANDARD_REASON,
+            rec?.exceedStandardDescription,
+            rec?.exceedStandardReason,
+            rec?.rowDatas?.OVER_STANDARD_DESCRIPTION
+        ];
+        for (const c of recCandidates) {
+            const val = tryExtract(c);
+            if (val)
+                return val;
+        }
+        // 4. fullData (详情接口完整响应) 探测
+        const fullCandidates = [
+            fullData?.expenseRecord?.overStandardDescription,
+            fullData?.expenseRecord?.overStandardReason,
+            fullData?.expenseRecord?.OVER_STANDARD_DESCRIPTION,
+            fullData?.expenseRecord?.OVER_STANDARD_REASON,
+            fullData?.overStandardDescription,
+            fullData?.overStandardReason,
+            fullData?.mainData?.overStandardDescription,
+            fullData?.mainData?.OVER_STANDARD_DESCRIPTION
+        ];
+        for (const c of fullCandidates) {
+            const val = tryExtract(c);
+            if (val)
+                return val;
+        }
+        return '';
+    }
+    /**
+     * 从 YuanNian 费用记录行数据 (rowDatas) 中精准提取已持久化保存的动态必填字段
+     */
+    function extractSavedDynamicFields(rowDatas, rec, fullData) {
+        if (!rowDatas || typeof rowDatas !== 'object')
+            return {};
+        const dyn = {};
+        // 1. 住宿费
+        if (rowDatas.CHECK_IN_DATE?.value) {
+            dyn.checkInDate = extractDateOnly(rowDatas.CHECK_IN_DATE.value);
+        }
+        if (rowDatas.CHECK_OUT_DATE?.value) {
+            dyn.checkOutDate = extractDateOnly(rowDatas.CHECK_OUT_DATE.value);
+        }
+        if (rowDatas.CITY?.value) {
+            dyn.city = extractDropdownText(rowDatas.CITY.value);
+        }
+        if (rowDatas.F_ZSC_DEF_001?.value) {
+            dyn.cityType = extractDropdownText(rowDatas.F_ZSC_DEF_001.value);
+        }
+        if (dyn.city && !dyn.cityType) {
+            const c = dyn.city.replace(/市|区|县/g, '').trim();
+            const isTier1 = /北京|上海|广州|深圳/.test(c);
+            dyn.cityType = isTier1 ? '境内-北上广深' : '境内-其他';
+        }
+        if (rowDatas.HOTEL_NAME?.value) {
+            dyn.hotelName = String(rowDatas.HOTEL_NAME.value).trim();
+        }
+        if (rowDatas.ROOM_NUM?.value !== undefined && rowDatas.ROOM_NUM?.value !== null) {
+            dyn.roomNum = Number(rowDatas.ROOM_NUM.value) || 1;
+        }
+        // 超标说明 (全方位探测提取)
+        const overDesc = extractOverStandardDescription(rowDatas, rec, fullData);
+        if (overDesc) {
+            dyn.overStandardDescription = overDesc;
+        }
+        // 2. 飞机票
+        if (rowDatas.FLIGHT_START_DATE?.value) {
+            dyn.flightStartDate = extractDateOnly(rowDatas.FLIGHT_START_DATE.value);
+        }
+        if (rowDatas.FLIGHT_END_DATE?.value) {
+            dyn.flightEndDate = extractDateOnly(rowDatas.FLIGHT_END_DATE.value);
+        }
+        if (rowDatas.FLIGHT_FROM_CITY?.value) {
+            dyn.flightFromCity = extractDropdownText(rowDatas.FLIGHT_FROM_CITY.value);
+        }
+        if (rowDatas.FLIGHT_TO_CITY?.value) {
+            dyn.flightToCity = extractDropdownText(rowDatas.FLIGHT_TO_CITY.value);
+        }
+        if (rowDatas.FLIGHT_NUM?.value) {
+            dyn.flightNum = String(rowDatas.FLIGHT_NUM.value).trim();
+        }
+        // 3. 火车票
+        if (rowDatas.TRAIN_START_DATE?.value) {
+            dyn.trainStartDate = extractDateOnly(rowDatas.TRAIN_START_DATE.value);
+        }
+        if (rowDatas.TRAIN_END_DATE?.value) {
+            dyn.trainEndDate = extractDateOnly(rowDatas.TRAIN_END_DATE.value);
+        }
+        if (rowDatas.TRAIN_FROM_CITY?.value) {
+            dyn.trainFromStation = extractDropdownText(rowDatas.TRAIN_FROM_CITY.value);
+        }
+        else if (rowDatas.START_ADDRESS?.value) {
+            dyn.trainFromStation = String(rowDatas.START_ADDRESS.value).trim();
+        }
+        if (rowDatas.TRAIN_TO_CITY?.value) {
+            dyn.trainToStation = extractDropdownText(rowDatas.TRAIN_TO_CITY.value);
+        }
+        else if (rowDatas.END_ADDRESS?.value) {
+            dyn.trainToStation = String(rowDatas.END_ADDRESS.value).trim();
+        }
+        if (rowDatas.TRAIN_NUM?.value) {
+            dyn.trainNum = String(rowDatas.TRAIN_NUM.value).trim();
+        }
+        // 4. 出租车/交通
+        if (rowDatas.START_ADDRESS?.value) {
+            dyn.startAddress = String(rowDatas.START_ADDRESS.value).trim();
+        }
+        if (rowDatas.END_ADDRESS?.value) {
+            dyn.endAddress = String(rowDatas.END_ADDRESS.value).trim();
+        }
+        // 5. 通信费
+        if (rowDatas.BILL_MONTH?.value) {
+            dyn.billMonth = String(rowDatas.BILL_MONTH.value).trim();
+        }
+        else if (rowDatas.F_ZY_DEF_001?.value) {
+            const p = String(rowDatas.F_ZY_DEF_001.value).replace(/^期间[：:]\s*/, '').trim();
+            if (/^\d{4}-\d{2}$/.test(p)) {
+                dyn.billMonth = p;
+            }
+        }
+        return dyn;
+    }
+    /**
+     * 标准化费用记录状态为中文显示
+     * 彻底解决系统底层 REIMBURSE / ALREADY_REIMBURSE / NO_REIMBURSE 显示为英文的问题
+     */
+    function normalizeExpenseStatus(status) {
+        if (!status)
+            return '未报销';
+        const s = String(status).trim().toUpperCase();
+        if (s === 'NO_REIMBURSE' || s === 'UNREIMBURSED' || s === 'DRAFT' || s === '未报销') {
+            return '未报销';
+        }
+        if (s === 'REIMBURSING' || s === 'IN_REIMBURSE' || s === '报销中') {
+            return '报销中';
+        }
+        if (s === 'REIMBURSE' || s === 'ALREADY_REIMBURSE' || s === 'ALREADY_REIMBURSED' || s === 'REIMBURSED' || s === '已报销') {
+            return '已报销';
+        }
+        return status;
+    }
+    /**
+     * 智能生成开票日期与行程日期的差异核验预警
+     */
+    function generateReconciliationNote(rec, inv) {
+        if (!inv || (!inv.invoiceDate && !inv.departureDate && !inv.amountTax)) {
+            return '无挂载发票';
+        }
+        const invDate = (inv.invoiceDate || '').trim();
+        const depDate = (inv.departureDate || '').trim();
+        const timeOn = (inv.timeGetOn || inv.departureTime || '').trim();
+        const timeOff = (inv.timeGetOff || '').trim();
+        const stOn = (inv.stationGetOn || inv.from || '').trim();
+        const stOff = (inv.stationGetOff || inv.to || '').trim();
+        const train = (inv.trainNo || inv.trainNumber || '').trim();
+        const type = (inv.invoiceTypeAbbreviation || inv.invoiceType || '').trim();
+        const sales = (inv.salesName || '').trim();
+        const details = (inv.invoiceDetails || inv.commodityNames || '').trim();
+        const fileName = (inv.fileName || '').trim();
+        const bizDate = (rec.businessDate ? rec.businessDate.split(' ')[0] : '').trim();
+        const notes = [];
+        // 1. 若发票中自带明确的行程出发日期 (departureDate)
+        if (depDate) {
+            if (invDate && depDate !== invDate) {
+                let diffDaysStr = '';
+                try {
+                    const d1 = new Date(depDate).getTime();
+                    const d2 = new Date(invDate).getTime();
+                    const diffDays = Math.round((d2 - d1) / (1000 * 60 * 60 * 24));
+                    diffDaysStr = ` (相差 ${Math.abs(diffDays)} 天，${diffDays > 0 ? '开票晚于行程' : '开票早于行程'})`;
+                }
+                catch (e) { }
+                notes.push(`⚠️ 开票日期(${invDate})与行程日期(${depDate})不一致${diffDaysStr}`);
+            }
+            else {
+                notes.push(`✅ 行程日期与开票日期一致(${depDate})`);
+            }
+        }
+        // 2. 针对火车票 / 铁路客票
+        if (type.includes('火车') || details.includes('铁路') || details.includes('客票') || stOn || stOff) {
+            const trainRoute = (stOn || stOff) ? ` [${stOn || '未知'} ➔ ${stOff || '未知'}]` : '';
+            const trainInfo = train ? ` 车次:${train}` : '';
+            const timeInfo = timeOn ? ` 出发:${timeOn}` : '';
+            notes.push(`🚄 火车客票${trainRoute}${trainInfo}${timeInfo} (开票:${invDate})`);
+        }
+        // 3. 针对机票 / 航空客票
+        else if (type.includes('飞机') || type.includes('航空') || details.includes('航空') || details.includes('机票')) {
+            const flightRoute = (stOn || stOff) ? ` [${stOn || '未知'} ➔ ${stOff || '未知'}]` : '';
+            const flightNo = train ? ` 航班:${train}` : '';
+            const timeInfo = timeOn ? ` 起飞:${timeOn}` : '';
+            notes.push(`✈️ 航空行程单${flightRoute}${flightNo}${timeInfo} (开票:${invDate})`);
+        }
+        // 4. 针对酒店 / 住宿发票
+        else if (sales.includes('酒店') || sales.includes('客房') || sales.includes('宾馆') || sales.includes('饭店') ||
+            sales.includes('商旅') || details.includes('住宿') || details.includes('客房') || fileName.includes('酒店') || fileName.includes('住宿')) {
+            notes.push(`🏨 住宿酒店发票 (开票:${invDate})，请人工核对实际入住/离店日期`);
+        }
+        // 5. 针对出租车发票
+        else if (type.includes('出租车') || details.includes('出租车')) {
+            const taxiTime = (timeOn || timeOff) ? ` [上车:${timeOn || '未知'} 下车:${timeOff || '未知'}]` : '';
+            notes.push(`🚕 出租车行程${taxiTime} (开票:${invDate})`);
+        }
+        // 6. 针对过路费 / 通行费
+        else if (type.includes('过路') || type.includes('通行') || details.includes('通行') || details.includes('通行费')) {
+            notes.push(`🛣️ 高速通行费/过路费 (开票:${invDate})`);
+        }
+        // 7. 兜底普通/专用发票
+        else {
+            notes.push(`📄 发票开票日期: ${invDate || '未知'}`);
+        }
+        // 补充：比对费用业务日期与开票日期
+        if (bizDate && invDate && bizDate !== invDate && !depDate) {
+            notes.push(`ℹ️ 费用日期(${bizDate})与开票日期(${invDate})不同`);
+        }
+        return notes.join('； ');
+    }
+    /**
+     * RFC 4180 CSV 单元格转义，防止长数字在 Excel 中变成科学计数法
+     */
+    function escapeCsvCell(val, isLongCode = false) {
+        if (val === null || val === undefined)
+            return '';
+        let str = String(val).trim();
+        if (!str)
+            return '';
+        // 如果是长数字（发票号码/代码/身份证等超过 10 位的连续数字），加制表符防止 Excel 科学计数法变形
+        if (isLongCode && /^\d{10,}$/.test(str)) {
+            return `"\t${str}"`;
+        }
+        if (str.includes('"') || str.includes(',') || str.includes('\n') || str.includes('\r')) {
+            return `"${str.replace(/"/g, '""')}"`;
+        }
+        return str;
+    }
+    /**
+     * 将结构化费用记录和发票数据序列化为 Excel 友好的 CSV 格式
+     */
+    function convertExpenseRecordsToCsv(rows) {
+        const headers = [
+            '费用记录ID',
+            '报销状态',
+            '费用类型',
+            '费用金额(元)',
+            '费用业务日期',
+            '费用说明',
+            '发票张数',
+            '发票序号',
+            '发票类型',
+            '发票代码',
+            '发票号码',
+            '开票日期',
+            '价税合计(元)',
+            '不含税金额(元)',
+            '税额(元)',
+            '行程出发日期',
+            '行程出发/上车时间',
+            '行程到达/下车时间',
+            '始发地/出发站',
+            '目的地/到达站',
+            '车次/航班/车牌号',
+            '销售方/酒店/服务商',
+            '购买方名称',
+            '货物或应税劳务名称',
+            '附件文件名',
+            '发票备注',
+            '申请人',
+            '创建时间',
+            '行程与开票核对预警'
+        ];
+        const csvLines = [headers.map(h => escapeCsvCell(h)).join(',')];
+        for (const r of rows) {
+            const line = [
+                escapeCsvCell(r.expenseRecordId, true),
+                escapeCsvCell(r.status),
+                escapeCsvCell(r.expenseTypeName),
+                escapeCsvCell(r.expenseAmount),
+                escapeCsvCell(r.businessDate),
+                escapeCsvCell(r.description),
+                escapeCsvCell(r.invoiceCount),
+                escapeCsvCell(r.invoiceIndex > 0 ? `${r.invoiceIndex}/${r.invoiceCount || 1}` : '-'),
+                escapeCsvCell(r.invoiceType),
+                escapeCsvCell(r.invoiceCode, true),
+                escapeCsvCell(r.invoiceNo, true),
+                escapeCsvCell(r.invoiceDate),
+                escapeCsvCell(r.amountTax),
+                escapeCsvCell(r.totalAmount),
+                escapeCsvCell(r.totalTax),
+                escapeCsvCell(r.departureDate),
+                escapeCsvCell(r.departureTime),
+                escapeCsvCell(r.timeGetOff),
+                escapeCsvCell(r.stationGetOn),
+                escapeCsvCell(r.stationGetOff),
+                escapeCsvCell(r.trainNo),
+                escapeCsvCell(r.salesName),
+                escapeCsvCell(r.purchaserName),
+                escapeCsvCell(r.commodityNames),
+                escapeCsvCell(r.fileName),
+                escapeCsvCell(r.remarks),
+                escapeCsvCell(r.applicantName),
+                escapeCsvCell(r.createDate),
+                escapeCsvCell(r.reconciliationNote)
+            ];
+            csvLines.push(line.join(','));
+        }
+        return csvLines.join('\r\n');
+    }
+    /**
+     * 触发浏览器本地下载带 UTF-8 BOM 的 CSV 文件
+     */
+    function downloadCsvFile(csvContent, filename, targetWin) {
+        if (typeof window === 'undefined')
+            return;
+        const win = targetWin || (typeof unsafeWindow !== 'undefined' ? unsafeWindow : (typeof window !== 'undefined' ? window : null));
+        const BlobCtor = (typeof Blob !== 'undefined' ? Blob : null) || win?.Blob;
+        const UrlCtor = (typeof URL !== 'undefined' ? URL : null) || win?.URL;
+        // 方式 1: 优先使用 Tampermonkey 原生 GM_download（彻底免疫跨 iframe 与弹窗安全限制）
+        // 注意：Chrome 中 GM_download 若传入 blob: URL 会丢失自定义文件名直接变为 UUID.csv；
+        // 传入 Base64 Data URI 时，Chrome downloads API 会 100% 严格采用传入的 filename！
+        if (typeof GM_download === 'function') {
+            try {
+                const utf8Bytes = new TextEncoder().encode('\uFEFF' + csvContent);
+                let binary = '';
+                const len = utf8Bytes.byteLength;
+                for (let i = 0; i < len; i++) {
+                    binary += String.fromCharCode(utf8Bytes[i]);
+                }
+                const btoaFn = (win && win.btoa) || (typeof btoa !== 'undefined' ? btoa : null);
+                if (btoaFn) {
+                    const base64 = btoaFn(binary);
+                    const dataUrl = `data:text/csv;charset=utf-8;base64,${base64}`;
+                    GM_download({
+                        url: dataUrl,
+                        name: filename,
+                        saveAs: false,
+                        onerror: () => {
+                            if (BlobCtor && UrlCtor) {
+                                const blob = new BlobCtor(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
+                                const blobUrl = UrlCtor.createObjectURL(blob);
+                                triggerAnchorDownload(blobUrl, filename, win);
+                            }
+                        }
+                    });
+                    return;
+                }
+            }
+            catch (e) { }
+        }
+        // 方式 2: 标准 a 标签模拟点击下载 (挂载到顶层 document.body 确保下载触发)
+        if (BlobCtor && UrlCtor) {
+            const blob = new BlobCtor(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
+            const blobUrl = UrlCtor.createObjectURL(blob);
+            triggerAnchorDownload(blobUrl, filename, win);
+        }
+    }
+    function triggerAnchorDownload(url, filename, targetWin) {
+        const doc = (typeof window !== 'undefined' && window.top?.document) || (targetWin && targetWin.document) || (typeof document !== 'undefined' ? document : null);
+        if (!doc || !doc.body)
+            return;
+        const link = doc.createElement('a');
+        link.href = url;
+        link.setAttribute('download', filename);
+        link.download = filename;
+        link.style.display = 'none';
+        doc.body.appendChild(link);
+        link.click();
+        setTimeout(() => {
+            try {
+                doc.body.removeChild(link);
+            }
+            catch (e) { }
+            try {
+                URL.revokeObjectURL(url);
+            }
+            catch (e) { }
+        }, 2500);
+    }
+    /**
+     * 批量抽取费用记录及其底层挂载发票的完整行程时间与开票字段
+     */
+    async function fetchExpenseRecordsWithInvoiceDetails(state, targetRecordIds, onProgress, win, statusList) {
+        // 强制清除旧拦截缓存，保障穿透拉取最新全量数据
+        state.lastInterceptedExpenseRecords = null;
+        // 1. 获取费用记录列表 (Network-First，statusList 传 [] 时代表全量查询全部状态)
+        const allRecords = await queryExpenseRecordListApi(state, win, true, statusList);
+        let targetRecords = allRecords;
+        if (targetRecordIds && targetRecordIds.length > 0) {
+            const idSet = new Set(targetRecordIds);
+            targetRecords = allRecords.filter(r => idSet.has(r.expenseRecordId));
+        }
+        if (!targetRecords || targetRecords.length === 0) {
+            return [];
+        }
+        // 2. 并发读取每条费用的发票明细 (并发度 8)
+        const exportRows = [];
+        let completedCount = 0;
+        const totalCount = targetRecords.length;
+        // 立即通知初始进度 0 / totalCount，消除界面死等假象
+        if (onProgress) {
+            onProgress(0, totalCount);
+        }
+        await mapConcurrent(targetRecords, 8, async (rec) => {
+            try {
+                // 单条明细 7 秒超时保护，防止单张发票卡死全局批处理
+                const ruleData = await Promise.race([
+                    getExpenseTypeRuleAndRowDatasApi(rec.expenseRecordId, rec.expenseTypeId || 'UNIDENTIFIED', state, win),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('发票明细穿透超时(7s)')), 7000))
+                ]).catch((err) => {
+                    AutopilotLogger.warn(`[fetchExpenseRecordsWithInvoiceDetails] 费用 ${rec.expenseRecordId} 穿透超时或失败: ${err.message}`);
+                    return null;
+                });
+                const rowDatas = ruleData?.rowDatas || {};
+                const invList = rowDatas?.expenseRecordInvoiceList?.value || [];
+                const attachList = rowDatas?.expenseRecordAttachmentList?.value || [];
+                const savedDynamicFields = extractSavedDynamicFields(rowDatas, rec, ruleData?.fullData);
+                const baseRowInfo = {
+                    expenseRecordId: rec.expenseRecordId || '',
+                    expenseTypeId: rec.expenseTypeId || '',
+                    status: normalizeExpenseStatus(rec.status),
+                    expenseTypeName: rec.expenseType?.title?.zh_CN || rec.expenseTypeName || (rec.expenseTypeId === 'UNIDENTIFIED' ? '未知类型' : (rec.expenseTypeId || '')),
+                    expenseAmount: rec.amountObj?.amount !== undefined ? rec.amountObj.amount : (rec.amount || ''),
+                    businessDate: rec.businessDate ? rec.businessDate.split(' ')[0] : '',
+                    description: rec.description || '',
+                    invoiceCount: rec.invoiceCount || invList.length || 0,
+                    applicantName: rec.applicantObj?.title?.zh_CN || rec.applicantName || '',
+                    createDate: rec.createDate || '',
+                    savedDynamicFields,
+                    savedRowDatas: rowDatas
+                };
+                if (invList.length === 0) {
+                    const fallbackAttach = attachList[0]?.filePath || attachList[0]?.attachmentId || attachList[0]?.id || '';
+                    exportRows.push({
+                        ...baseRowInfo,
+                        attachmentId: fallbackAttach,
+                        rawAttachmentId: fallbackAttach,
+                        invoiceDataId: '',
+                        invoiceIndex: 0,
+                        invoiceType: '',
+                        invoiceCode: '',
+                        invoiceNo: '',
+                        invoiceDate: '',
+                        amountTax: '',
+                        totalAmount: '',
+                        totalTax: '',
+                        departureDate: '',
+                        departureTime: '',
+                        timeGetOff: '',
+                        stationGetOn: '',
+                        stationGetOff: '',
+                        trainNo: '',
+                        salesName: '',
+                        purchaserName: '',
+                        commodityNames: '',
+                        fileName: '',
+                        remarks: '',
+                        reconciliationNote: '无挂载发票'
+                    });
+                }
+                else {
+                    invList.forEach((invItem, idx) => {
+                        const inv = invItem.invoiceVO || {};
+                        const depDate = inv.departureDate ? normalizeDate(inv.departureDate) : '';
+                        const invDate = inv.invoiceDate ? normalizeDate(inv.invoiceDate) : '';
+                        const timeOn = inv.timeGetOn || inv.departureTime || '';
+                        const timeOff = inv.timeGetOff || '';
+                        const stOn = inv.stationGetOn || inv.from || '';
+                        const stOff = inv.stationGetOff || inv.to || '';
+                        const train = inv.trainNo || inv.trainNumber || inv.licensePlate || '';
+                        // =========================================================================
+                        // 提取 OCR 裁切特写单票 ID (inv.videoAddress) 与 原始全图上传 ID (inv.filePath)
+                        // 核心逆向机制：
+                        // 1. inv.videoAddress 代表宿主系统 OCR 自动识别并切片裁切后的单张发票特写图像
+                        // 2. inv.filePath 代表用户原始上传的整页/整张大图 (如手机拍摄包含多张票据的桌面照片)
+                        // =========================================================================
+                        const candidateCropIds = [
+                            inv.videoAddress,
+                            invItem.videoAddress,
+                            inv.scanVideoAddress,
+                            inv.imagePath
+                        ];
+                        let attachmentId = '';
+                        for (const cand of candidateCropIds) {
+                            if (typeof cand === 'string' && cand.trim().length > 3) {
+                                const trimmed = cand.trim();
+                                if (/^\d{12,}$/.test(trimmed))
+                                    continue;
+                                if (trimmed === '[object Object]' || trimmed === 'null' || trimmed === 'undefined')
+                                    continue;
+                                attachmentId = trimmed;
+                                break;
+                            }
+                        }
+                        const candidateRawIds = [
+                            inv.filePath,
+                            invItem.filePath,
+                            inv.attachmentPath,
+                            inv.attachmentUrl,
+                            inv.attachmentId,
+                            inv.attachId,
+                            invItem.attachmentId,
+                            invItem.attachmentVO?.attachmentId,
+                            attachList[idx]?.filePath,
+                            attachList[idx]?.attachmentId,
+                            attachList[idx]?.id,
+                            attachList[0]?.filePath,
+                            attachList[0]?.attachmentId,
+                            inv.invoiceAttachmentId,
+                            inv.fileId,
+                            inv.boTemplateAndData?.boData?.area?.rowDatas?.[0]?.datas?.IMAGE_PATH?.value,
+                            inv.boTemplateAndData?.boData?.area?.rowDatas?.[0]?.datas?.FILE_PATH?.value
+                        ];
+                        let rawAttachmentId = '';
+                        for (const cand of candidateRawIds) {
+                            if (typeof cand === 'string' && cand.trim().length > 3) {
+                                const trimmed = cand.trim();
+                                if (/^\d{12,}$/.test(trimmed))
+                                    continue;
+                                if (trimmed === '[object Object]' || trimmed === 'null' || trimmed === 'undefined')
+                                    continue;
+                                rawAttachmentId = trimmed;
+                                break;
+                            }
+                        }
+                        // 互为后备兜底 (如电子发票 PDF 仅有 filePath 无 videoAddress，则裁切特写自动回退为 filePath)
+                        if (!attachmentId) {
+                            attachmentId = rawAttachmentId;
+                        }
+                        if (!rawAttachmentId) {
+                            rawAttachmentId = attachmentId;
+                        }
+                        const invoiceDataId = inv.invoiceDataId || inv.dataId || invItem.invoiceDataId || invItem.dataId || inv.id || '';
+                        exportRows.push({
+                            ...baseRowInfo,
+                            attachmentId,
+                            rawAttachmentId,
+                            invoiceDataId,
+                            invoiceIndex: idx + 1,
+                            invoiceType: inv.invoiceTypeAbbreviation || inv.invoiceType || '',
+                            invoiceCode: inv.invoiceCode || '',
+                            invoiceNo: inv.invoiceNo || '',
+                            invoiceDate: invDate,
+                            amountTax: inv.amountTax !== undefined ? inv.amountTax : (inv.amountTaxObj?.amount || ''),
+                            totalAmount: inv.totalAmount !== undefined ? inv.totalAmount : (inv.totalAmountObj?.amount || ''),
+                            totalTax: inv.totalTax !== undefined ? inv.totalTax : (inv.totalTaxObj?.amount || ''),
+                            departureDate: depDate,
+                            departureTime: timeOn,
+                            timeGetOn: timeOn,
+                            timeGetOff: timeOff,
+                            stationGetOn: stOn,
+                            stationGetOff: stOff,
+                            trainNo: train,
+                            salesName: inv.salesName || '',
+                            purchaserName: inv.purchaserName || '',
+                            commodityNames: inv.invoiceDetails || inv.commodityNames || '',
+                            fileName: inv.fileName || '',
+                            remarks: inv.remarks || '',
+                            reconciliationNote: generateReconciliationNote(rec, inv)
+                        });
+                    });
+                }
+            }
+            catch (err) {
+                exportRows.push({
+                    expenseRecordId: rec.expenseRecordId || '',
+                    status: normalizeExpenseStatus(rec.status),
+                    expenseTypeName: rec.expenseType?.title?.zh_CN || '',
+                    expenseAmount: rec.amountObj?.amount || '',
+                    businessDate: rec.businessDate ? rec.businessDate.split(' ')[0] : '',
+                    description: rec.description || '',
+                    invoiceCount: rec.invoiceCount || 0,
+                    applicantName: rec.applicantObj?.title?.zh_CN || '',
+                    createDate: rec.createDate || '',
+                    savedDynamicFields: {},
+                    savedRowDatas: {},
+                    attachmentId: '',
+                    invoiceDataId: '',
+                    invoiceIndex: 0,
+                    invoiceType: '',
+                    invoiceCode: '',
+                    invoiceNo: '',
+                    invoiceDate: '',
+                    amountTax: '',
+                    totalAmount: '',
+                    totalTax: '',
+                    departureDate: '',
+                    departureTime: '',
+                    timeGetOff: '',
+                    stationGetOn: '',
+                    stationGetOff: '',
+                    trainNo: '',
+                    salesName: '',
+                    purchaserName: '',
+                    commodityNames: '',
+                    fileName: '',
+                    remarks: '',
+                    reconciliationNote: `❌ 提取发票异常: ${err.message}`
+                });
+            }
+            finally {
+                completedCount++;
+                if (onProgress) {
+                    onProgress(completedCount, totalCount);
+                }
+            }
+        });
+        // 按照业务日期倒序排列
+        exportRows.sort((a, b) => (b.businessDate || '').localeCompare(a.businessDate || ''));
+        return exportRows;
+    }
+    /**
+     * 实时拉取当前登录人权限内的费用类型分类树 (包含 4 大分类与 15 种明细类型)
+     * 接口: POST /fssc/controlStandard/expenseTypeDim/getExpenseTypeTreeInAuth
+     */
+    async function fetchExpenseTypeTreeApi(state, win) {
+        const applicantId = state.currentUser?.userId ||
+            state.applicantId ||
+            (typeof sessionStorage !== 'undefined' ? (sessionStorage.getItem('userId') || sessionStorage.getItem('loginUserId')) : '') ||
+            '11eee047a80566bca18367ceb209b2e1';
+        const payload = {
+            applicantId,
+            invoiceRequired: true
+        };
+        try {
+            let res = await callNativeHttp('/controlStandard/expenseTypeDim/getExpenseTypeTreeInAuth', 'POST', payload, win);
+            if (!res || !res.success) {
+                res = await apiRequest('/fssc/controlStandard/expenseTypeDim/getExpenseTypeTreeInAuth', 'POST', payload, state);
+            }
+            if (res && res.success && Array.isArray(res.data) && res.data.length > 0) {
+                const mapNodes = (nodes) => {
+                    return nodes.map(n => {
+                        const d = n.data || {};
+                        const isLeaf = d.isLeaf !== undefined ? Boolean(d.isLeaf) : (!n.children || n.children.length === 0);
+                        return {
+                            id: d.expenseTypeId || n.key || n.id || '',
+                            code: d.expenseTypeCode || n.code || '',
+                            name: d.expenseTypeName || n.title || n.name || '',
+                            icon: d.icon || n.icon || '',
+                            iconColor: d.iconColor || n.iconColor || '',
+                            isLeaf,
+                            depth: d.depth || 0,
+                            children: n.children && n.children.length > 0 ? mapNodes(n.children) : [],
+                            raw: d
+                        };
+                    });
+                };
+                const tree = mapNodes(res.data);
+                AutopilotLogger.info(`[fetchExpenseTypeTreeApi] 成功拉取权限内费用类型分类树，共 ${tree.length} 个根分类`);
+                return tree;
+            }
+        }
+        catch (e) {
+            AutopilotLogger.warn(`[fetchExpenseTypeTreeApi] 拉取费用类型树失败: ${e.message}`);
+        }
+        return [];
+    }
+    /**
+     * 批量更新费用记录（类型切换、必填字段注入、说明、业务日期）并安全持久化保存为草稿
+     */
+    async function batchUpdateExpenseRecordsApi(updates, state, onProgress, win) {
+        const result = {
+            total: updates.length,
+            successCount: 0,
+            failCount: 0,
+            errors: []
+        };
+        if (!updates || updates.length === 0)
+            return result;
+        // 0. 批量持久化前动态嗅探最新 Token 并执行会话保活，彻底重置服务端空闲倒计时
+        extractLatestTokens(state);
+        await touchSessionKeepalive(state, win);
+        let completed = 0;
+        // 使用并发度 3 保证极速处理且避免高频限流与数据库行锁冲突
+        await mapConcurrent(updates, 3, async (item) => {
+            let retryCount = 0;
+            const maxRetries = 1;
+            try {
+                while (true) {
+                    try {
+                        const originalTypeId = item.originalExpenseTypeId || item.expenseTypeId || 'UNIDENTIFIED';
+                        const targetTypeId = item.targetExpenseTypeId;
+                        const isTypeChanged = Boolean(targetTypeId && targetTypeId !== originalTypeId);
+                        // 1. 获取现有完整 ruleData（包含发票列表、金额、乐观锁版本号与申请人）
+                        const ruleData = await getExpenseTypeRuleAndRowDatasApi(item.expenseRecordId, originalTypeId, state, win);
+                        const existingRowDatas = ruleData.rowDatas || {};
+                        let version = ruleData.version !== undefined ? ruleData.version : 1;
+                        let applicantId = ruleData.fullData?.applicantId || existingRowDatas?.APPLICANT_ID?.value?.value || state.applicantId || '';
+                        let rowDatas = {};
+                        if (isTypeChanged) {
+                            // 2. 类型变更：调用 initExpenseRecordData，将原有完整 existingRowDatas（含发票和金额）透传，重置槽位元数据
+                            AutopilotLogger.info(`[batchUpdate] 费用记录 ${item.expenseRecordId} 变更类型: ${originalTypeId} ➔ ${targetTypeId}`);
+                            const initRes = await initExpenseRecordWithTypeApi(item.expenseRecordId, targetTypeId, existingRowDatas, state, win);
+                            rowDatas = initRes.rowDatas || {};
+                            // 防御性安全守卫：如果切换后缺失发票列表或金额，无条件从原 existingRowDatas 继承，杜绝任何发票丢失
+                            if ((!rowDatas.expenseRecordInvoiceList || !rowDatas.expenseRecordInvoiceList.value) && existingRowDatas.expenseRecordInvoiceList) {
+                                rowDatas.expenseRecordInvoiceList = existingRowDatas.expenseRecordInvoiceList;
+                            }
+                            if ((!rowDatas.AMOUNT || !rowDatas.AMOUNT.value) && existingRowDatas.AMOUNT) {
+                                rowDatas.AMOUNT = existingRowDatas.AMOUNT;
+                            }
+                            if ((!rowDatas.INVOICE_COUNT || !rowDatas.INVOICE_COUNT.value) && existingRowDatas.INVOICE_COUNT) {
+                                rowDatas.INVOICE_COUNT = existingRowDatas.INVOICE_COUNT;
+                            }
+                            if (initRes.applicantId)
+                                applicantId = initRes.applicantId;
+                            else if (initRes.fullData?.applicantId)
+                                applicantId = initRes.fullData.applicantId;
+                            // 关键修复：initExpenseRecordData 为内存模板初始化，返回的 version 恒为 0，绝对不可覆盖真实的数据库版本号！
+                            if (initRes.version && initRes.version > version)
+                                version = initRes.version;
+                        }
+                        else {
+                            rowDatas = existingRowDatas;
+                        }
+                        let hasChanged = isTypeChanged;
+                        /**
+                         * 安全设置费用记录行数据字段（若字段对象不存在则按元年元数据规范自适应创建，彻底杜绝 undefined 异常）
+                         */
+                        function ensureExpenseRowField(rowDatas, fieldCode, val, dataType = 'STEXT') {
+                            if (val === undefined || val === null || val === '')
+                                return false;
+                            if (!rowDatas[fieldCode]) {
+                                if (dataType === 'DROPDOWN') {
+                                    const dropdownVal = (typeof val === 'object' && val !== null) ? val : {
+                                        title: { zh_CN: String(val) },
+                                        value: String(val)
+                                    };
+                                    rowDatas[fieldCode] = {
+                                        dataType: 'DROPDOWN',
+                                        dataAttribute: 'DEFAULT',
+                                        required: true,
+                                        value: dropdownVal
+                                    };
+                                }
+                                else {
+                                    rowDatas[fieldCode] = {
+                                        dataType,
+                                        dataAttribute: 'DEFAULT',
+                                        required: true,
+                                        value: val
+                                    };
+                                }
+                                return true;
+                            }
+                            const field = rowDatas[fieldCode];
+                            if (dataType === 'DROPDOWN') {
+                                if (typeof field.value === 'object' && field.value !== null && !Array.isArray(field.value)) {
+                                    if (typeof val === 'object' && val !== null) {
+                                        field.value = val;
+                                    }
+                                    else {
+                                        if (!field.value.title)
+                                            field.value.title = {};
+                                        field.value.title.zh_CN = String(val);
+                                        field.value.value = field.value.value || String(val);
+                                    }
+                                }
+                                else {
+                                    field.value = (typeof val === 'object' && val !== null) ? val : {
+                                        title: { zh_CN: String(val) },
+                                        value: String(val)
+                                    };
+                                }
+                            }
+                            else {
+                                field.value = val;
+                            }
+                            return true;
+                        }
+                        // 3. 更新费用说明
+                        if (item.newDescription !== undefined) {
+                            if (ensureExpenseRowField(rowDatas, 'DESCRIPTION', item.newDescription.trim(), 'MTEXT')) {
+                                hasChanged = true;
+                            }
+                        }
+                        // 4. 可选：更新业务日期
+                        if (item.newBusinessDate) {
+                            const normDate = normalizeDate(item.newBusinessDate);
+                            if (normDate) {
+                                if (ensureExpenseRowField(rowDatas, 'BUSINESS_DATE', `${normDate} 00:00:00`, 'DATE')) {
+                                    hasChanged = true;
+                                }
+                            }
+                        }
+                        // 5. 注入必填/动态字段
+                        const dyn = item.dynamicFields || {};
+                        // 5.1 始发地 / 目的地 (交通、出租车、火车)
+                        const startAddr = dyn.startAddress || item.startAddress || dyn.trainFromStation;
+                        if (startAddr) {
+                            if (ensureExpenseRowField(rowDatas, 'START_ADDRESS', startAddr, 'STEXT')) {
+                                hasChanged = true;
+                            }
+                        }
+                        const endAddr = dyn.endAddress || item.endAddress || dyn.trainToStation;
+                        if (endAddr) {
+                            if (ensureExpenseRowField(rowDatas, 'END_ADDRESS', endAddr, 'STEXT')) {
+                                hasChanged = true;
+                            }
+                        }
+                        // 5.2 住宿费专属必填字段
+                        if (dyn.checkInDate) {
+                            const d = normalizeDate(dyn.checkInDate);
+                            if (d && ensureExpenseRowField(rowDatas, 'CHECK_IN_DATE', `${d} 00:00:00`, 'DATE')) {
+                                hasChanged = true;
+                            }
+                        }
+                        if (dyn.checkOutDate) {
+                            const d = normalizeDate(dyn.checkOutDate);
+                            if (d && ensureExpenseRowField(rowDatas, 'CHECK_OUT_DATE', `${d} 00:00:00`, 'DATE')) {
+                                hasChanged = true;
+                            }
+                        }
+                        if (dyn.city) {
+                            const cityVO = await fetchCityVO(dyn.city, state, '6b8ff0649ebe11e88b72df10cd5db793');
+                            const cityFieldVal = cityVO && cityVO.value ? {
+                                value: cityVO.value,
+                                title: { zh_CN: (cityVO.title && cityVO.title.zh_CN) || dyn.city }
+                            } : {
+                                value: dyn.city,
+                                title: { zh_CN: dyn.city }
+                            };
+                            if (ensureExpenseRowField(rowDatas, 'CITY', cityFieldVal, 'DROPDOWN')) {
+                                hasChanged = true;
+                            }
+                            // 尝试提取动态 fieldId (出差城市字段的 expenseTypeFieldId)
+                            let cityFieldId = '0356c803fdbde1653e55bb00bc610006';
+                            if (ruleData.fullData?.expenseTypeFieldRuleListVO?.expenseTypeFieldList) {
+                                const cityDef = ruleData.fullData.expenseTypeFieldRuleListVO.expenseTypeFieldList.find((f) => f.columnCode === 'CITY');
+                                if (cityDef && cityDef.expenseTypeFieldId) {
+                                    cityFieldId = cityDef.expenseTypeFieldId;
+                                }
+                            }
+                            // 核心关键：调用元年云官方 fieldValueChange 规则引擎，自动联动生成 住宿城市类型 (F_ZSC_DEF_001) 与 标准金额 (STANDARD_VALUE)
+                            const ruleRowDatas = await executeExpenseRecordFieldValueChangeApi(cityFieldId, '出差城市', 'CITY', cityFieldVal, targetTypeId || originalTypeId || '0356c4e2b72de1653e55bb00bc610001', rowDatas, state, win);
+                            if (ruleRowDatas && typeof ruleRowDatas === 'object') {
+                                if (ruleRowDatas.F_ZSC_DEF_001) {
+                                    rowDatas.F_ZSC_DEF_001 = ruleRowDatas.F_ZSC_DEF_001;
+                                    hasChanged = true;
+                                }
+                                if (ruleRowDatas.STANDARD_VALUE) {
+                                    rowDatas.STANDARD_VALUE = ruleRowDatas.STANDARD_VALUE;
+                                    hasChanged = true;
+                                }
+                                if (ruleRowDatas.OVER_STANDARD) {
+                                    rowDatas.OVER_STANDARD = ruleRowDatas.OVER_STANDARD;
+                                }
+                            }
+                        }
+                        // 5.2.1 针对住宿费：全面补齐必填项，彻底杜绝单价/房间数/城市类型必填拦截
+                        const isHotel = (targetTypeId || originalTypeId) === '0356c4e2b72de1653e55bb00bc610001' ||
+                            !!rowDatas.HOTEL_NAME || !!rowDatas.CHECK_IN_DATE || !!dyn.hotelName || !!dyn.checkInDate;
+                        if (isHotel) {
+                            if (dyn.hotelName) {
+                                if (ensureExpenseRowField(rowDatas, 'HOTEL_NAME', dyn.hotelName, 'STEXT')) {
+                                    hasChanged = true;
+                                }
+                            }
+                            const roomNum = Number(dyn.roomNum) || Number(rowDatas.ROOM_NUM?.value) || 1;
+                            if (ensureExpenseRowField(rowDatas, 'ROOM_NUM', roomNum, 'NUMBER')) {
+                                hasChanged = true;
+                            }
+                            const checkIn = dyn.checkInDate || rowDatas.CHECK_IN_DATE?.value;
+                            const checkOut = dyn.checkOutDate || rowDatas.CHECK_OUT_DATE?.value;
+                            let stayDays = 1;
+                            if (checkIn && checkOut) {
+                                const inD = new Date(checkIn);
+                                const outD = new Date(checkOut);
+                                const diff = Math.round((outD.getTime() - inD.getTime()) / (1000 * 3600 * 24));
+                                stayDays = diff > 0 ? diff : 1;
+                            }
+                            ensureExpenseRowField(rowDatas, 'STAY_DAYS', stayDays, 'NUMBER');
+                            const totalAmount = Number(rowDatas.AMOUNT?.value?.amount) || 0;
+                            const totalRoomNights = Math.max(1, stayDays * roomNum);
+                            const unitPriceVal = Math.round((totalAmount / totalRoomNights) * 100) / 100;
+                            rowDatas.UNIT_PRICE = {
+                                dataType: 'MONEY',
+                                required: true,
+                                value: {
+                                    accountAmount: {
+                                        amount: unitPriceVal,
+                                        capital: '',
+                                        currencyId: state.accountCurrencyId || '6e589eb2dd9f11e8b5a69590a14a4e34',
+                                        currencySymbol: '',
+                                        description: '',
+                                        exchangeRate: 1,
+                                        factor: 0
+                                    },
+                                    amount: unitPriceVal,
+                                    capital: '',
+                                    currencyId: state.accountCurrencyId || '6e589eb2dd9f11e8b5a69590a14a4e34',
+                                    currencySymbol: '¥',
+                                    description: '',
+                                    exchangeRate: 1,
+                                    factor: 0
+                                }
+                            };
+                            hasChanged = true;
+                            if (!item.newBusinessDate && checkIn) {
+                                const d = normalizeDate(checkIn);
+                                if (d) {
+                                    ensureExpenseRowField(rowDatas, 'BUSINESS_DATE', `${d} 00:00:00`, 'DATE');
+                                }
+                            }
+                            // 住宿城市类型 (F_ZSC_DEF_001) 与 标准金额 (STANDARD_VALUE) 确定性公式兜底
+                            const currentHotelCity = dyn.city || rowDatas.CITY?.value?.title?.zh_CN || rowDatas.CITY?.value?.value;
+                            const cityName = currentHotelCity ? String(currentHotelCity).replace(/市|区|县/g, '').trim() : '';
+                            const isTier1 = /北京|上海|广州|深圳/.test(cityName);
+                            const tier1Id = '035a402fee2345af7f1906ec05cc0000';
+                            const otherId = '035a403ff62345af7f1906ec05cc0000';
+                            const targetZscId = isTier1 ? tier1Id : otherId;
+                            const targetZscTitle = isTier1 ? '境内-北上广深' : '境内-其他';
+                            const stdAmt = isTier1 ? 800 : 700;
+                            if (!rowDatas.F_ZSC_DEF_001 || !rowDatas.F_ZSC_DEF_001.value || !rowDatas.F_ZSC_DEF_001.value.value) {
+                                rowDatas.F_ZSC_DEF_001 = {
+                                    dataSourceScope: [{ title: { zh_CN: targetZscTitle }, value: targetZscId }],
+                                    dataType: 'DROPDOWN',
+                                    readOnly: true,
+                                    required: true,
+                                    value: {
+                                        icon: '',
+                                        iconColor: '',
+                                        title: { zh_CN: targetZscTitle },
+                                        value: targetZscId
+                                    }
+                                };
+                                hasChanged = true;
+                            }
+                            if (!rowDatas.STANDARD_VALUE || !rowDatas.STANDARD_VALUE.value || !rowDatas.STANDARD_VALUE.value.amount) {
+                                rowDatas.STANDARD_VALUE = {
+                                    dataType: 'MONEY',
+                                    hidden: true,
+                                    readOnly: true,
+                                    required: true,
+                                    value: {
+                                        accountAmount: {
+                                            amount: stdAmt,
+                                            capital: '',
+                                            currencyId: state.accountCurrencyId || '6e589eb2dd9f11e8b5a69590a14a4e34',
+                                            currencySymbol: '',
+                                            description: '',
+                                            exchangeRate: 1,
+                                            factor: 0
+                                        },
+                                        amount: stdAmt,
+                                        capital: '',
+                                        currencyId: state.accountCurrencyId || '6e589eb2dd9f11e8b5a69590a14a4e34',
+                                        currencySymbol: '¥',
+                                        description: '',
+                                        exchangeRate: 1,
+                                        factor: 0
+                                    }
+                                };
+                                hasChanged = true;
+                            }
+                            // 5.2.1 住宿费超标说明自动自愈与必填守卫 (彻底解决“保存校验拦截: 超标说明必填”)
+                            const isOverStandard = rowDatas.OVER_STANDARD?.value?.title?.zh_CN === '是' ||
+                                rowDatas.OVER_STANDARD?.value === true ||
+                                rowDatas.OVER_STANDARD_DESCRIPTION?.required === true ||
+                                (rowDatas.UNIT_PRICE?.value?.amount && rowDatas.STANDARD_VALUE?.value?.amount &&
+                                    rowDatas.UNIT_PRICE.value.amount > rowDatas.STANDARD_VALUE.value.amount);
+                            if (isOverStandard) {
+                                result.hasOverStandard = true;
+                                result.overStandardCount = (result.overStandardCount || 0) + 1;
+                            }
+                            if (isOverStandard || (rowDatas.OVER_STANDARD_DESCRIPTION && !rowDatas.OVER_STANDARD_DESCRIPTION.value)) {
+                                const overReason = (dyn.overStandardDescription && dyn.overStandardDescription.trim()) ||
+                                    (rowDatas.OVER_STANDARD_DESCRIPTION?.value ? String(rowDatas.OVER_STANDARD_DESCRIPTION.value).trim() : '');
+                                if (overReason) {
+                                    if (ensureExpenseRowField(rowDatas, 'OVER_STANDARD_DESCRIPTION', overReason, 'MTEXT')) {
+                                        hasChanged = true;
+                                    }
+                                }
+                                else if (isOverStandard) {
+                                    const itemDate = dyn.checkInDate || (rowDatas.CHECK_IN_DATE?.value ? String(rowDatas.CHECK_IN_DATE.value).slice(0, 10) : '') || '';
+                                    const hotelOrCity = dyn.hotelName || dyn.city || (rowDatas.HOTEL_NAME?.value ? String(rowDatas.HOTEL_NAME.value) : '') || '';
+                                    const itemAmount = totalAmount ? `¥${totalAmount}` : '';
+                                    const itemLabel = [itemDate, hotelOrCity, itemAmount].filter(Boolean).join(' ');
+                                    throw new Error(`[${itemLabel || item.expenseRecordId}] 住宿费单价已超标，超标说明为必填项，请填写理由或点击 📋 拷贝“费用说明”后再保存！`);
+                                }
+                            }
+                        }
+                        // 5.3 飞机票专属必填字段
+                        if (dyn.flightStartDate) {
+                            const d = normalizeDate(dyn.flightStartDate);
+                            if (d && ensureExpenseRowField(rowDatas, 'FLIGHT_START_DATE', `${d} 00:00:00`, 'DATE')) {
+                                hasChanged = true;
+                            }
+                        }
+                        if (dyn.flightEndDate) {
+                            const d = normalizeDate(dyn.flightEndDate);
+                            if (d && ensureExpenseRowField(rowDatas, 'FLIGHT_END_DATE', `${d} 00:00:00`, 'DATE')) {
+                                hasChanged = true;
+                            }
+                        }
+                        if (dyn.flightFromCity) {
+                            const cityVO = await fetchCityVO(dyn.flightFromCity, state, '6b8ff0649ebe11e88b72df10cd5db793');
+                            if (ensureExpenseRowField(rowDatas, 'FLIGHT_FROM_CITY', cityVO || dyn.flightFromCity, 'DROPDOWN')) {
+                                hasChanged = true;
+                            }
+                        }
+                        if (dyn.flightToCity) {
+                            const cityVO = await fetchCityVO(dyn.flightToCity, state, '6b8ff0649ebe11e88b72df10cd5db793');
+                            if (ensureExpenseRowField(rowDatas, 'FLIGHT_TO_CITY', cityVO || dyn.flightToCity, 'DROPDOWN')) {
+                                hasChanged = true;
+                            }
+                        }
+                        if (dyn.flightNum) {
+                            if (ensureExpenseRowField(rowDatas, 'FLIGHT_NUM', dyn.flightNum, 'STEXT')) {
+                                hasChanged = true;
+                            }
+                        }
+                        // 5.4 火车票专属必填字段
+                        if (dyn.trainStartDate) {
+                            const d = normalizeDate(dyn.trainStartDate);
+                            if (d && ensureExpenseRowField(rowDatas, 'TRAIN_START_DATE', `${d} 00:00:00`, 'DATE')) {
+                                hasChanged = true;
+                            }
+                        }
+                        if (dyn.trainEndDate) {
+                            const d = normalizeDate(dyn.trainEndDate);
+                            if (d && ensureExpenseRowField(rowDatas, 'TRAIN_END_DATE', `${d} 00:00:00`, 'DATE')) {
+                                hasChanged = true;
+                            }
+                        }
+                        if (dyn.trainFromStation) {
+                            const cityVO = await fetchCityVO(dyn.trainFromStation, state, '6b8ff0649ebe11e88b72df10cd5db793');
+                            if (ensureExpenseRowField(rowDatas, 'TRAIN_FROM_CITY', cityVO || dyn.trainFromStation, 'DROPDOWN')) {
+                                hasChanged = true;
+                            }
+                            ensureExpenseRowField(rowDatas, 'START_ADDRESS', dyn.trainFromStation, 'STEXT');
+                        }
+                        if (dyn.trainToStation) {
+                            const cityVO = await fetchCityVO(dyn.trainToStation, state, '6b8ff0649ebe11e88b72df10cd5db793');
+                            if (ensureExpenseRowField(rowDatas, 'TRAIN_TO_CITY', cityVO || dyn.trainToStation, 'DROPDOWN')) {
+                                hasChanged = true;
+                            }
+                            ensureExpenseRowField(rowDatas, 'END_ADDRESS', dyn.trainToStation, 'STEXT');
+                        }
+                        // 5.5 通信费所属账期月份 (系统在部分模版中使用 FLIGHT_START_DATE 映射手机费年月)
+                        if (dyn.billMonth) {
+                            const m = dyn.billMonth.trim();
+                            const dateStr = m.length === 7 ? `${m}-01` : m;
+                            const norm = normalizeDate(dateStr);
+                            if (norm && ensureExpenseRowField(rowDatas, 'FLIGHT_START_DATE', `${norm} 00:00:00`, 'DATE')) {
+                                hasChanged = true;
+                            }
+                        }
+                        if (!hasChanged) {
+                            result.successCount++;
+                            break;
+                        }
+                        // 6. 持久化保存草稿接口 (validateAndSaveExpenseRecord)
+                        const finalTypeId = targetTypeId || (originalTypeId && originalTypeId !== 'UNIDENTIFIED' ? originalTypeId : '') ||
+                            ruleData.fullData?.expenseTypeId ||
+                            ruleData.rowDatas?.EXPENSE_TYPE_ID?.value?.value || '';
+                        AutopilotLogger.info(`[batchUpdate] 保存费用记录 ${item.expenseRecordId}, 类型: ${finalTypeId}, 字段数: ${Object.keys(rowDatas).length}`);
+                        await saveFinalExpenseRecordApi(item.expenseRecordId, finalTypeId, rowDatas, version, state, applicantId, win);
+                        result.successCount++;
+                        break;
+                    }
+                    catch (err) {
+                        const isRetryable = retryCount < maxRetries && (err.message?.includes('版本') ||
+                            err.message?.includes('version') ||
+                            err.message?.includes('修改') ||
+                            err.message?.includes('已被其他人修改') ||
+                            err.message?.includes('超时'));
+                        if (isRetryable) {
+                            retryCount++;
+                            AutopilotLogger.warn(`[batchUpdate] 费用记录 ${item.expenseRecordId} 遇瞬态或版本冲突 (${err.message})，重新拉取最新版本重试第 ${retryCount} 次...`);
+                            await new Promise(r => setTimeout(r, 400));
+                            continue;
+                        }
+                        const isAuthError = err.message?.includes('登录失效') || err.message?.includes('Time-Out') || err.message?.includes('401');
+                        if (isAuthError) {
+                            AutopilotLogger.warn(`[batchUpdate] 检测到会话异常 (${err.message})，正在紧急重嗅探 Token 并保活...`);
+                            extractLatestTokens(state);
+                            touchSessionKeepalive(state, win);
+                        }
+                        result.failCount++;
+                        result.errors.push({
+                            expenseRecordId: item.expenseRecordId,
+                            error: err.message || '保存费用记录失败'
+                        });
+                        break;
+                    }
+                }
+            }
+            finally {
+                completed++;
+                if (onProgress) {
+                    onProgress(completed, updates.length);
+                }
+            }
+        });
+        state.lastInterceptedExpenseRecords = null;
+        return result;
+    }
+    /**
+     * 为出差报销单 (BC) 中的正社员动态创建【误餐补助】费用明细记录
+     *
+     * 严格逆向对齐元年官方真实流程 (HAR 校验)：
+     * 1. initExpenseRecordData: 初始化 0356c51e601de1653e55bb00bc610000 (误餐补助)
+     * 2. 动态检索城市维度对象 (fetchCityVO)
+     * 3. 填入起止时间与出差城市，触发 fieldValueChange 联动测算合规标准金额
+     * 4. 持久化保存 (validateAndSaveExpenseRecord) 并返回 expenseRecordId
+     */
+    async function createMealAllowanceExpenseRecordApi(params, state, win) {
+        if (!state.applicantId || !state.currentUser?.userId) {
+            try {
+                await fetchLoginUserInfo(state);
+            }
+            catch (e) { }
+        }
+        const userId = params.applicantId ||
+            state.applicantId ||
+            state.currentUser?.userId ||
+            (typeof sessionStorage !== 'undefined' ? (sessionStorage.getItem('userId') || sessionStorage.getItem('loginUserId')) : '') || '';
+        const userName = params.applicantName ||
+            state.applicantName ||
+            state.currentUser?.userName ||
+            '正社员';
+        const startDateRaw = params.startDate || '';
+        const endDateRaw = params.endDate || '';
+        const baseStartDate = startDateRaw.split('T')[0].split(' ')[0];
+        const baseEndDate = endDateRaw.split('T')[0].split(' ')[0];
+        const startTime = (startDateRaw.includes('T') ? startDateRaw.split('T')[1] : startDateRaw.includes(' ') ? startDateRaw.split(' ')[1] : '').slice(0, 5) || '09:00';
+        const endTime = (endDateRaw.includes('T') ? endDateRaw.split('T')[1] : endDateRaw.includes(' ') ? endDateRaw.split(' ')[1] : '').slice(0, 5) || '18:00';
+        const trainStart = `${baseStartDate} ${startTime}:00`;
+        const trainEnd = `${baseEndDate} ${endTime}:00`;
+        const businessDate = `${baseStartDate} 00:00:00`;
+        const winObj = win || (typeof window !== 'undefined' ? window : null);
+        const mealTypeId = '0356c51e601de1653e55bb00bc610000';
+        const currencyId = state.accountCurrencyId || '6e589eb2dd9f11e8b5a69590a14a4e34';
+        // 1. 初始化费用记录模版 (initExpenseRecordData)
+        const initPayload = {
+            intersectionScope: [["03566dbf373de1653e55bb00bc610000"]],
+            accountCurrencyId: currencyId,
+            expenseTypeId: mealTypeId,
+            executeType: "CHANGE_EXPENSE_TYPE",
+            triggerTiming: "ADD_ROW",
+            applicantId: userId,
+            preview: false,
+            dimensionMappingQueryVOList: [],
+            billApplicantId: userId
+        };
+        let initRes = await callNativeHttp('/fssc/expenseClaim/expenseRecord/initExpenseRecordData', 'POST', initPayload, winObj) || await apiRequest('/fssc/expenseClaim/expenseRecord/initExpenseRecordData', 'POST', initPayload, state);
+        let expenseRecordId = initRes?.data?.expenseRecordId || generateUuid();
+        let rowDatas = initRes?.data?.rowDatas || {};
+        // 2. 动态检索城市维度对象
+        const cityVO = await fetchCityVO(params.destinationCity, state, '6b8ff0649ebe11e88b72df10cd5db793');
+        // 3. 严格遵循官方链路执行 4 步规则联动 (fieldValueChange)
+        // 3.1 联动 BUSINESS_DATE
+        try {
+            const fvc1 = await callNativeHttp('/fssc/expenseClaim/expenseRecordRuleExecute/fieldValueChange', 'POST', {
+                fieldId: "0356c51e67ede1653e55bb00bc610016",
+                fieldName: "费用日期",
+                columnCode: "BUSINESS_DATE",
+                fieldValue: businessDate,
+                recordDataVO: {
+                    accountCurrencyId: currencyId,
+                    expenseTypeId: mealTypeId,
+                    expenseRecordId,
+                    rowDatas
+                }
+            }, winObj);
+            if (fvc1?.data?.rowDatas)
+                rowDatas = Object.assign({}, rowDatas, fvc1.data.rowDatas);
+        }
+        catch (e) { }
+        // 3.2 联动 出差开始时间 (TRAIN_START_DATE)
+        try {
+            const fvc2 = await callNativeHttp('/fssc/expenseClaim/expenseRecordRuleExecute/fieldValueChange', 'POST', {
+                fieldId: "0356c823023345af7f1906ec05cc0003",
+                fieldName: "出差开始时间",
+                columnCode: "TRAIN_START_DATE",
+                fieldValue: trainStart,
+                recordDataVO: {
+                    accountCurrencyId: currencyId,
+                    expenseTypeId: mealTypeId,
+                    expenseRecordId,
+                    rowDatas
+                }
+            }, winObj);
+            if (fvc2?.data?.rowDatas)
+                rowDatas = Object.assign({}, rowDatas, fvc2.data.rowDatas);
+        }
+        catch (e) { }
+        // 3.3 联动 出差城市 (CITY，关键 fieldId: 035a4985309345af7f1906ec05cc0001)
+        if (cityVO) {
+            try {
+                const fvc3 = await callNativeHttp('/fssc/expenseClaim/expenseRecordRuleExecute/fieldValueChange', 'POST', {
+                    fieldId: "035a4985309345af7f1906ec05cc0001",
+                    fieldName: "出差城市",
+                    columnCode: "CITY",
+                    fieldValue: {
+                        value: cityVO.value,
+                        title: cityVO.title || { zh_CN: params.destinationCity }
+                    },
+                    recordDataVO: {
+                        accountCurrencyId: currencyId,
+                        expenseTypeId: mealTypeId,
+                        expenseRecordId,
+                        rowDatas
+                    }
+                }, winObj);
+                if (fvc3?.data?.rowDatas)
+                    rowDatas = Object.assign({}, rowDatas, fvc3.data.rowDatas);
+            }
+            catch (e) { }
+        }
+        // 3.4 联动 出差结束时间 (TRAIN_END_DATE)
+        try {
+            const fvc4 = await callNativeHttp('/fssc/expenseClaim/expenseRecordRuleExecute/fieldValueChange', 'POST', {
+                fieldId: "0356c82de83345af7f1906ec05cc0004",
+                fieldName: "出差结束时间",
+                columnCode: "TRAIN_END_DATE",
+                fieldValue: trainEnd,
+                recordDataVO: {
+                    accountCurrencyId: currencyId,
+                    expenseTypeId: mealTypeId,
+                    expenseRecordId,
+                    rowDatas
+                }
+            }, winObj);
+            if (fvc4?.data?.rowDatas)
+                rowDatas = Object.assign({}, rowDatas, fvc4.data.rowDatas);
+        }
+        catch (e) { }
+        // 4. 回填业务事由与申请人
+        const finalDesc = params.description || `[${userName}]-[${params.projectName || '差旅出差'}]`;
+        rowDatas.DESCRIPTION = { dataType: 'MTEXT', value: finalDesc };
+        rowDatas.APPLICANT_ID = { dataType: 'PERSON', required: true, value: { value: userId, title: { zh_CN: userName } } };
+        rowDatas.COST_STANDARD_USER = { dataType: 'PERSON', readOnly: true, required: true, value: { value: userId, title: { zh_CN: userName } } };
+        rowDatas.F_FYF_DEF_001 = { dataType: 'DROPDOWN', hidden: true, required: true, value: { value: '0355ce0b3c3de1653e55bb00bc610000', title: { zh_CN: '差旅费-误餐补贴' } } };
+        rowDatas.EXPENSE_TYPE_ID = { hidden: true, required: true, value: { icon: 'e-group-meals', iconColor: '#3DBF76', title: { zh_CN: '误餐补助（誤餐補助）' }, value: mealTypeId } };
+        rowDatas.expenseType = { hidden: true, required: true, value: { icon: 'e-group-meals', iconColor: '#3DBF76', title: { zh_CN: '误餐补助（誤餐補助）' }, value: mealTypeId } };
+        rowDatas.needInvoice = { value: 'NOT_REQUIRED' };
+        rowDatas.expenseRecordInvoiceList = { value: [] };
+        rowDatas.expenseRecordAttachmentList = { value: [] };
+        rowDatas.ATTACH_COUNT = { dataType: 'NUMBER', hidden: true, readOnly: true, value: 0 };
+        rowDatas.INVOICE_COUNT = { dataType: 'NUMBER', hidden: true, readOnly: true, value: 0 };
+        rowDatas.OVER_STANDARD = { dataType: 'DROPDOWN', hidden: true, readOnly: true, value: { title: { zh_CN: '否' }, value: '6b8ff0809ebe11e88b7219c3aed96e32' } };
+        // 5. 持久化保存 (operationType: 'ADD')
+        const savePayload = {
+            rowDatas,
+            expenseRecordMessageList: [],
+            accountCurrencyId: currencyId,
+            applicantId: userId,
+            expenseTypeId: mealTypeId,
+            intersectionScope: [['03566dbf373de1653e55bb00bc610000']],
+            dimensionMappingQueryVOList: [],
+            operationType: 'ADD',
+            expenseRecordId,
+            version: 0,
+            billApplicantId: userId
+        };
+        let saveRes = await callNativeHttp('/fssc/expenseClaim/expenseRecord/validateAndSaveExpenseRecord', 'POST', savePayload, winObj) || await apiRequest('/fssc/expenseClaim/expenseRecord/validateAndSaveExpenseRecord', 'POST', savePayload, state);
+        let finalId = saveRes?.data?.expenseRecordId || expenseRecordId;
+        // 6. 核心防御：若保存后系统仍残留“住宿城市类型必填”禁止消息，立即执行一次针对当前已保存记录的 UPDATE 补齐
+        if (cityVO) {
+            try {
+                const checkRes = await callNativeHttp('/fssc/expenseClaim/expenseRecord/getExpenseTypeFieldRuleListAndAllValueVO', 'POST', { expenseRecordId: finalId, expenseTypeId: mealTypeId }, winObj);
+                const checkData = checkRes?.data;
+                const hasCityTypeIssue = checkData?.expenseRecordMessageList?.some((m) => m.columnCodes?.includes('F_ZSC_DEF_001') || m.message?.includes('住宿城市类型'));
+                if (hasCityTypeIssue && checkData?.rowDatas) {
+                    const fvcUpdate = await callNativeHttp('/fssc/expenseClaim/expenseRecordRuleExecute/fieldValueChange', 'POST', {
+                        fieldId: '035a4985309345af7f1906ec05cc0001',
+                        fieldName: '出差城市',
+                        columnCode: 'CITY',
+                        fieldValue: {
+                            value: cityVO.value,
+                            title: cityVO.title || { zh_CN: params.destinationCity }
+                        },
+                        recordDataVO: {
+                            accountCurrencyId: currencyId,
+                            expenseTypeId: mealTypeId,
+                            expenseRecordId: finalId,
+                            rowDatas: checkData.rowDatas
+                        }
+                    }, winObj);
+                    if (fvcUpdate?.data?.rowDatas?.F_ZSC_DEF_001?.value) {
+                        const updateRowDatas = Object.assign({}, checkData.rowDatas, fvcUpdate.data.rowDatas);
+                        await callNativeHttp('/fssc/expenseClaim/expenseRecord/validateAndSaveExpenseRecord', 'POST', {
+                            expenseRecordId: finalId,
+                            expenseTypeId: mealTypeId,
+                            version: checkData.version || 1,
+                            operationType: 'UPDATE',
+                            applicantId: userId,
+                            accountCurrencyId: currencyId,
+                            rowDatas: updateRowDatas,
+                            dimensionMappingQueryVOList: [],
+                            expenseRecordMessageList: []
+                        }, winObj);
+                        AutopilotLogger.info(`[createMealAllowance] 已成功通过二次联动治愈 F_ZSC_DEF_001: ${finalId}`);
+                    }
+                }
+            }
+            catch (healErr) {
+                AutopilotLogger.warn(`[createMealAllowance] 二次联动治愈跳过: ${healErr.message}`);
+            }
+        }
+        if (saveRes?.success && finalId) {
+            AutopilotLogger.info(`[createMealAllowance] 成功为正社员 ${userName} 创建合规误餐补助记录: ${finalId}`);
+            return finalId;
+        }
+        throw new Error(saveRes?.message || '保存误餐补助费用明细失败');
+    }
+
+    /**
+     * 现代浮动 Toast 消息通知组件 (替代阻塞式 alert 弹窗)
+     */
+    function showToast(type, message, duration = 3500) {
+        // 1. 先尝试利用宿主 Vue Element-UI $message (如果存在)
+        try {
+            const appVue = document.querySelector('#app')?.__vue__;
+            if (appVue && typeof appVue.$message === 'function') {
+                appVue.$message({
+                    type: type,
+                    message: message,
+                    duration: duration,
+                    showClose: true
+                });
+                return;
+            }
+        }
+        catch (e) { }
+        // 2. 独立高优先级 Floating Toast 容器
+        let container = document.getElementById('yn-toast-container');
+        if (!container) {
+            container = document.createElement('div');
+            container.id = 'yn-toast-container';
+            container.style.cssText = `
+            position: fixed;
+            top: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 99999999;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            pointer-events: none;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif;
+        `;
+            document.body.appendChild(container);
+        }
+        const toast = document.createElement('div');
+        const colorMap = {
+            success: { bg: '#f6ffed', border: '#b7eb8f', text: '#389e0d', icon: '✅', shadow: 'rgba(82, 196, 26, 0.2)' },
+            warning: { bg: '#fffbe6', border: '#ffe58f', text: '#d46b08', icon: '⚠️', shadow: 'rgba(250, 140, 22, 0.2)' },
+            error: { bg: '#fff1f0', border: '#ffa39e', text: '#cf1322', icon: '❌', shadow: 'rgba(245, 34, 45, 0.2)' },
+            info: { bg: '#e6f7ff', border: '#91d5ff', text: '#096dd9', icon: 'ℹ️', shadow: 'rgba(24, 144, 255, 0.2)' }
+        };
+        const cfg = colorMap[type] || colorMap.info;
+        toast.style.cssText = `
+        background: ${cfg.bg};
+        border: 1px solid ${cfg.border};
+        color: ${cfg.text};
+        box-shadow: 0 4px 16px ${cfg.shadow};
+        padding: 10px 18px;
+        border-radius: 8px;
+        font-size: 13.5px;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        max-width: 600px;
+        word-break: break-word;
+        pointer-events: auto;
+        opacity: 0;
+        transform: translateY(-12px);
+        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    `;
+        toast.innerHTML = `
+        <span style="font-size: 16px;">${cfg.icon}</span>
+        <span style="white-space: pre-wrap; line-height: 1.4;">${message}</span>
+    `;
+        container.appendChild(toast);
+        // 触发动画
+        requestAnimationFrame(() => {
+            toast.style.opacity = '1';
+            toast.style.transform = 'translateY(0)';
+        });
+        // 自动消失
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateY(-12px)';
+            setTimeout(() => {
+                if (toast.parentElement)
+                    toast.parentElement.removeChild(toast);
+            }, 300);
+        }, duration);
+    }
+
+    /**
+     * 通用声明式 A2UI (Agent-to-User Interface) AST 渲染引擎
+     *
+     * 核心设计范式：
+     * 1. 彻底解耦业务逻辑与 UI 渲染，所有表单与交互均由 AST 抽象语法树驱动；
+     * 2. 响应式双向数据绑定 (Model 2-Way Binding)，字段修改自动同步至 ast.model；
+     * 3. 动态适配多种业务场景：多波次出差矩阵、常规通勤、项目归属决策等，零硬编码！
+     */
+    function renderA2UiFromAST(ast, options = {}) {
+        const card = document.createElement('div');
+        card.className = 'webmcp-a2ui-card';
+        card.id = ast.id || `a2ui-${Math.random().toString(36).slice(2, 8)}`;
+        const renderNode = (node) => {
+            switch (node.type) {
+                case 'header': {
+                    const header = document.createElement('div');
+                    header.className = 'webmcp-a2ui-header';
+                    const badge = node.props?.badge || ast.badge;
+                    const title = node.props?.title || ast.title;
+                    const desc = node.props?.desc || node.props?.description || ast.description;
+                    header.innerHTML = `
+                    ${badge ? `<div class="webmcp-a2ui-badge">${badge}</div>` : ''}
+                    <div class="webmcp-a2ui-title">
+                        <span>⚡</span>
+                        <span>${title}</span>
+                    </div>
+                    ${desc ? `<div class="webmcp-a2ui-desc">${desc}</div>` : ''}
+                `;
+                    return header;
+                }
+                case 'alert': {
+                    const alert = document.createElement('div');
+                    const variant = node.props?.variant || 'info';
+                    alert.className = `webmcp-a2ui-alert ${variant}`;
+                    const icon = variant === 'success' ? '✅' : variant === 'warn' ? '⚠️' : variant === 'error' ? '❌' : 'ℹ️';
+                    alert.innerHTML = `
+                    <span style="font-size: 14px; flex-shrink: 0;">${icon}</span>
+                    <div style="flex: 1;">
+                        ${node.props?.title ? `<div style="font-weight: 600; margin-bottom: 2px;">${node.props.title}</div>` : ''}
+                        <div style="line-height: 1.4;">${node.props?.message || ''}</div>
+                    </div>
+                `;
+                    return alert;
+                }
+                case 'trip-timeline': {
+                    const timeline = document.createElement('div');
+                    timeline.className = 'webmcp-a2ui-timeline';
+                    const rawTrips = node.props?.trips || [];
+                    const trips = rawTrips.map((t, i) => normalizeTripSegment(t, i + 1));
+                    timeline.innerHTML = `
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+                        <span style="font-weight: 700; font-size: 12px; color: #334155;">✈️ 识别到的独立出差波次 (${trips.length} 轮):</span>
+                        <span style="font-size: 11px; color: #059669; font-weight: 600;">✓ 酒店与客户工厂已精准绑定</span>
+                    </div>
+                    ${trips.map((t, idx) => {
+                    let dateDisplay = '日期待定';
+                    if (t.startDate && t.endDate) {
+                        dateDisplay = (t.startDate === t.endDate) ? t.startDate : `${t.startDate} ~ ${t.endDate}`;
+                    }
+                    else if (t.startDate) {
+                        dateDisplay = t.startDate;
+                    }
+                    else if (t.endDate) {
+                        dateDisplay = t.endDate;
+                    }
+                    const destDisplay = t.destination ? `📍 ${t.destination}` : '📍 目的地待定';
+                    const hubDisplay = (t.arrivalStation || t.stationOrAirport) ? `🚆/✈️ ${t.arrivalStation || t.stationOrAirport}` : '';
+                    const hotelDisplay = t.hotelName ? `🏨 ${t.hotelName}` : '🏨 自理/未定';
+                    const custDisplay = (t.targetFactories || t.customerName) ? `🏭 ${t.targetFactories || t.customerName}` : '🏭 客户据点待定';
+                    return `
+                        <div class="webmcp-a2ui-timeline-item">
+                            <span class="webmcp-a2ui-wave-badge">第 ${t.tripNo || idx + 1} 波</span>
+                            <span class="webmcp-a2ui-wave-date">${dateDisplay}</span>
+                            <span class="webmcp-a2ui-wave-dest">${destDisplay}</span>
+                            ${hubDisplay ? `<span class="webmcp-a2ui-wave-hub" style="font-size: 11px; background: #e0f2fe; color: #0369a1; padding: 2px 6px; border-radius: 4px; font-weight: 500;">${hubDisplay}</span>` : ''}
+                            <span class="webmcp-a2ui-wave-hotel">${hotelDisplay}</span>
+                            <span class="webmcp-a2ui-wave-customer" title="${t.targetFactories || t.customerName || ''}">${custDisplay}</span>
+                        </div>
+                        `;
+                }).join('')}
+                `;
+                    return timeline;
+                }
+                case 'grid': {
+                    const grid = document.createElement('div');
+                    grid.className = 'webmcp-a2ui-grid';
+                    const cols = node.props?.columns || 2;
+                    grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+                    if (node.props?.gap)
+                        grid.style.gap = node.props.gap;
+                    if (node.children) {
+                        node.children.forEach(c => grid.appendChild(renderNode(c)));
+                    }
+                    return grid;
+                }
+                case 'group': {
+                    const grp = document.createElement('div');
+                    grp.className = 'webmcp-a2ui-group';
+                    if (node.props?.title) {
+                        const t = document.createElement('div');
+                        t.style.fontWeight = '600';
+                        t.style.fontSize = '12px';
+                        t.style.marginBottom = '6px';
+                        t.textContent = node.props.title;
+                        grp.appendChild(t);
+                    }
+                    if (node.children) {
+                        node.children.forEach(c => grp.appendChild(renderNode(c)));
+                    }
+                    return grp;
+                }
+                case 'input': {
+                    const wrap = document.createElement('div');
+                    wrap.className = 'webmcp-a2ui-field';
+                    wrap.style.position = 'relative';
+                    const bindKey = node.bind || '';
+                    const curVal = (bindKey && ast.model[bindKey] !== undefined) ? ast.model[bindKey] : (node.props?.defaultValue || '');
+                    if (node.props?.label) {
+                        const lbl = document.createElement('label');
+                        lbl.className = 'webmcp-a2ui-label';
+                        lbl.textContent = node.props.label;
+                        wrap.appendChild(lbl);
+                    }
+                    const inp = document.createElement('input');
+                    inp.type = node.props?.inputType || 'text';
+                    inp.className = 'webmcp-a2ui-input';
+                    inp.value = curVal;
+                    if (node.props?.placeholder)
+                        inp.placeholder = node.props.placeholder;
+                    if (node.props?.disabled)
+                        inp.disabled = true;
+                    inp.addEventListener('input', () => {
+                        if (bindKey) {
+                            ast.model[bindKey] = inp.value;
+                            options.onChange?.(bindKey, inp.value, ast.model);
+                        }
+                    });
+                    wrap.appendChild(inp);
+                    // ==========================================
+                    // 宿主系统项目维表实时检索与下拉候选 (0 硬编码，动态模糊匹配)
+                    // ==========================================
+                    if (bindKey === 'projectName' || node.props?.isProjectSearch) {
+                        const dropdown = document.createElement('div');
+                        dropdown.className = 'webmcp-a2ui-dropdown';
+                        dropdown.style.display = 'none';
+                        dropdown.style.position = 'absolute';
+                        dropdown.style.zIndex = '1050';
+                        dropdown.style.left = '0';
+                        dropdown.style.right = '0';
+                        dropdown.style.top = '100%';
+                        dropdown.style.maxHeight = '200px';
+                        dropdown.style.overflowY = 'auto';
+                        dropdown.style.background = '#ffffff';
+                        dropdown.style.border = '1px solid #cbd5e1';
+                        dropdown.style.borderRadius = '6px';
+                        dropdown.style.boxShadow = '0 6px 16px rgba(0,0,0,0.12)';
+                        dropdown.style.marginTop = '2px';
+                        wrap.appendChild(dropdown);
+                        let debounceTimer = null;
+                        const doSearch = (query) => {
+                            if (debounceTimer)
+                                clearTimeout(debounceTimer);
+                            debounceTimer = setTimeout(async () => {
+                                const effectiveState = options.state || window.__fssc_state;
+                                if (!effectiveState)
+                                    return;
+                                dropdown.style.display = 'block';
+                                dropdown.innerHTML = `
+                                <div style="padding: 8px 12px; color: #64748b; font-size: 11px; display: flex; align-items: center; gap: 6px;">
+                                    <span class="webmcp-spinner" style="width: 12px; height: 12px;"></span>
+                                    <span>正在检索系统项目维表...</span>
+                                </div>
+                            `;
+                                try {
+                                    const results = await searchProjectList(query, effectiveState);
+                                    if (!results || results.length === 0) {
+                                        dropdown.innerHTML = `
+                                        <div style="padding: 8px 12px; color: #94a3b8; font-size: 11px;">
+                                            未匹配到项目，请核对项目名称或编号
+                                        </div>
+                                    `;
+                                        return;
+                                    }
+                                    dropdown.innerHTML = results.map(item => `
+                                    <div class="webmcp-a2ui-proj-option" data-name="${item.name}" data-code="${item.code}" style="padding: 7px 10px; cursor: pointer; border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+                                        <span style="font-weight: 500; color: #1e293b;">${item.name}</span>
+                                        <span style="font-size: 10.5px; color: #3b82f6; background: #eff6ff; padding: 2px 6px; border-radius: 4px;">${item.code || 'PRJ'}</span>
+                                    </div>
+                                `).join('');
+                                    dropdown.querySelectorAll('.webmcp-a2ui-proj-option').forEach(optEl => {
+                                        optEl.addEventListener('mouseenter', () => {
+                                            optEl.style.background = '#f8fafc';
+                                        });
+                                        optEl.addEventListener('mouseleave', () => {
+                                            optEl.style.background = '';
+                                        });
+                                        optEl.addEventListener('mousedown', (e) => {
+                                            e.preventDefault();
+                                            const name = optEl.getAttribute('data-name') || '';
+                                            inp.value = name;
+                                            ast.model[bindKey] = name;
+                                            const matched = results.find(r => r.name === name);
+                                            if (matched) {
+                                                effectiveState.selectedProject = {
+                                                    value: matched.id,
+                                                    title: matched.name,
+                                                    code: matched.code,
+                                                    vo: matched.vo
+                                                };
+                                            }
+                                            options.onChange?.(bindKey, name, ast.model);
+                                            dropdown.style.display = 'none';
+                                        });
+                                    });
+                                }
+                                catch (e) {
+                                    dropdown.innerHTML = `<div style="padding: 8px 12px; color: #ef4444; font-size: 11px;">项目查询失败: ${e.message}</div>`;
+                                }
+                            }, 250);
+                        };
+                        inp.addEventListener('focus', () => {
+                            if (inp.value.trim().length > 0) {
+                                doSearch(inp.value.trim());
+                            }
+                        });
+                        inp.addEventListener('input', () => {
+                            doSearch(inp.value.trim());
+                        });
+                        inp.addEventListener('blur', () => {
+                            setTimeout(() => {
+                                dropdown.style.display = 'none';
+                            }, 250);
+                        });
+                    }
+                    return wrap;
+                }
+                case 'select': {
+                    const wrap = document.createElement('div');
+                    wrap.className = 'webmcp-a2ui-field';
+                    const bindKey = node.bind || '';
+                    const curVal = (bindKey && ast.model[bindKey] !== undefined) ? ast.model[bindKey] : (node.props?.defaultValue || '');
+                    if (node.props?.label) {
+                        const lbl = document.createElement('label');
+                        lbl.className = 'webmcp-a2ui-label';
+                        lbl.textContent = node.props.label;
+                        wrap.appendChild(lbl);
+                    }
+                    const sel = document.createElement('select');
+                    sel.className = 'webmcp-a2ui-input';
+                    (node.props?.options || []).forEach((opt) => {
+                        const o = document.createElement('option');
+                        o.value = opt.value;
+                        o.textContent = opt.label;
+                        if (opt.value === curVal)
+                            o.selected = true;
+                        sel.appendChild(o);
+                    });
+                    sel.addEventListener('change', () => {
+                        if (bindKey) {
+                            ast.model[bindKey] = sel.value;
+                            options.onChange?.(bindKey, sel.value, ast.model);
+                        }
+                    });
+                    wrap.appendChild(sel);
+                    return wrap;
+                }
+                case 'toggle': {
+                    const wrap = document.createElement('div');
+                    wrap.className = 'webmcp-a2ui-mode-toggle';
+                    const bindKey = node.bind || '';
+                    const curVal = bindKey ? ast.model[bindKey] : '';
+                    const opts = node.props?.options || [];
+                    opts.forEach((opt) => {
+                        const btn = document.createElement('button');
+                        btn.type = 'button';
+                        btn.className = `webmcp-a2ui-mode-btn ${curVal === opt.value ? 'active' : ''}`;
+                        btn.innerHTML = `
+                        ${opt.icon ? `<span style="font-size: 14px;">${opt.icon}</span>` : ''}
+                        <div style="text-align: left;">
+                            <div style="font-weight: 600; font-size: 12px;">${opt.label}</div>
+                            ${opt.subLabel ? `<div style="font-size: 10.5px; opacity: 0.85;">${opt.subLabel}</div>` : ''}
+                        </div>
+                    `;
+                        btn.addEventListener('click', () => {
+                            if (bindKey) {
+                                ast.model[bindKey] = opt.value;
+                                wrap.querySelectorAll('.webmcp-a2ui-mode-btn').forEach(b => b.classList.remove('active'));
+                                btn.classList.add('active');
+                                options.onChange?.(bindKey, opt.value, ast.model);
+                            }
+                        });
+                        wrap.appendChild(btn);
+                    });
+                    return wrap;
+                }
+                case 'button-group': {
+                    const btnGroup = document.createElement('div');
+                    btnGroup.style.display = 'flex';
+                    btnGroup.style.gap = '8px';
+                    btnGroup.style.margin = '4px 0';
+                    if (node.children) {
+                        node.children.forEach(c => btnGroup.appendChild(renderNode(c)));
+                    }
+                    return btnGroup;
+                }
+                case 'button': {
+                    const btn = document.createElement('button');
+                    btn.type = 'button';
+                    if (node.id)
+                        btn.id = node.id;
+                    const styleType = node.props?.style || 'secondary';
+                    btn.className = `webmcp-btn ${styleType === 'primary' ? 'webmcp-btn-primary' : 'webmcp-btn-secondary'}`;
+                    if (styleType === 'success') {
+                        btn.style.background = 'linear-gradient(135deg, #10b981 0%, #059669 100%)';
+                        btn.style.color = '#ffffff';
+                        btn.style.border = 'none';
+                        btn.style.flex = '1.3';
+                    }
+                    else {
+                        btn.style.flex = '1';
+                    }
+                    btn.style.fontSize = '12px';
+                    btn.style.padding = '7px 12px';
+                    btn.innerHTML = `${node.props?.icon ? `<span>${node.props.icon}</span> ` : ''}${node.props?.label || '确定'}`;
+                    btn.addEventListener('click', () => {
+                        const actionKey = node.props?.actionKey || node.id;
+                        options.onAction?.(actionKey, ast.model, ast);
+                    });
+                    return btn;
+                }
+                case 'table': {
+                    const wrap = document.createElement('div');
+                    wrap.style.maxHeight = '220px';
+                    wrap.style.overflowY = 'auto';
+                    wrap.style.border = '1px solid #e2e8f0';
+                    wrap.style.borderRadius = '8px';
+                    wrap.style.fontSize = '11.5px';
+                    wrap.style.marginTop = '4px';
+                    const records = node.props?.records || [];
+                    const totalCount = node.props?.totalCount || records.length;
+                    wrap.innerHTML = `
+                    <table style="width: 100%; border-collapse: collapse; text-align: left;">
+                        <thead>
+                            <tr style="background: #f8fafc; border-bottom: 1px solid #e2e8f0; color: #64748b;">
+                                <th style="padding: 6px 8px;">#</th>
+                                <th style="padding: 6px 8px;">日期</th>
+                                <th style="padding: 6px 8px;">类别</th>
+                                <th style="padding: 6px 8px;">金额</th>
+                                <th style="padding: 6px 8px;">行程 (起 ➔ 止)</th>
+                                <th style="padding: 6px 8px;">费用说明</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${records.map((r, i) => `
+                                <tr style="border-bottom: 1px solid #f1f5f9; ${r.isModified ? 'background: #f0fdf4;' : ''}">
+                                    <td style="padding: 5px 8px; color: #94a3b8;">${i + 1}</td>
+                                    <td style="padding: 5px 8px; white-space: nowrap;">${r.invoiceDate || '-'}</td>
+                                    <td style="padding: 5px 8px;">
+                                        <span class="webmcp-tag" style="font-size: 10.5px;">${r.expenseTypeName || r.type || '出租车'}</span>
+                                        ${r.subInvoices && r.subInvoices.length > 0 ? `<span style="display:inline-block; font-size:10px; background:#e0e7ff; color:#4338ca; border-radius:3px; padding:1px 4px; margin-left:4px;" title="已绑定 ${r.subInvoices.length} 张过路费发票(¥${r.tollAmount || 0})">+${r.subInvoices.length}过路费</span>` : ''}
+                                        ${r.errorMessages && r.errorMessages.length > 0 ? `<span style="display:inline-block; font-size:9.5px; background:#fef2f2; color:#ef4444; border:1px solid #fecaca; border-radius:3px; padding:1px 4px; margin-left:4px;" title="${r.errorMessages.join(', ')}">⚠️ ${r.errorMessages[0]}</span>` : ''}
+                                    </td>
+                                    <td style="padding: 5px 8px; font-weight: 600;">¥${r.amount || 0}</td>
+                                    <td style="padding: 5px 8px; color: #334155;">${r.startAddress || '-'} ➔ ${r.endAddress || '-'}</td>
+                                    <td style="padding: 5px 8px; color: #64748b; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${r.description || ''}">${r.description || '-'}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                    ${totalCount > records.length ? `<div style="text-align: center; padding: 6px; color: #94a3b8; font-size: 11px;">还有 ${totalCount - records.length} 笔记录，可在报销批量助手中查看完整明细</div>` : ''}
+                `;
+                    return wrap;
+                }
+                case 'divider': {
+                    const hr = document.createElement('hr');
+                    hr.style.border = '0';
+                    hr.style.borderTop = '1px solid #e2e8f0';
+                    hr.style.margin = '8px 0';
+                    return hr;
+                }
+                default: {
+                    const div = document.createElement('div');
+                    div.id = node.id;
+                    if (node.children) {
+                        node.children.forEach(c => div.appendChild(renderNode(c)));
+                    }
+                    return div;
+                }
+            }
+        };
+        if (ast.layout) {
+            ast.layout.forEach(node => {
+                card.appendChild(renderNode(node));
+            });
+        }
+        return card;
+    }
+    /**
+     * 依据费用推断结果动态生成对应的声明式 A2UI AST
+     */
+    function generateExpenseBatchA2UiAST(planResult, state) {
+        const hasMatchedTrips = Boolean(planResult.matchedTrips && planResult.matchedTrips.length > 0);
+        const trips = planResult.matchedTrips || [];
+        const records = planResult.records || state.invoices || [];
+        const model = {
+            tripType: planResult.tripType,
+            companyName: planResult.companyName || 'IVISION',
+            customerName: planResult.customerName || '',
+            hotelName: planResult.hotelName || '',
+            stationOrAirport: planResult.stationOrAirport || '机场/高铁站',
+            projectName: planResult.projectName || '',
+            proxyPersonName: planResult.proxyPersonName || '',
+            customDescription: ''
+        };
+        const layout = [];
+        if (hasMatchedTrips) {
+            // ==========================================
+            // 场景 A: 已提供出差行程表或发票池自动聚类波次 (多波次精准对齐)
+            // ==========================================
+            layout.push({
+                id: 'header-wave',
+                type: 'header',
+                props: {
+                    title: '多波次出差行程与费用智能匹配',
+                    badge: 'A2UI 智能规划 (多波次对齐)',
+                    desc: `副驾已识别 <strong>${trips.length}</strong> 个独立出差波次，自动对齐 <strong>${records.length}</strong> 笔费用记录的酒店、交通枢纽及往返行程。`
+                }
+            });
+            if (planResult.missingFields && planResult.missingFields.length > 0) {
+                layout.push({
+                    id: 'alert-wave-missing',
+                    type: 'alert',
+                    props: {
+                        variant: 'warn',
+                        title: '建议确认或补充信息',
+                        message: `多波次已自动匹配。请在下方表单确认: ${planResult.missingFields.join('、')}`
+                    }
+                });
+            }
+            else {
+                layout.push({
+                    id: 'alert-wave-success',
+                    type: 'alert',
+                    props: {
+                        variant: 'success',
+                        title: '✅ 多波次行程自动匹配成功',
+                        message: '各波次的目的地、酒店与往返交通枢纽已精准匹配！请确认关联项目及代外驻同事姓名即可。'
+                    }
+                });
+            }
+            // 渲染独立卡片矩阵
+            layout.push({
+                id: 'timeline-trips',
+                type: 'trip-timeline',
+                props: {
+                    trips: trips
+                }
+            });
+            // 呈现需要用户决策的字段 (客户名称、项目号、外驻同事姓名、公司基准据点)
+            layout.push({
+                id: 'grid-wave-inputs',
+                type: 'grid',
+                props: { columns: 2 },
+                children: [
+                    {
+                        id: 'input-customer',
+                        type: 'input',
+                        bind: 'customerName',
+                        props: { label: '拜访客户名称 (可选)', placeholder: '例如: 某某科技、客户公司简称' }
+                    },
+                    {
+                        id: 'input-proj',
+                        type: 'input',
+                        bind: 'projectName',
+                        props: { label: '关联项目 (可选)', placeholder: '例如: PRJ-2026-001' }
+                    },
+                    {
+                        id: 'input-proxy',
+                        type: 'input',
+                        bind: 'proxyPersonName',
+                        props: { label: '代外驻同事报销 (可选)', placeholder: '外驻同事姓名，如: 张三' }
+                    },
+                    {
+                        id: 'input-company',
+                        type: 'input',
+                        bind: 'companyName',
+                        props: { label: '公司基准据点', placeholder: '默认 IVISION' }
+                    },
+                    {
+                        id: 'input-desc',
+                        type: 'input',
+                        bind: 'customDescription',
+                        props: { label: '统一费用说明 (可选)', placeholder: '留空则按 [外驻:姓名] 项目号 客户 自动组装' }
+                    }
+                ]
+            });
+        }
+        else {
+            // ==========================================
+            // 场景 B: 未提供行程表 (常规单程或市内拜访)
+            // ==========================================
+            layout.push({
+                id: 'header-normal',
+                type: 'header',
+                props: {
+                    title: '智能费用分类与行程推断',
+                    badge: 'A2UI 费用批量规划',
+                    desc: `已检测到 <strong>${records.length}</strong> 笔费用记录，已智能规划 <strong>${planResult.modifiedCount}</strong> 笔行程/类别。`
+                }
+            });
+            if (planResult.missingFields && planResult.missingFields.length > 0) {
+                layout.push({
+                    id: 'alert-missing',
+                    type: 'alert',
+                    props: {
+                        variant: 'warn',
+                        title: '建议补充关键出行信息',
+                        message: planResult.missingFields.join('、')
+                    }
+                });
+            }
+            layout.push({
+                id: 'toggle-mode',
+                type: 'toggle',
+                bind: 'tripType',
+                props: {
+                    options: [
+                        { value: 'BUSINESS_TRIP', label: '异地出差模式', subLabel: '机场/高铁 + 酒店早出晚归', icon: '✈️' },
+                        { value: 'LOCAL_COMMUTE', label: '市内日常拜访', subLabel: '公司 ⇄ 客户 日常往返', icon: '🏢' }
+                    ]
+                }
+            });
+            layout.push({
+                id: 'grid-normal-inputs',
+                type: 'grid',
+                props: { columns: 2 },
+                children: [
+                    {
+                        id: 'input-company',
+                        type: 'input',
+                        bind: 'companyName',
+                        props: { label: '公司基准地', placeholder: '默认 IVISION' }
+                    },
+                    {
+                        id: 'input-customer',
+                        type: 'input',
+                        bind: 'customerName',
+                        props: { label: '拜访客户名称', placeholder: '例如: 客户公司全称或简称' }
+                    },
+                    {
+                        id: 'input-hotel',
+                        type: 'input',
+                        bind: 'hotelName',
+                        props: { label: '入住酒店', placeholder: '例如: 某某酒店' }
+                    },
+                    {
+                        id: 'input-station',
+                        type: 'input',
+                        bind: 'stationOrAirport',
+                        props: { label: '机场/车站', placeholder: '例如: 机场 / 高铁站' }
+                    },
+                    {
+                        id: 'input-project',
+                        type: 'input',
+                        bind: 'projectName',
+                        props: { label: '关联项目 (可选)', placeholder: '例如: PRJ-2026-001' }
+                    },
+                    {
+                        id: 'input-proxy',
+                        type: 'input',
+                        bind: 'proxyPersonName',
+                        props: { label: '代外驻同事报销 (可选)', placeholder: '外驻同事姓名，如: 张三' }
+                    }
+                ]
+            });
+        }
+        if (planResult.hasConcurrentTolls && planResult.mergeTollsWithTaxi === undefined) {
+            layout.push({
+                id: 'alert-toll-inquiry',
+                type: 'alert',
+                props: {
+                    variant: 'warn',
+                    title: '❓ 发现有出租车发票同期的过路费是否合并生成？',
+                    message: `检测到发票清单中包含 <strong>${planResult.concurrentTollsCount || 1}</strong> 笔与出租车行程同期的过路费/通行费发票。您可以选择将过路费与出租车合并（1笔费用挂载2张发票），或独立逐条生成单笔费用。`
+                }
+            });
+            layout.push({
+                id: 'btn-group-toll-decision',
+                type: 'button-group',
+                children: [
+                    {
+                        id: 'btn-merge-tolls',
+                        type: 'button',
+                        props: { label: '🛣️ 合并生成 (1笔费用含多张发票)', style: 'primary', actionKey: 'applyMergeTolls' }
+                    },
+                    {
+                        id: 'btn-separate-tolls',
+                        type: 'button',
+                        props: { label: '📄 独立逐条生成 (每张独立单笔)', style: 'secondary', actionKey: 'applySeparateTolls' }
+                    }
+                ]
+            });
+        }
+        else if (planResult.boundTollsCount && planResult.boundTollsCount > 0) {
+            layout.push({
+                id: 'alert-toll-binding',
+                type: 'alert',
+                props: {
+                    variant: 'info',
+                    title: '🛣️ 过路费已智能合并绑定',
+                    message: `已自动将 <strong>${planResult.boundTollsCount}</strong> 张过路费/通行费发票按时间窗口合并至对应的出租车记录中（一笔费用合并多张发票）。如需改为独立生成，可随时切换。`
+                }
+            });
+            layout.push({
+                id: 'btn-group-toll-switch-sep',
+                type: 'button-group',
+                children: [
+                    {
+                        id: 'btn-switch-to-separate',
+                        type: 'button',
+                        props: { label: '📄 切换为独立逐条生成', style: 'secondary', actionKey: 'applySeparateTolls' }
+                    }
+                ]
+            });
+        }
+        else if (planResult.mergeTollsWithTaxi === false && (planResult.concurrentTollsCount || 0) > 0) {
+            layout.push({
+                id: 'alert-toll-separate',
+                type: 'alert',
+                props: {
+                    variant: 'info',
+                    title: '📄 过路费已独立逐条生成',
+                    message: `已将 <strong>${planResult.concurrentTollsCount}</strong> 张过路费/通行费发票保持为独立单笔费用记录（每张发票独立单笔）。如需改为与出租车合并，可随时切换。`
+                }
+            });
+            layout.push({
+                id: 'btn-group-toll-switch-merge',
+                type: 'button-group',
+                children: [
+                    {
+                        id: 'btn-switch-to-merge',
+                        type: 'button',
+                        props: { label: '🛣️ 切换为合并生成 (1笔多张发票)', style: 'secondary', actionKey: 'applyMergeTolls' }
+                    }
+                ]
+            });
+        }
+        // 底部操作按钮组
+        layout.push({
+            id: 'btn-group-actions',
+            type: 'button-group',
+            children: [
+                {
+                    id: 'btn-reinfer',
+                    type: 'button',
+                    props: { label: '重新推断', icon: '✨', style: 'secondary', actionKey: 'reinfer' }
+                },
+                {
+                    id: 'btn-open-modal',
+                    type: 'button',
+                    props: { label: '打开批量助手', icon: '📋', style: 'secondary', actionKey: 'openModal' }
+                },
+                {
+                    id: 'btn-batch-save',
+                    type: 'button',
+                    props: { label: '一键批量保存', icon: '🚀', style: 'success', actionKey: 'batchSave' }
+                }
+            ]
+        });
+        // 表格预览
+        layout.push({
+            id: 'table-preview',
+            type: 'table',
+            props: {
+                records: records.slice(0, 15),
+                totalCount: records.length
+            }
+        });
+        return {
+            version: '1.0',
+            id: `a2ui-exp-${Math.random().toString(36).slice(2, 8)}`,
+            title: hasMatchedTrips ? '多波次出差行程与费用智能匹配' : '智能费用分类与行程推断',
+            badge: hasMatchedTrips ? 'A2UI 智能规划 (多波次)' : 'A2UI 费用批量规划',
+            description: hasMatchedTrips ? `共匹配 ${trips.length} 轮独立行程` : `共检测 ${records.length} 笔费用`,
+            model,
+            layout
+        };
+    }
+    /**
+     * WebMCP A2UI 费用批量规划与行程推断交互组件 (由声明式 AST 驱动)
+     */
+    function renderA2UiExpenseBatchWidget(options) {
+        const { container, state, initialPlan, onReinfer, onOpenModal, onBatchSave } = options;
+        let currentPlan = initialPlan || state.expensePlan;
+        if (!currentPlan && state.invoices && state.invoices.length > 0) {
+            currentPlan = inferSmartExpensePlan(state.invoices, { tripType: 'AUTO' });
+            state.expensePlan = currentPlan;
+        }
+        const wrapper = document.createElement('div');
+        wrapper.className = 'webmcp-a2ui-widget-wrapper';
+        const render = () => {
+            wrapper.innerHTML = '';
+            if (!currentPlan)
+                return;
+            const ast = generateExpenseBatchA2UiAST(currentPlan, state);
+            currentPlan.a2uiAST = ast;
+            const cardEl = renderA2UiFromAST(ast, {
+                state,
+                onAction: async (actionKey, model) => {
+                    if (actionKey === 'reinfer') {
+                        const newOpts = {
+                            tripType: model.tripType,
+                            companyName: model.companyName,
+                            customerName: model.customerName,
+                            hotelName: model.hotelName,
+                            stationOrAirport: model.stationOrAirport,
+                            projectName: model.projectName,
+                            proxyPersonName: model.proxyPersonName,
+                            customDescription: model.customDescription,
+                            trips: currentPlan?.matchedTrips
+                        };
+                        currentPlan = inferSmartExpensePlan(state.invoices || [], newOpts);
+                        state.expensePlan = currentPlan;
+                        if (onReinfer)
+                            onReinfer(newOpts);
+                        render();
+                        showToast('success', `已根据最新输入重新推断 (规划 ${currentPlan.modifiedCount} 笔)`);
+                    }
+                    else if (actionKey === 'applyMergeTolls') {
+                        const newOpts = {
+                            ...model,
+                            mergeTollsWithTaxi: true,
+                            trips: currentPlan?.matchedTrips
+                        };
+                        currentPlan = inferSmartExpensePlan(state.invoices || [], newOpts);
+                        state.expensePlan = currentPlan;
+                        render();
+                        showToast('success', '已合并同期过路费与出租车发票（1笔费用挂载多张发票）');
+                    }
+                    else if (actionKey === 'applySeparateTolls') {
+                        const newOpts = {
+                            ...model,
+                            mergeTollsWithTaxi: false,
+                            trips: currentPlan?.matchedTrips
+                        };
+                        currentPlan = inferSmartExpensePlan(state.invoices || [], newOpts);
+                        state.expensePlan = currentPlan;
+                        render();
+                        showToast('info', '已按独立单笔费用生成过路费发票（每张发票独立单笔）');
+                    }
+                    else if (actionKey === 'openModal') {
+                        if (onOpenModal)
+                            onOpenModal();
+                        else {
+                            const topDoc = (typeof window !== 'undefined' && window.top?.document) ? window.top.document : document;
+                            Promise.resolve().then(function () { return batchEditExpenseModal; }).then(m => m.openBatchEditExpenseModal(topDoc));
+                        }
+                    }
+                    else if (actionKey === 'batchSave') {
+                        try {
+                            if (onBatchSave) {
+                                await onBatchSave();
+                            }
+                            else {
+                                const sourceInvoices = state.expensePlan?.records || state.invoices || [];
+                                const targets = sourceInvoices.filter(i => i.isModified || i.status === '就绪' || i.status === '待流转');
+                                const fallbackTargets = targets.length > 0 ? targets : sourceInvoices;
+                                if (fallbackTargets.length === 0) {
+                                    showToast('error', '批量保存失败: 没有找到可保存的费用记录，请先加载发票数据');
+                                    render();
+                                    return;
+                                }
+                                const res = await batchSaveExpenseItemsApi(fallbackTargets, state);
+                                showToast('success', `批量保存完成！成功 ${res.successCount} 笔，失败 ${res.failCount} 笔`);
+                            }
+                            render();
+                        }
+                        catch (err) {
+                            showToast('error', `批量保存异常: ${err.message}`);
+                        }
+                    }
+                },
+                onChange: (bindKey, value, model) => {
+                    // 如果用户切换了 tripType 模式，自动触发重新推断
+                    if (bindKey === 'tripType') {
+                        const newOpts = {
+                            ...model,
+                            tripType: value,
+                            trips: currentPlan?.matchedTrips
+                        };
+                        currentPlan = inferSmartExpensePlan(state.invoices || [], newOpts);
+                        state.expensePlan = currentPlan;
+                        if (onReinfer)
+                            onReinfer(newOpts);
+                        render();
+                    }
+                }
+            });
+            wrapper.appendChild(cardEl);
+        };
+        render();
+        container.appendChild(wrapper);
+        return wrapper;
+    }
+
+    const TRAJECTORY_STATE = {
+        currentRunId: generateRunId(),
+        events: [],
+        listeners: [],
+        sequenceCounter: 0
+    };
+    function generateRunId() {
+        const d = new Date();
+        const pad = (n) => String(n).padStart(2, '0');
+        const timeStr = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+        const rand = Math.random().toString(36).substring(2, 6);
+        return `run-${timeStr}-${rand}`;
+    }
+    function formatTimestamp(d) {
+        const pad = (n) => String(n).padStart(2, '0');
+        const padMs = (n) => String(n).padStart(3, '0');
+        return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${padMs(d.getMilliseconds())}`;
+    }
+    /**
+     * 追加单条运行事件 (Append-Only Event Stream)
+     * 符合 DeepSeek Harness 规范：模型看到的以及做出的每一个动作均记录在此
+     */
+    function recordTrajectoryEvent(params) {
+        const now = new Date();
+        TRAJECTORY_STATE.sequenceCounter++;
+        const event = {
+            id: `evt-${now.getTime()}-${Math.random().toString(36).substring(2, 7)}`,
+            runId: params.runId || TRAJECTORY_STATE.currentRunId,
+            sequenceNo: TRAJECTORY_STATE.sequenceCounter,
+            timestamp: formatTimestamp(now),
+            epochMs: now.getTime(),
+            source: params.source,
+            title: params.title,
+            summary: params.summary,
+            durationMs: params.durationMs,
+            data: params.data ?? null,
+            meta: params.meta
+        };
+        // 内存不可变追加
+        TRAJECTORY_STATE.events.push(event);
+        // 限制最大缓存事件数，防止超长会话内存泄漏 (保留最近 2000 个事件)
+        if (TRAJECTORY_STATE.events.length > 2000) {
+            TRAJECTORY_STATE.events.shift();
+        }
+        // 触发订阅者更新
+        TRAJECTORY_STATE.listeners.forEach(cb => {
+            try {
+                cb(event);
+            }
+            catch (e) {
+                console.error('[Trajectory] 触发监听回调异常', e);
+            }
+        });
+        return event;
+    }
+
+    const WEBMCP_STATE = {
+        initialized: false,
+        registeredTools: [],
+        toolDefs: [],
+        toolMap: new Map(),
+        logs: [],
+        listeners: []
+    };
+    function recordLog(log) {
+        WEBMCP_STATE.logs.unshift(log);
+        if (WEBMCP_STATE.logs.length > 50)
+            WEBMCP_STATE.logs.pop();
+        WEBMCP_STATE.listeners.forEach(cb => {
+            try {
+                cb(log);
+            }
+            catch (e) { }
+        });
+        // 同时录入 DeepSeek Harness 风格的全局 Trajectory 事件流
+        recordTrajectoryEvent({
+            source: log.error ? 'ERROR' : (log.toolName === 'fssc_get_applicant_context' ? 'CONTEXT' : 'TOOL_RESULT'),
+            title: `WebMCP Tool: ${log.toolName}`,
+            summary: log.error ? `Error: ${log.error}` : `Success (${log.durationMs}ms)`,
+            durationMs: log.durationMs,
+            data: {
+                toolName: log.toolName,
+                parameters: log.parameters,
+                result: log.result,
+                error: log.error
+            }
+        });
+    }
+    /**
+     * 初始化 WebMCP Polyfill 并向 document.modelContext 注册出差申请全套工具集 (通用动态架构)
+     */
+    function initWebMcpSystem(state) {
+        if (WEBMCP_STATE.initialized)
+            return;
+        try {
+            // 1. 激活高性能 W3C WebMCP 标准 Polyfill (纯编程式注册，免除声明式表单的全文档 DOM 监听)
+            initializeWebMCPPolyfill({ declarativeForms: false });
+            AutopilotLogger.info('[WebMCP] document.modelContext polyfill 已就绪');
+        }
+        catch (e) {
+            AutopilotLogger.warn(`[WebMCP] 初始化 Polyfill 异常: ${e.message}`);
+        }
+        const doc = document;
+        const hasModelContext = Boolean(doc.modelContext && typeof doc.modelContext.registerTool === 'function');
+        if (!hasModelContext) {
+            AutopilotLogger.warn('[WebMCP] 当前环境未检测到 document.modelContext.registerTool，使用内部注册模式');
+        }
+        // 2. 注册通用 WebMCP 工具集
+        const tools = [
+            {
+                name: 'fssc_get_applicant_context',
+                description: '动态获取当前登录用户主数据（姓名/工号/邮箱）、出差单据模板定义与公司差旅报销规程标准',
+                inputSchema: {
+                    type: 'object',
+                    properties: {}
+                },
+                execute: async () => {
+                    const startTime = Date.now();
+                    const userInfo = await fetchLoginUserInfo(state);
+                    const res = {
+                        currentUser: {
+                            userId: userInfo.userId || state.applicantId,
+                            name: userInfo.userName,
+                            userCode: userInfo.userCode || '',
+                            email: userInfo.email || ''
+                        },
+                        billDefine: {
+                            billDefineId: TRIP_CONSTANTS.billDefineId,
+                            billDefineName: '出張伺書',
+                            billTypeCode: TRIP_CONSTANTS.billTypeCode
+                        },
+                        regulations: {
+                            hotelAllowance: {
+                                tier1Cities: ['上海', '广州', '北京', '深圳'],
+                                tier1Limit: 800,
+                                tier2Limit: 700
+                            },
+                            mealAllowance: {
+                                standardDaily: 300,
+                                travelHalfDay: 150
+                            }
+                        }
+                    };
+                    recordLog({
+                        id: Math.random().toString(36).substring(2, 9),
+                        timestamp: new Date().toLocaleTimeString(),
+                        toolName: 'fssc_get_applicant_context',
+                        parameters: {},
+                        result: res,
+                        durationMs: Date.now() - startTime
+                    });
+                    return res;
+                }
+            },
+            {
+                name: 'fssc_query_employee',
+                description: '在元年云人员维表中检索任意员工账号（用于驻场同事、项目组成员的出差代办申请）',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        name: { type: 'string', description: '员工姓名，例如：张三、李四等' }
+                    },
+                    required: ['name']
+                },
+                execute: async (params) => {
+                    const startTime = Date.now();
+                    try {
+                        const vo = await fetchPersonnelVO(params.name, state);
+                        const res = { success: true, person: vo };
+                        recordLog({
+                            id: Math.random().toString(36).substring(2, 9),
+                            timestamp: new Date().toLocaleTimeString(),
+                            toolName: 'fssc_query_employee',
+                            parameters: params,
+                            result: res,
+                            durationMs: Date.now() - startTime
+                        });
+                        return res;
+                    }
+                    catch (err) {
+                        recordLog({
+                            id: Math.random().toString(36).substring(2, 9),
+                            timestamp: new Date().toLocaleTimeString(),
+                            toolName: 'fssc_query_employee',
+                            parameters: params,
+                            error: err.message,
+                            durationMs: Date.now() - startTime
+                        });
+                        throw err;
+                    }
+                }
+            },
+            {
+                name: 'fssc_query_city',
+                description: '在城市维表中检索城市代码与维表对象（用于旅程明细 F_FROM / F_TO）',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        cityName: { type: 'string', description: '城市名称，如 北京、上海、广州、深圳、天津、合肥等' }
+                    },
+                    required: ['cityName']
+                },
+                execute: async (params) => {
+                    const startTime = Date.now();
+                    const vo = await fetchCityVO(params.cityName, state);
+                    const res = { success: true, city: vo };
+                    recordLog({
+                        id: Math.random().toString(36).substring(2, 9),
+                        timestamp: new Date().toLocaleTimeString(),
+                        toolName: 'fssc_query_city',
+                        parameters: params,
+                        result: res,
+                        durationMs: Date.now() - startTime
+                    });
+                    return res;
+                }
+            },
+            {
+                name: 'fssc_query_project',
+                description: '在项目维表中检索任意项目对象（用于预算区 DIM_PROJECT 联动归属）',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        projectNameOrCode: { type: 'string', description: '项目名称或项目编号（如 P2026-001 等）' }
+                    },
+                    required: ['projectNameOrCode']
+                },
+                execute: async (params) => {
+                    const startTime = Date.now();
+                    const vo = await fetchProjectVO(params.projectNameOrCode, state);
+                    if (vo) {
+                        state.selectedProject = {
+                            value: vo.value,
+                            title: vo.title?.zh_CN || vo.title
+                        };
+                    }
+                    const res = { success: Boolean(vo), project: vo };
+                    recordLog({
+                        id: Math.random().toString(36).substring(2, 9),
+                        timestamp: new Date().toLocaleTimeString(),
+                        toolName: 'fssc_query_project',
+                        parameters: params,
+                        result: res,
+                        durationMs: Date.now() - startTime
+                    });
+                    return res;
+                }
+            },
+            {
+                name: 'fssc_query_historical_applications',
+                description: '查询元年云系统中当前用户已保存（未提交草稿）或已提交的历史出差申请单据，用于规划时交叉对比排重',
+                inputSchema: {
+                    type: 'object',
+                    properties: {}
+                },
+                execute: async () => {
+                    const startTime = Date.now();
+                    const bills = await fetchHistoricalTripApplications(state);
+                    const res = { total: bills.length, list: bills };
+                    recordLog({
+                        id: Math.random().toString(36).substring(2, 9),
+                        timestamp: new Date().toLocaleTimeString(),
+                        toolName: 'fssc_query_historical_applications',
+                        parameters: {},
+                        result: { total: bills.length, sample: bills.slice(0, 3) },
+                        durationMs: Date.now() - startTime
+                    });
+                    return res;
+                }
+            },
+            {
+                name: 'fssc_plan_trip_applications',
+                description: '通用智能差旅规划算力：基于动态行程列表（或表格文本解析），测算住宿、误餐、交通票价及市内弹性Buffer，生成可入库的出差申请单清单。注意：同一目的城市多次往返视为多轮独立出差，必须作为独立项传入，严禁合并！',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        trips: {
+                            type: 'array',
+                            description: '动态差旅行程列表。每一项代表一轮独立的往返出差（完整闭环）。同一目的地城市在不同时间段多次往返必须作为多项分别传入，绝不能合并！',
+                            items: {
+                                type: 'object',
+                                properties: {
+                                    tripNo: { type: 'number', description: '出差轮次编号 (如第1轮为1，第2轮为2... 同一目的城市多次往返必须赋予不同的tripNo，绝不能合并)' },
+                                    applicantName: { type: 'string', description: '出行人姓名或主申请人' },
+                                    isProxy: { type: 'boolean', description: '是否为代办' },
+                                    destination: { type: 'string', description: '目的地城市' },
+                                    startDate: { type: 'string', description: '出差开始日期 (YYYY-MM-DD)' },
+                                    endDate: { type: 'string', description: '出差结束日期 (YYYY-MM-DD)' },
+                                    purpose: { type: 'string', description: '出差事由' },
+                                    targetFactories: { type: 'string', description: '调研公司/工厂/据点名称 (例如 某某据点、客户工厂、科技园区)' },
+                                    hotelName: { type: 'string', description: '入住酒店名称 (例如 亚朵酒店、美悦酒店)' },
+                                    travelers: { type: 'array', items: { type: 'string' }, description: '本轮同行出差人员名单(含正社员与外驻)' },
+                                    legs: {
+                                        type: 'array',
+                                        description: '往返大交通明细(飞机/高铁)',
+                                        items: {
+                                            type: 'object',
+                                            properties: {
+                                                date: { type: 'string' },
+                                                fromCity: { type: 'string' },
+                                                toCity: { type: 'string' },
+                                                transport: { type: 'string' },
+                                                flightOrTrain: { type: 'string' },
+                                                travelerName: { type: 'string' }
+                                            }
+                                        }
+                                    },
+                                    baseTrafficFee: { type: 'number', description: '预估往返交通费' },
+                                    hotelPricePerNight: { type: 'number', description: '每晚住宿限额标准(可选)' },
+                                    projectName: { type: 'string', description: '归属项目名称或代码(可选)' }
+                                },
+                                required: ['applicantName', 'destination', 'startDate', 'endDate']
+                            }
+                        },
+                        itineraryText: {
+                            type: 'string',
+                            description: '如果用户上传或粘贴了表格文本或 CSV，可传入直接解析'
+                        },
+                        combineApplications: {
+                            type: 'boolean',
+                            description: '是否由正社员统一提单，合并同行外驻人员预算与多行旅程为单张申请单 (依据用户最新规约，默认 true)'
+                        },
+                        mainApplicantName: {
+                            type: 'string',
+                            description: '正社员(主申请人)姓名，若未提供则自动匹配当前登录用户'
+                        },
+                        cityBufferPerDay: { type: 'number', description: '市内交通Buffer(元/天)，默认100' },
+                        trafficBufferPercent: { type: 'number', description: '交通改签弹性Buffer比例(0~0.5)，默认0.15' },
+                        defaultProject: { type: 'string', description: '默认归属项目' }
+                    }
+                },
+                execute: async (params) => {
+                    const startTime = Date.now();
+                    const cityBuf = params.cityBufferPerDay ?? 100;
+                    const trafBuf = params.trafficBufferPercent ?? 0.15;
+                    const shouldCombine = params.combineApplications !== false; // 默认按新规约合并
+                    const userInfo = await fetchLoginUserInfo(state);
+                    const mainApplicant = params.mainApplicantName || userInfo.userName || state.currentUser?.userName || '';
+                    let inputs = [];
+                    if (params.itineraryText) {
+                        inputs.push(...parseItineraryTable(params.itineraryText));
+                    }
+                    if (params.trips && Array.isArray(params.trips)) {
+                        inputs.push(...params.trips);
+                    }
+                    // 如果未传入 trips，但之前已解析过状态，则对现有行程重新应用 Buffer
+                    if (inputs.length === 0 && state.tripApp && state.tripApp.rawInputs && state.tripApp.rawInputs.length > 0) {
+                        inputs = state.tripApp.rawInputs;
+                    }
+                    else if (inputs.length === 0 && state.tripApp && state.tripApp.configs.length > 0) {
+                        inputs = state.tripApp.configs.map(c => ({
+                            tripNo: c.tripNo,
+                            applicantName: c.applicantName,
+                            isProxy: c.isProxy,
+                            destination: c.destination,
+                            startDate: c.startDate,
+                            endDate: c.endDate,
+                            purpose: c.purpose,
+                            targetFactories: c.targetFactories,
+                            hotelName: c.hotelName,
+                            travelers: c.travelers,
+                            baseTrafficFee: c.trafficFee - c.trafficBuffer,
+                            projectName: c.projectName,
+                            legs: c.legs
+                        }));
+                    }
+                    // 如果传入了默认项目，赋给未指定项目的行
+                    if (params.defaultProject) {
+                        inputs.forEach(inp => {
+                            if (!inp.projectName)
+                                inp.projectName = params.defaultProject;
+                        });
+                    }
+                    let configs = [];
+                    if (shouldCombine) {
+                        configs = combineTripsForMainApplicant(inputs, mainApplicant, cityBuf, trafBuf);
+                    }
+                    else {
+                        configs = inputs.map((inp, idx) => createDynamicTripConfig(inp, cityBuf, trafBuf, idx + 1));
+                    }
+                    // 核心特性：自动拉取元年历史出差申请单并与本次规划进行交叉对比排重
+                    let historyBills = [];
+                    try {
+                        historyBills = await fetchHistoricalTripApplications(state);
+                        crossCheckWithHistoricalApplications(configs, historyBills);
+                    }
+                    catch (e) {
+                        AutopilotLogger.warn(`[WebMCP] 历史单据交叉比对失败: ${e.message}`);
+                    }
+                    if (!state.tripApp) {
+                        state.tripApp = {
+                            configs: [],
+                            rawInputs: inputs,
+                            mode: shouldCombine ? 'COMBINED' : 'SEPARATE',
+                            selectedTripIds: new Set(),
+                            isProcessing: false,
+                            progressText: '',
+                            cityBufferPerDay: cityBuf,
+                            trafficBufferPercent: trafBuf,
+                            cityCache: {},
+                            personCache: {},
+                            projectCache: {}
+                        };
+                    }
+                    state.tripApp.rawInputs = inputs;
+                    state.tripApp.mode = shouldCombine ? 'COMBINED' : 'SEPARATE';
+                    state.tripApp.configs = configs;
+                    state.tripApp.selectedTripIds = new Set(configs.map(c => c.id));
+                    state.tripApp.cityBufferPerDay = cityBuf;
+                    state.tripApp.trafficBufferPercent = trafBuf;
+                    const totalAmount = configs.reduce((s, c) => s + c.totalAmount, 0);
+                    const res = {
+                        totalBills: configs.length,
+                        mode: state.tripApp.mode,
+                        combined: shouldCombine,
+                        totalBudgetWithBuffer: totalAmount,
+                        bufferSettings: { cityBufferPerDay: cityBuf, trafficBufferPercent: trafBuf },
+                        historicalBillsCount: historyBills.length,
+                        configs: configs
+                    };
+                    recordLog({
+                        id: Math.random().toString(36).substring(2, 9),
+                        timestamp: new Date().toLocaleTimeString(),
+                        toolName: 'fssc_plan_trip_applications',
+                        parameters: { count: configs.length, combined: shouldCombine, cityBuf, trafBuf },
+                        result: { totalBills: configs.length, mode: state.tripApp.mode, totalBudgetWithBuffer: totalAmount },
+                        durationMs: Date.now() - startTime
+                    });
+                    return res;
+                }
+            },
+            {
+                name: 'fssc_create_trip_draft',
+                description: '向元年云系统保存创建单张出差申请单草稿（commit: false，仅保存草稿入库，绝不提交审批）',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        tripConfig: { type: 'object', description: '单张出差申请的配置对象' }
+                    },
+                    required: ['tripConfig']
+                },
+                execute: async (params) => {
+                    const startTime = Date.now();
+                    try {
+                        const res = await createSingleTripApplicationApi(params.tripConfig, state);
+                        recordLog({
+                            id: Math.random().toString(36).substring(2, 9),
+                            timestamp: new Date().toLocaleTimeString(),
+                            toolName: 'fssc_create_trip_draft',
+                            parameters: { applicant: params.tripConfig.applicantName, destination: params.tripConfig.destination },
+                            result: res,
+                            durationMs: Date.now() - startTime
+                        });
+                        return res;
+                    }
+                    catch (err) {
+                        recordLog({
+                            id: Math.random().toString(36).substring(2, 9),
+                            timestamp: new Date().toLocaleTimeString(),
+                            toolName: 'fssc_create_trip_draft',
+                            parameters: { applicant: params.tripConfig.applicantName, destination: params.tripConfig.destination },
+                            error: err.message,
+                            durationMs: Date.now() - startTime
+                        });
+                        throw err;
+                    }
+                }
+            },
+            {
+                name: 'fssc_batch_create_trip_drafts',
+                description: '批量向元年云写入出差申请单草稿（需审批门禁，执行批量入库）',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        tripConfigs: { type: 'array', description: '已规划的出差申请单列表' }
+                    },
+                    required: ['tripConfigs']
+                },
+                execute: async (params) => {
+                    const startTime = Date.now();
+                    const results = [];
+                    const errors = [];
+                    let successCount = 0;
+                    let failCount = 0;
+                    for (const config of params.tripConfigs) {
+                        const r = await createSingleTripApplicationApi(config, state);
+                        if (r.success) {
+                            successCount++;
+                            results.push({ billCode: r.billCode, applicant: config.applicantName, destination: config.destination });
+                        }
+                        else {
+                            failCount++;
+                            errors.push({
+                                tripNo: config.tripNo,
+                                applicant: config.applicantName,
+                                destination: config.destination,
+                                error: r.message || '保存单据时出错'
+                            });
+                        }
+                        await new Promise(res => setTimeout(res, 400));
+                    }
+                    const res = {
+                        total: params.tripConfigs.length,
+                        successCount,
+                        failCount,
+                        createdBills: results,
+                        errors: errors
+                    };
+                    if (errors.length > 0) {
+                        recordTrajectoryEvent({
+                            source: 'ERROR',
+                            title: `Batch Draft Creation (${errors.length}/${params.tripConfigs.length} failed)`,
+                            summary: `批量创建出差申请草稿异常: ${errors.map(e => `Trip ${e.tripNo || '?'}[${e.destination}]: ${e.error}`).join('; ')}`,
+                            data: { errors, total: params.tripConfigs.length, successCount, failCount }
+                        });
+                    }
+                    recordLog({
+                        id: Math.random().toString(36).substring(2, 9),
+                        timestamp: new Date().toLocaleTimeString(),
+                        toolName: 'fssc_batch_create_trip_drafts',
+                        parameters: { count: params.tripConfigs.length },
+                        result: res,
+                        durationMs: Date.now() - startTime
+                    });
+                    return res;
+                }
+            },
+            {
+                name: 'fssc_query_pending_expenses',
+                description: '查询发票夹待处理发票及未报销费用记录列表（包含金额、日期、OCR上下车时间、里程、出发到达地及当前费用类型）',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        forceRefresh: { type: 'boolean', description: '是否强制从后端API重新拉取' }
+                    }
+                },
+                execute: async (params) => {
+                    const startTime = Date.now();
+                    try {
+                        // 若当前内存中无发票数据或要求强制刷新，自动穿透后端 API 拉取发票夹池与费用记录
+                        if (!state.invoices || state.invoices.length === 0 || params.forceRefresh) {
+                            await loadAllInvoicesAndExpenses(state);
+                        }
+                        // 容灾与场景适配：若发票夹与费用记录列表返回0条，检测是否在报销单编辑页 (#billWrite)
+                        if (!state.invoices || state.invoices.length === 0) {
+                            let billMainId = state.currentBillMainId;
+                            if (!billMainId) {
+                                const hash = window.location.hash || '';
+                                const match = hash.match(/billMainId=([a-zA-Z0-9_\-]+)/) || hash.match(/id=([a-zA-Z0-9_\-]+)/);
+                                if (match)
+                                    billMainId = match[1];
+                            }
+                            if (!billMainId) {
+                                const search = window.location.search || '';
+                                const match = search.match(/billMainId=([a-zA-Z0-9_\-]+)/) || search.match(/id=([a-zA-Z0-9_\-]+)/);
+                                if (match)
+                                    billMainId = match[1];
+                            }
+                            if (billMainId && (!state.billRows || state.billRows.length === 0)) {
+                                try {
+                                    const { billData } = await fetchBillDataAndTemplateApi(billMainId, state);
+                                    state.currentBillData = billData;
+                                    const parsed = parseBillDataStructure(billData);
+                                    state.billRows = parsed.billRows;
+                                    state.billTags = parsed.billTags;
+                                }
+                                catch (e) {
+                                    AutopilotLogger.warn(`[WebMCP] 自动拉取报销单明细行失败: ${e.message}`);
+                                }
+                            }
+                            if (state.billRows && state.billRows.length > 0) {
+                                state.invoices = state.billRows.map((row, idx) => ({
+                                    id: row.claimRowId || `bill-row-${idx}`,
+                                    expenseRecordId: row.claimRowId,
+                                    invoiceDate: '',
+                                    amount: row.amount,
+                                    type: detectInvoiceCategory({}, {}, row.expTypeName),
+                                    expenseTypeName: row.expTypeName || '市内交通费',
+                                    startAddress: '',
+                                    endAddress: '',
+                                    description: row.recDesc || '',
+                                    status: '就绪',
+                                    isModified: false
+                                }));
+                            }
+                        }
+                        const errorItems = (state.invoices || []).filter(inv => inv.errorMessages && inv.errorMessages.length > 0);
+                        const list = (state.invoices || []).map((inv, idx) => ({
+                            index: idx,
+                            recordId: inv.expenseRecordId || '',
+                            date: inv.invoiceDate,
+                            amount: inv.amount,
+                            type: inv.type,
+                            typeName: inv.expenseTypeName || inv.type,
+                            startAddress: inv.startAddress || '',
+                            endAddress: inv.endAddress || '',
+                            description: inv.description || '',
+                            timeGetOn: inv.timeGetOn || '',
+                            timeGetOff: inv.timeGetOff || '',
+                            mileage: inv.mileage || '',
+                            status: inv.status,
+                            errorMessages: inv.errorMessages || []
+                        }));
+                        const res = {
+                            total: list.length,
+                            hasErrors: errorItems.length > 0,
+                            errorCount: errorItems.length,
+                            errorSummary: errorItems.map(e => ({ recordId: e.expenseRecordId, type: e.type, errors: e.errorMessages })),
+                            invoices: list
+                        };
+                        recordLog({
+                            id: Math.random().toString(36).substring(2, 9),
+                            timestamp: new Date().toLocaleTimeString(),
+                            toolName: 'fssc_query_pending_expenses',
+                            parameters: params,
+                            result: { total: list.length, errorCount: errorItems.length, sample: list.slice(0, 3) },
+                            durationMs: Date.now() - startTime
+                        });
+                        return res;
+                    }
+                    catch (err) {
+                        recordLog({
+                            id: Math.random().toString(36).substring(2, 9),
+                            timestamp: new Date().toLocaleTimeString(),
+                            toolName: 'fssc_query_pending_expenses',
+                            parameters: params,
+                            error: err.message,
+                            durationMs: Date.now() - startTime
+                        });
+                        throw err;
+                    }
+                }
+            },
+            {
+                name: 'fssc_validate_invoice_pool',
+                description: '全量体检发票夹未使用发票列表，严格校验发票金额、开票日期、发票号码及销方品名等必要字段，识别OCR识别残缺发票并输出诊断结果与修改建议',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        forceRefresh: { type: 'boolean', description: '是否强制穿透后端API重新拉取发票夹全量数据' },
+                        onlyInvalid: { type: 'boolean', description: '是否仅返回缺少必要字段的残缺发票' }
+                    }
+                },
+                execute: async (params) => {
+                    const startTime = Date.now();
+                    try {
+                        if (!state.invoices || state.invoices.length === 0 || params.forceRefresh) {
+                            await loadAllInvoicesAndExpenses(state);
+                        }
+                        const summary = validateInvoiceList(state.invoices || []);
+                        const targetList = params.onlyInvalid ? summary.invalidList : summary.results;
+                        const res = {
+                            totalCount: summary.totalCount,
+                            validCount: summary.validCount,
+                            invalidCount: summary.invalidCount,
+                            warningCount: summary.warningCount,
+                            missingAmountCount: summary.missingAmountCount,
+                            missingDateCount: summary.missingDateCount,
+                            missingInvoiceNoCount: summary.missingInvoiceNoCount,
+                            missingTypeCount: summary.missingTypeCount,
+                            isAllValid: summary.invalidCount === 0,
+                            diagnostics: summary.invalidCount === 0
+                                ? `✅ 恭喜！当前发票夹中全部 ${summary.totalCount} 张发票关键信息（金额、日期、发票号）100% 完备。`
+                                : `⚠️ 警告：共发现 ${summary.invalidCount} 张发票缺少必要字段！其中：缺少金额 ${summary.missingAmountCount} 张，缺少开票日期 ${summary.missingDateCount} 张，缺少发票号码 ${summary.missingInvoiceNoCount} 张。已在发票夹宿主表格标红并强化【修改】链接，请及时修改补齐！`,
+                            invoices: targetList
+                        };
+                        recordTrajectoryEvent({
+                            source: 'TOOL_RESULT',
+                            title: `Invoice Pool Validation (${summary.invalidCount}/${summary.totalCount} issues)`,
+                            summary: res.diagnostics,
+                            data: {
+                                total: summary.totalCount,
+                                valid: summary.validCount,
+                                invalid: summary.invalidCount,
+                                missingAmount: summary.missingAmountCount,
+                                missingDate: summary.missingDateCount,
+                                missingInvoiceNo: summary.missingInvoiceNoCount
+                            }
+                        });
+                        recordLog({
+                            id: Math.random().toString(36).substring(2, 9),
+                            timestamp: new Date().toLocaleTimeString(),
+                            toolName: 'fssc_validate_invoice_pool',
+                            parameters: params,
+                            result: { invalidCount: summary.invalidCount, total: summary.totalCount },
+                            durationMs: Date.now() - startTime
+                        });
+                        return res;
+                    }
+                    catch (err) {
+                        recordLog({
+                            id: Math.random().toString(36).substring(2, 9),
+                            timestamp: new Date().toLocaleTimeString(),
+                            toolName: 'fssc_validate_invoice_pool',
+                            parameters: params,
+                            error: err.message,
+                            durationMs: Date.now() - startTime
+                        });
+                        throw err;
+                    }
+                }
+            },
+            {
+                name: 'fssc_generate_expense_from_invoices',
+                description: '从发票夹中将未报销发票智能批量生成费用记录草稿。核心业务特性：智能识别过路费/通行费发票，并自动与同日同行程的出租车发票合并在同一笔费用中（即1笔费用挂载2张发票，金额累加，发票张数标为2，并在费用说明中注明含过路费明细）。支持按日期筛选（例如 2026-07-31）、指定发票ID或全量生成，并在副驾界面提供交互式 A2UI 确认卡片。',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        filterDate: {
+                            type: 'string',
+                            description: '按日期筛选发票（如 2026-07-31），仅将该日期的发票生成费用'
+                        },
+                        invoiceIds: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: '指定要生成费用的发票 ID/boDataId 列表'
+                        },
+                        mergeTollsWithTaxi: {
+                            type: 'boolean',
+                            description: '是否将过路费/通行费发票与出租车发票合并在同一笔费用中（默认 true，1笔费用挂载2张发票）'
+                        },
+                        saveImmediately: {
+                            type: 'boolean',
+                            description: '是否立即持久化写入系统草稿（若为 false 则仅生成规划与 A2UI 预览，由用户确认后保存；若为 true 则直接写入草稿库）'
+                        },
+                        projectName: { type: 'string', description: '归属项目名称或编号（可选）' },
+                        customerName: { type: 'string', description: '拜访客户或工厂名称（可选）' },
+                        proxyPersonName: { type: 'string', description: '代外驻报销姓名（可选）' },
+                        customDescription: { type: 'string', description: '自定义统一费用说明（可选）' }
+                    }
+                },
+                execute: async (params) => {
+                    const startTime = Date.now();
+                    try {
+                        // 1. 确保发票已加载
+                        if (!state.invoices || state.invoices.length === 0) {
+                            await loadAllInvoicesAndExpenses(state);
+                        }
+                        let candidateInvoices = [...(state.invoices || [])];
+                        // 2. 按日期过滤
+                        if (params.filterDate) {
+                            const targetNorm = normalizeDate(params.filterDate);
+                            candidateInvoices = candidateInvoices.filter(inv => normalizeDate(inv.invoiceDate || '') === targetNorm);
+                        }
+                        // 3. 按发票 ID 过滤
+                        if (params.invoiceIds && params.invoiceIds.length > 0) {
+                            const idSet = new Set(params.invoiceIds);
+                            candidateInvoices = candidateInvoices.filter(inv => idSet.has(inv.id) || idSet.has(inv.boDataId || '') || idSet.has(inv.expenseRecordId || ''));
+                        }
+                        if (candidateInvoices.length === 0) {
+                            return {
+                                success: false,
+                                message: `未找到符合条件的发票（日期: ${params.filterDate || '全部'}），发票夹中可能暂无该日期发票或已全部生成费用。`,
+                                totalFound: 0
+                            };
+                        }
+                        // 4. 执行智能规划与过路费合并
+                        const planOpts = {
+                            tripType: 'AUTO',
+                            projectName: params.projectName,
+                            customerName: params.customerName,
+                            proxyPersonName: params.proxyPersonName,
+                            customDescription: params.customDescription,
+                            mergeTollsWithTaxi: params.mergeTollsWithTaxi
+                        };
+                        // 使用 inferSmartExpensePlan 对候选发票进行全套业务规划（内部已集成 bindTollsToTaxiExpenses）
+                        const planResult = inferSmartExpensePlan(candidateInvoices, planOpts);
+                        state.expensePlan = planResult;
+                        state.invoices = planResult.records;
+                        // 5. 生成并渲染 A2UI 交互确认卡片（支持合并/独立生成双分支切换与一键批量保存）
+                        const container = document.getElementById('webmcp-messages') || document.querySelector('.webmcp-chat-body');
+                        if (container) {
+                            const widget = renderA2UiExpenseBatchWidget({
+                                container,
+                                state,
+                                initialPlan: planResult
+                            });
+                            widget.scrollIntoView({ behavior: 'smooth' });
+                        }
+                        // 6. 若要求立即保存，调用批量入库
+                        let saveResult = null;
+                        if (params.saveImmediately) {
+                            saveResult = await batchSaveExpenseItemsApi(planResult.records, state);
+                        }
+                        const res = {
+                            success: true,
+                            totalInvoices: candidateInvoices.length,
+                            resultingExpenseCount: planResult.records.length,
+                            boundTollsCount: planResult.boundTollsCount || 0,
+                            bindingLog: planResult.bindingLog || [],
+                            hasConcurrentTolls: planResult.hasConcurrentTolls,
+                            concurrentTollsCount: planResult.concurrentTollsCount,
+                            tollInquiryPrompt: planResult.tollInquiryPrompt,
+                            summaryText: planResult.summaryText,
+                            savedImmediately: Boolean(params.saveImmediately),
+                            saveResult: saveResult,
+                            expenseItems: planResult.records.map((r, i) => ({
+                                index: i,
+                                date: r.invoiceDate,
+                                expenseTypeName: r.expenseTypeName,
+                                totalAmount: r.amount,
+                                invoiceCount: r.invoiceCount || 1,
+                                subInvoicesCount: r.subInvoices?.length || 0,
+                                tollAmount: r.tollAmount || 0,
+                                description: r.description,
+                                startAddress: r.startAddress,
+                                endAddress: r.endAddress,
+                                isMergedWithToll: Boolean(r.subInvoices && r.subInvoices.length > 0)
+                            }))
+                        };
+                        recordLog({
+                            id: Math.random().toString(36).substring(2, 9),
+                            timestamp: new Date().toLocaleTimeString(),
+                            toolName: 'fssc_generate_expense_from_invoices',
+                            parameters: params,
+                            result: {
+                                totalInvoices: candidateInvoices.length,
+                                resultingExpenseCount: planResult.records.length,
+                                boundTollsCount: planResult.boundTollsCount || 0
+                            },
+                            durationMs: Date.now() - startTime
+                        });
+                        return res;
+                    }
+                    catch (err) {
+                        recordLog({
+                            id: Math.random().toString(36).substring(2, 9),
+                            timestamp: new Date().toLocaleTimeString(),
+                            toolName: 'fssc_generate_expense_from_invoices',
+                            parameters: params,
+                            error: err.message,
+                            durationMs: Date.now() - startTime
+                        });
+                        throw err;
+                    }
+                }
+            },
+            {
+                name: 'fssc_plan_expense_batch_update',
+                description: '智能批量规划费用记录类型与行程信息（支持全部15类费用、多波次异地出差行程与市内日常拜访推断、外驻代报销备注规约）。根据传入的出行参数测算，更新内存状态并返回规划预览，不会直接持久化写库。注意：LLM 应基于用户上下文、对话历史、附件图片或地理世界常识，直接推断并传入结构化出差波次 trips（含目的地、机场/火车站、酒店、客户与起止日期），系统全面遵循 Anti-Hardcoding 铁律！',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        tripType: {
+                            type: 'string',
+                            enum: ['AUTO', 'BUSINESS_TRIP', 'LOCAL_COMMUTE', 'COMMUNICATION_ONLY'],
+                            description: '规划模式：AUTO自动识别、BUSINESS_TRIP异地出差模式、LOCAL_COMMUTE市内日常拜访、COMMUNICATION_ONLY纯话费'
+                        },
+                        itineraryText: {
+                            type: 'string',
+                            description: '出差行程计划表文本/表格/CSV内容（包含波次、起止日期、目的地、酒店、客户工厂据点），若提供将自动多波次分段对齐，精准推断每个波次的酒店与客户工厂，无需用户手动补充'
+                        },
+                        trips: {
+                            type: 'array',
+                            description: '结构化的多波次出差行程列表。LLM 应充分运用世界常识与用户上下文直接推理出每一波的城市、机场/高铁站、酒店与客户（每项包含 tripNo, startDate, endDate, destination, hotelName, customerName, stationOrAirport, departureStation, arrivalStation, purpose 等），彻底消除任何写死预设',
+                            items: {
+                                type: 'object',
+                                properties: {
+                                    tripNo: { type: 'number', description: '波次编号 (1, 2, ...)' },
+                                    startDate: { type: 'string', description: '波次开始日期 (YYYY-MM-DD)' },
+                                    endDate: { type: 'string', description: '波次结束日期 (YYYY-MM-DD)' },
+                                    destination: { type: 'string', description: '目的城市或地区 (如 天津、广州、合肥、大连)' },
+                                    hotelName: { type: 'string', description: '入住酒店名称 (如 美悦酒店、广州黄埔瑾程酒店)' },
+                                    customerName: { type: 'string', description: '拜访客户或工厂名称' },
+                                    stationOrAirport: { type: 'string', description: '往返交通枢纽 (如 天津滨海国际机场、合肥南站)' },
+                                    purpose: { type: 'string', description: '出差事由或工作目标' }
+                                }
+                            }
+                        },
+                        companyName: { type: 'string', description: '公司基准据点（默认 IVISION）' },
+                        customerName: { type: 'string', description: '拜访客户名称（从用户输入或行程中提取，若用户未提及且无法推断则留空由用户在界面动态确认，严禁随意捏造客户）' },
+                        hotelName: { type: 'string', description: '异地出差入住酒店名称（例如 美悦酒店、亚朵酒店，若已有行程表或由LLM推断则无需单独传）' },
+                        stationOrAirport: { type: 'string', description: '机场或高铁站名称（例如 天津滨海国际机场、合肥南站，LLM可运用常识提供）' },
+                        homeName: { type: 'string', description: '出发地/返程地家庭据点（默认 家）' },
+                        departureDate: { type: 'string', description: '出差出发日期 (YYYY-MM-DD)' },
+                        returnDate: { type: 'string', description: '出差返程日期 (YYYY-MM-DD)' },
+                        projectName: { type: 'string', description: '归属项目名称或项目号（例如 PRJ-2026-001）' },
+                        proxyPersonName: { type: 'string', description: '代外驻人员报销时的外驻同事姓名（例如 张三、李四），将自动在费用说明前生成 [外驻:姓名]' },
+                        customDescription: { type: 'string', description: '统一自定义费用说明（若填写将优先覆盖自动生成的说明）' },
+                        recordIndices: {
+                            type: 'array',
+                            items: { type: 'number' },
+                            description: '要规划的特定记录索引列表（若不提供则默认规划全部待处理项）'
+                        }
+                    }
+                },
+                execute: async (params) => {
+                    const startTime = Date.now();
+                    try {
+                        // 若尚未加载发票列表，先自动穿透后端 API 拉取
+                        if (!state.invoices || state.invoices.length === 0) {
+                            await loadAllInvoicesAndExpenses(state);
+                        }
+                        // 若未显式传入行程表，但之前已在 state.tripApp 中解析过，自动继承有效复用
+                        if (!params.trips && !params.itineraryText) {
+                            let candidateTrips = [];
+                            if (state.expensePlan?.matchedTrips && state.expensePlan.matchedTrips.length > 0) {
+                                candidateTrips = state.expensePlan.matchedTrips;
+                            }
+                            else if (state.tripApp?.rawInputs && state.tripApp.rawInputs.length > 0) {
+                                candidateTrips = state.tripApp.rawInputs.map(r => ({
+                                    tripNo: r.tripNo,
+                                    startDate: r.startDate,
+                                    endDate: r.endDate,
+                                    destination: r.destination,
+                                    hotelName: r.hotelName,
+                                    customerName: r.targetFactories || r.purpose || '',
+                                    targetFactories: r.targetFactories,
+                                    purpose: r.purpose
+                                }));
+                            }
+                            else if (state.tripApp?.configs && state.tripApp.configs.length > 0) {
+                                candidateTrips = state.tripApp.configs.map(c => ({
+                                    tripNo: c.tripNo,
+                                    startDate: c.startDate,
+                                    endDate: c.endDate,
+                                    destination: c.destination,
+                                    hotelName: c.hotelName,
+                                    customerName: c.targetFactories || c.purpose || '',
+                                    targetFactories: c.targetFactories,
+                                    purpose: c.purpose
+                                }));
+                            }
+                            // 过滤掉无效/无目的地/无日期的空占位波次，避免污染自动聚类
+                            const validTrips = candidateTrips.filter(t => Boolean((t.destination && !t.destination.includes('待定')) || t.startDate || t.endDate));
+                            if (validTrips.length > 0) {
+                                params.trips = validTrips;
+                            }
+                        }
+                        const planResult = inferSmartExpensePlan(state.invoices || [], params);
+                        const ast = generateExpenseBatchA2UiAST(planResult, state);
+                        state.expensePlan = planResult;
+                        if (planResult.records && planResult.records.length > 0) {
+                            state.invoices = planResult.records;
+                        }
+                        const res = {
+                            totalRecords: planResult.totalRecords,
+                            modifiedCount: planResult.modifiedCount,
+                            boundTollsCount: planResult.boundTollsCount || 0,
+                            bindingLog: planResult.bindingLog || [],
+                            tripType: planResult.tripType,
+                            companyName: planResult.companyName,
+                            customerName: planResult.customerName,
+                            hotelName: planResult.hotelName,
+                            stationOrAirport: planResult.stationOrAirport,
+                            projectName: planResult.projectName,
+                            proxyPersonName: planResult.proxyPersonName,
+                            missingFields: planResult.missingFields,
+                            uncertainDates: planResult.uncertainDates,
+                            summaryText: planResult.summaryText,
+                            matchedTrips: planResult.matchedTrips,
+                            a2uiAST: planResult.a2uiAST,
+                            previewRecords: (planResult.records || []).slice(0, 10).map((r, i) => ({
+                                index: i,
+                                date: r.invoiceDate,
+                                type: r.type,
+                                typeName: r.expenseTypeName,
+                                amount: r.amount,
+                                startAddress: r.startAddress,
+                                endAddress: r.endAddress,
+                                description: r.description,
+                                subInvoicesCount: r.subInvoices?.length || 0,
+                                tollAmount: r.tollAmount || 0,
+                                invoiceCount: r.invoiceCount || 1
+                            }))
+                        };
+                        recordLog({
+                            id: Math.random().toString(36).substring(2, 9),
+                            timestamp: new Date().toLocaleTimeString(),
+                            toolName: 'fssc_plan_expense_batch_update',
+                            parameters: params,
+                            result: {
+                                total: planResult.totalRecords,
+                                modified: planResult.modifiedCount,
+                                tripType: planResult.tripType,
+                                matchedTripsCount: planResult.matchedTrips?.length || 0
+                            },
+                            durationMs: Date.now() - startTime
+                        });
+                        return res;
+                    }
+                    catch (err) {
+                        recordLog({
+                            id: Math.random().toString(36).substring(2, 9),
+                            timestamp: new Date().toLocaleTimeString(),
+                            toolName: 'fssc_plan_expense_batch_update',
+                            parameters: params,
+                            error: err.message,
+                            durationMs: Date.now() - startTime
+                        });
+                        throw err;
+                    }
+                }
+            },
+            {
+                name: 'fssc_render_interactive_form',
+                description: '在副驾对话流或工作区中动态渲染声明式 A2UI 表单 AST（支持时间轴、网格表单、选择器、预览表格与一键操作按钮），用于智能副驾与用户的深度图文交互与决策确认',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        ast: {
+                            type: 'object',
+                            description: '符合 A2UiRootAST 规约的声明式表单定义，包含 id, title, model, layout, actions 等字段'
+                        }
+                    },
+                    required: ['ast']
+                },
+                execute: async (params) => {
+                    const startTime = Date.now();
+                    try {
+                        const container = document.getElementById('webmcp-messages') || document.querySelector('.webmcp-chat-body');
+                        if (container) {
+                            let currentAst = params.ast;
+                            const cardWrapper = document.createElement('div');
+                            cardWrapper.className = 'webmcp-a2ui-standalone-container';
+                            const renderCard = () => {
+                                cardWrapper.innerHTML = '';
+                                const cardEl = renderA2UiFromAST(currentAst, {
+                                    state,
+                                    onAction: async (actionKey, model) => {
+                                        if (actionKey === 'reinfer') {
+                                            const newOpts = {
+                                                tripType: model.tripType,
+                                                companyName: model.companyName,
+                                                customerName: model.customerName,
+                                                hotelName: model.hotelName,
+                                                stationOrAirport: model.stationOrAirport,
+                                                projectName: model.projectName,
+                                                proxyPersonName: model.proxyPersonName,
+                                                customDescription: model.customDescription,
+                                                trips: state.expensePlan?.matchedTrips
+                                            };
+                                            const planResult = inferSmartExpensePlan(state.invoices || [], newOpts);
+                                            state.expensePlan = planResult;
+                                            if (planResult.records && planResult.records.length > 0) {
+                                                state.invoices = planResult.records;
+                                            }
+                                            currentAst = generateExpenseBatchA2UiAST(planResult, state);
+                                            renderCard();
+                                            showToast('success', `已根据最新输入重新推断 (规划 ${planResult.modifiedCount} 笔)`);
+                                        }
+                                        else if (actionKey === 'openModal') {
+                                            const helperBtn = document.getElementById('yn-batch-helper-btn');
+                                            if (helperBtn)
+                                                helperBtn.click();
+                                        }
+                                        else if (actionKey === 'batchSave') {
+                                            try {
+                                                const sourceInvoices = state.expensePlan?.records || state.invoices || [];
+                                                const targets = sourceInvoices.filter(i => i.isModified || i.status === '就绪' || i.status === '待流转');
+                                                const fallbackTargets = targets.length > 0 ? targets : sourceInvoices;
+                                                if (fallbackTargets.length === 0) {
+                                                    showToast('error', '批量保存失败: 没有找到可保存的费用记录，请先加载发票数据');
+                                                    return;
+                                                }
+                                                showToast('info', `正在批量保存 ${fallbackTargets.length} 笔费用记录...`);
+                                                const res = await batchSaveExpenseItemsApi(fallbackTargets, state);
+                                                showToast('success', `批量保存完成！成功 ${res.successCount} 笔，失败 ${res.failCount} 笔`);
+                                            }
+                                            catch (err) {
+                                                showToast('error', `批量保存异常: ${err.message}`);
+                                            }
+                                        }
+                                    }
+                                });
+                                cardWrapper.appendChild(cardEl);
+                            };
+                            renderCard();
+                            container.appendChild(cardWrapper);
+                            cardWrapper.scrollIntoView({ behavior: 'smooth' });
+                        }
+                        recordLog({
+                            id: Math.random().toString(36).substring(2, 9),
+                            timestamp: new Date().toLocaleTimeString(),
+                            toolName: 'fssc_render_interactive_form',
+                            parameters: { formId: params.ast.id, title: params.ast.title },
+                            result: { success: true },
+                            durationMs: Date.now() - startTime
+                        });
+                        return { success: true, message: `A2UI 交互表单【${params.ast.title}】已成功呈现在副驾界面` };
+                    }
+                    catch (err) {
+                        recordLog({
+                            id: Math.random().toString(36).substring(2, 9),
+                            timestamp: new Date().toLocaleTimeString(),
+                            toolName: 'fssc_render_interactive_form',
+                            parameters: { formId: params.ast?.id },
+                            error: err.message,
+                            durationMs: Date.now() - startTime
+                        });
+                        return { success: false, error: err.message };
+                    }
+                }
+            },
+            {
+                name: 'fssc_batch_save_expense_records',
+                description: '批量将已规划的费用记录持久化保存至元年云系统（写入数据库并实例化草稿）。需审批门禁，用户确认后执行。',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        recordIndices: {
+                            type: 'array',
+                            items: { type: 'number' },
+                            description: '要保存的记录索引列表（可选，若不填则保存所有已规划修改的项）'
+                        }
+                    }
+                },
+                execute: async (params) => {
+                    const startTime = Date.now();
+                    try {
+                        let targets = [];
+                        const sourceInvoices = state.expensePlan?.records || state.invoices || [];
+                        if (params.recordIndices && params.recordIndices.length > 0) {
+                            const targetSet = new Set(params.recordIndices);
+                            targets = sourceInvoices.filter((_, idx) => targetSet.has(idx));
+                        }
+                        else {
+                            targets = sourceInvoices.filter(inv => inv.isModified || inv.status === '就绪' || inv.status === '待流转');
+                        }
+                        if (targets.length === 0) {
+                            targets = sourceInvoices;
+                        }
+                        const saveResult = await batchSaveExpenseItemsApi(targets, state);
+                        recordLog({
+                            id: Math.random().toString(36).substring(2, 9),
+                            timestamp: new Date().toLocaleTimeString(),
+                            toolName: 'fssc_batch_save_expense_records',
+                            parameters: { targetCount: targets.length },
+                            result: { successCount: saveResult.successCount, failCount: saveResult.failCount },
+                            durationMs: Date.now() - startTime
+                        });
+                        return saveResult;
+                    }
+                    catch (err) {
+                        recordLog({
+                            id: Math.random().toString(36).substring(2, 9),
+                            timestamp: new Date().toLocaleTimeString(),
+                            toolName: 'fssc_batch_save_expense_records',
+                            parameters: params,
+                            error: err.message,
+                            durationMs: Date.now() - startTime
+                        });
+                        throw err;
+                    }
+                }
+            },
+            {
+                name: 'fssc_delete_expense_records',
+                description: '批量删除指定的费用记录（软删除至回收站）。传入费用记录 ID 数组 recordIds。',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        recordIds: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: '待删除的费用记录主键 ID 数组'
+                        }
+                    },
+                    required: ['recordIds']
+                },
+                execute: async (params) => {
+                    const startTime = Date.now();
+                    try {
+                        await deleteExpenseRecordListApi(params.recordIds, state);
+                        if (state.invoices) {
+                            const idSet = new Set(params.recordIds);
+                            state.invoices = state.invoices.filter(inv => !idSet.has(inv.expenseRecordId || ''));
+                        }
+                        const result = { success: true, deletedCount: params.recordIds.length, message: `已成功删除 ${params.recordIds.length} 笔费用记录至回收站` };
+                        recordLog({
+                            id: Math.random().toString(36).substring(2, 9),
+                            timestamp: new Date().toLocaleTimeString(),
+                            toolName: 'fssc_delete_expense_records',
+                            parameters: params,
+                            result,
+                            durationMs: Date.now() - startTime
+                        });
+                        return result;
+                    }
+                    catch (err) {
+                        recordLog({
+                            id: Math.random().toString(36).substring(2, 9),
+                            timestamp: new Date().toLocaleTimeString(),
+                            toolName: 'fssc_delete_expense_records',
+                            parameters: params,
+                            error: err.message,
+                            durationMs: Date.now() - startTime
+                        });
+                        throw err;
+                    }
+                }
+            },
+            {
+                name: 'fssc_audit_expense_record_errors',
+                description: 'Agentic 主动体检当前用户的费用记录列表，检测系统后端接口 (getExpenseRecordListBySearchVO) 校验返回的任何错误信息 (如“出差城市必填”、“费用金额必填”、“发票必须”等)，输出结构化诊断报告。',
+                inputSchema: {
+                    type: 'object',
+                    properties: {}
+                },
+                execute: async () => {
+                    const startTime = Date.now();
+                    try {
+                        const report = await auditExpenseRecordsApi(state);
+                        recordLog({
+                            id: Math.random().toString(36).substring(2, 9),
+                            timestamp: new Date().toLocaleTimeString(),
+                            toolName: 'fssc_audit_expense_record_errors',
+                            parameters: {},
+                            result: report,
+                            durationMs: Date.now() - startTime
+                        });
+                        return report;
+                    }
+                    catch (err) {
+                        recordLog({
+                            id: Math.random().toString(36).substring(2, 9),
+                            timestamp: new Date().toLocaleTimeString(),
+                            toolName: 'fssc_audit_expense_record_errors',
+                            parameters: {},
+                            error: err.message,
+                            durationMs: Date.now() - startTime
+                        });
+                        throw err;
+                    }
+                }
+            },
+            {
+                name: 'fssc_auto_fix_expense_record_errors',
+                description: 'Agentic 针对体检出的费用记录错误（如住宿费出差城市必填）执行智能自愈修复：自动对齐行程与系统城市维表 (DIM_CITY) 补齐城市与住宿区分，并持久化保存写库，确保错误完全清零。',
+                inputSchema: {
+                    type: 'object',
+                    properties: {}
+                },
+                execute: async () => {
+                    const startTime = Date.now();
+                    try {
+                        const fixResult = await autoFixExpenseRecordsApi(state);
+                        recordLog({
+                            id: Math.random().toString(36).substring(2, 9),
+                            timestamp: new Date().toLocaleTimeString(),
+                            toolName: 'fssc_auto_fix_expense_record_errors',
+                            parameters: {},
+                            result: fixResult,
+                            durationMs: Date.now() - startTime
+                        });
+                        return fixResult;
+                    }
+                    catch (err) {
+                        recordLog({
+                            id: Math.random().toString(36).substring(2, 9),
+                            timestamp: new Date().toLocaleTimeString(),
+                            toolName: 'fssc_auto_fix_expense_record_errors',
+                            parameters: {},
+                            error: err.message,
+                            durationMs: Date.now() - startTime
+                        });
+                        throw err;
+                    }
+                }
+            },
+            {
+                name: 'fssc_delete_bill_drafts',
+                description: '批量删除出差申请单或报销单草稿（仅允许删除未提交的单据草稿）。传入单据主键 ID 数组 billMainIds。',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        billMainIds: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: '待删除的单据主键 ID (billMainId) 数组'
+                        }
+                    },
+                    required: ['billMainIds']
+                },
+                execute: async (params) => {
+                    const startTime = Date.now();
+                    try {
+                        await deleteBillByBillMainIdsApi(params.billMainIds, state);
+                        const result = { success: true, deletedCount: params.billMainIds.length, message: `已成功删除 ${params.billMainIds.length} 张单据草稿` };
+                        recordLog({
+                            id: Math.random().toString(36).substring(2, 9),
+                            timestamp: new Date().toLocaleTimeString(),
+                            toolName: 'fssc_delete_bill_drafts',
+                            parameters: params,
+                            result,
+                            durationMs: Date.now() - startTime
+                        });
+                        return result;
+                    }
+                    catch (err) {
+                        recordLog({
+                            id: Math.random().toString(36).substring(2, 9),
+                            timestamp: new Date().toLocaleTimeString(),
+                            toolName: 'fssc_delete_bill_drafts',
+                            parameters: params,
+                            error: err.message,
+                            durationMs: Date.now() - startTime
+                        });
+                        throw err;
+                    }
+                }
+            },
+            {
+                name: 'fssc_delete_invoices',
+                description: '从发票池中彻底删除指定的发票记录。传入发票主键 ID (boSourceRowId) 数组 invoiceIds。',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        invoiceIds: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: '待删除的发票主键 ID (boSourceRowId) 数组'
+                        }
+                    },
+                    required: ['invoiceIds']
+                },
+                execute: async (params) => {
+                    const startTime = Date.now();
+                    try {
+                        await deleteInvoiceBOListApi(params.invoiceIds, state);
+                        if (state.invoices) {
+                            const idSet = new Set(params.invoiceIds);
+                            state.invoices = state.invoices.filter(inv => !idSet.has(inv.boSourceRowId || inv.boDataId || inv.id || ''));
+                        }
+                        const result = { success: true, deletedCount: params.invoiceIds.length, message: `已成功从发票池彻底删除 ${params.invoiceIds.length} 张发票` };
+                        recordLog({
+                            id: Math.random().toString(36).substring(2, 9),
+                            timestamp: new Date().toLocaleTimeString(),
+                            toolName: 'fssc_delete_invoices',
+                            parameters: params,
+                            result,
+                            durationMs: Date.now() - startTime
+                        });
+                        return result;
+                    }
+                    catch (err) {
+                        recordLog({
+                            id: Math.random().toString(36).substring(2, 9),
+                            timestamp: new Date().toLocaleTimeString(),
+                            toolName: 'fssc_delete_invoices',
+                            parameters: params,
+                            error: err.message,
+                            durationMs: Date.now() - startTime
+                        });
+                        throw err;
+                    }
+                }
+            },
+            {
+                name: 'fssc_create_reimbursement_draft',
+                description: '从未报销费用记录批量生成一张报销单草稿（commit: false，仅保存草稿入库，绝不提交审批）。需传入报销单模板 ID 与费用记录 ID 数组。',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        billDefineId: {
+                            type: 'string',
+                            description: '报销单模板 ID（如出差费用报销单 035a50ee6d3de1653e55bb00bc610001，经费报销单 035cd1b4d46de1653e55bb00bc610000）'
+                        },
+                        expenseRecordIds: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: '关联的未报销费用记录 ID 数组'
+                        }
+                    },
+                    required: ['billDefineId', 'expenseRecordIds']
+                },
+                execute: async (params) => {
+                    const startTime = Date.now();
+                    try {
+                        const data = await createBillDataAndTemplateByExpenseIdListApi(params.billDefineId, params.expenseRecordIds, state);
+                        const billMainId = data?.billData?.area?.rowDatas?.[0]?.datas?.BILL_MAIN_ID?.value || data?.billData?.billMainId || '';
+                        const billCode = data?.billData?.area?.rowDatas?.[0]?.datas?.BILL_CODE?.value || '';
+                        const result = {
+                            success: true,
+                            billMainId,
+                            billCode,
+                            expenseCount: params.expenseRecordIds.length,
+                            message: `已成功从未报销费用生成报销单草稿 ${billCode ? '(' + billCode + ')' : ''}，已保存入库，未提交审批`
+                        };
+                        recordLog({
+                            id: Math.random().toString(36).substring(2, 9),
+                            timestamp: new Date().toLocaleTimeString(),
+                            toolName: 'fssc_create_reimbursement_draft',
+                            parameters: params,
+                            result,
+                            durationMs: Date.now() - startTime
+                        });
+                        return result;
+                    }
+                    catch (err) {
+                        recordLog({
+                            id: Math.random().toString(36).substring(2, 9),
+                            timestamp: new Date().toLocaleTimeString(),
+                            toolName: 'fssc_create_reimbursement_draft',
+                            parameters: params,
+                            error: err.message,
+                            durationMs: Date.now() - startTime
+                        });
+                        throw err;
+                    }
+                }
+            },
+            {
+                name: 'fssc_export_expense_records_csv',
+                description: '导出当前用户的费用记录及底层挂载发票清单（Excel CSV 格式）。核心业务特性：穿透每笔费用提取发票代码、发票号码、开票日期、实际行程日期/时间、始发站、目的站、车次/航班、销方名称、附件文件名等；自动进行行程与开票日期的差异对比核验，并在最后一列提供核验预警（如开票日期晚于/早于行程天数、酒店发票核对提示等）。支持按费用记录 ID 筛选，或默认全量导出所有未报销费用。',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        expenseRecordIds: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: '指定导出的费用记录 ID 列表（可选，若未指定则导出全部未报销费用）'
+                        },
+                        triggerDownload: {
+                            type: 'boolean',
+                            description: '是否在浏览器端直接触发 CSV 文件下载（默认 true）'
+                        }
+                    }
+                },
+                execute: async (params) => {
+                    const startTime = Date.now();
+                    try {
+                        const rows = await fetchExpenseRecordsWithInvoiceDetails(state, params.expenseRecordIds);
+                        const csvContent = convertExpenseRecordsToCsv(rows);
+                        if (params.triggerDownload !== false && typeof window !== 'undefined') {
+                            const now = new Date();
+                            const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
+                            downloadCsvFile(csvContent, `费用记录与发票行程核对清单_${ts}.csv`);
+                        }
+                        const warnCount = rows.filter(r => r.reconciliationNote && r.reconciliationNote.includes('⚠️')).length;
+                        const result = {
+                            success: true,
+                            totalExpenseRecords: new Set(rows.map(r => r.expenseRecordId)).size,
+                            totalInvoiceRows: rows.length,
+                            warningCount: warnCount,
+                            csvLength: csvContent.length,
+                            sampleRows: rows.slice(0, 5),
+                            message: `成功导出 ${rows.length} 条发票核对记录 (涉及 ${new Set(rows.map(r => r.expenseRecordId)).size} 笔费用，发现 ${warnCount} 处行程与开票日期差异)`
+                        };
+                        recordLog({
+                            id: Math.random().toString(36).substring(2, 9),
+                            timestamp: new Date().toLocaleTimeString(),
+                            toolName: 'fssc_export_expense_records_csv',
+                            parameters: params,
+                            result,
+                            durationMs: Date.now() - startTime
+                        });
+                        return result;
+                    }
+                    catch (err) {
+                        recordLog({
+                            id: Math.random().toString(36).substring(2, 9),
+                            timestamp: new Date().toLocaleTimeString(),
+                            toolName: 'fssc_export_expense_records_csv',
+                            parameters: params,
+                            error: err.message,
+                            durationMs: Date.now() - startTime
+                        });
+                        throw err;
+                    }
+                }
+            }
+        ];
+        WEBMCP_STATE.toolDefs = tools.map(t => ({
+            name: t.name,
+            description: t.description,
+            inputSchema: t.inputSchema,
+            execute: t.execute
+        }));
+        for (const tool of tools) {
+            WEBMCP_STATE.toolMap.set(tool.name, tool.execute);
+            WEBMCP_STATE.registeredTools.push(tool.name);
+            if (hasModelContext) {
+                try {
+                    doc.modelContext.registerTool(tool);
+                }
+                catch (err) {
+                    AutopilotLogger.warn(`[WebMCP] 注册工具 [${tool.name}] 到 document.modelContext 出现警告: ${err.message}`);
+                }
+            }
+        }
+        WEBMCP_STATE.initialized = true;
+        AutopilotLogger.success(`[WebMCP] 通用出差申请原生工具集已就绪 (共 ${tools.length} 个工具，W3C Polyfill: ${hasModelContext ? '激活' : '内部模式'})！`);
+    }
+
+    const LLM_PRESETS = {
+        gemini: {
+            provider: 'gemini',
+            endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai',
+            model: 'gemini-2.0-flash',
+            temperature: 0.3
+        },
+        deepseek: {
+            provider: 'deepseek',
+            endpoint: 'https://api.deepseek.com/v1',
+            model: 'deepseek-chat',
+            temperature: 0.3
+        },
+        openai: {
+            provider: 'openai',
+            endpoint: 'https://api.openai.com/v1',
+            model: 'gpt-4o',
+            temperature: 0.3
+        },
+        claude: {
+            provider: 'claude',
+            endpoint: 'https://openrouter.ai/api/v1',
+            model: 'anthropic/claude-3.7-sonnet',
+            temperature: 0.3
+        },
+        ollama: {
+            provider: 'ollama',
+            endpoint: 'http://localhost:11434/v1',
+            model: 'qwen2.5:7b',
+            temperature: 0.3
+        },
+        openrouter: {
+            provider: 'openrouter',
+            endpoint: 'https://openrouter.ai/api/v1',
+            model: 'anthropic/claude-3.7-sonnet',
+            temperature: 0.3
+        },
+        custom: {
+            provider: 'custom',
+            endpoint: '',
+            model: 'gpt-4o',
+            temperature: 0.3
+        }
+    };
+    const STORAGE_KEY = 'autopilot_webmcp_llm_config';
+    function getDefaultModelsForProvider(provider) {
+        switch (provider) {
+            case 'gemini':
+                return [
+                    { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash (新一代极速首选)', provider: 'gemini', enabled: true },
+                    { id: 'gemini-2.0-flash-thinking-exp-01-21', name: 'Gemini 2.0 Flash Thinking (深度思考)', provider: 'gemini', enabled: true, isReasoning: true },
+                    { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro (最强综合推理旗舰)', provider: 'gemini', enabled: true, isReasoning: true },
+                    { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro (百万长上下文)', provider: 'gemini', enabled: false },
+                    { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash (轻量低延迟)', provider: 'gemini', enabled: false }
+                ];
+            case 'deepseek':
+                return [
+                    { id: 'deepseek-chat', name: 'DeepSeek-V3 (通用极速性价比之王)', provider: 'deepseek', enabled: true },
+                    { id: 'deepseek-reasoner', name: 'DeepSeek-R1 (深度慢思考长链推理)', provider: 'deepseek', enabled: true, isReasoning: true }
+                ];
+            case 'openai':
+                return [
+                    { id: 'gpt-4o', name: 'GPT-4o (全能多模态旗舰)', provider: 'openai', enabled: true, isVision: true },
+                    { id: 'gpt-4o-mini', name: 'GPT-4o-mini (轻巧极速低成本)', provider: 'openai', enabled: true },
+                    { id: 'o3-mini', name: 'o3-mini (新一代高效推理)', provider: 'openai', enabled: true, isReasoning: true },
+                    { id: 'o1', name: 'o1 (高级慢思考与规划)', provider: 'openai', enabled: false, isReasoning: true },
+                    { id: 'gpt-4-turbo', name: 'GPT-4 Turbo', provider: 'openai', enabled: false }
+                ];
+            case 'claude':
+            case 'openrouter':
+                return [
+                    { id: 'anthropic/claude-3.7-sonnet', name: 'Claude 3.7 Sonnet (混合推理新旗舰)', provider: 'openrouter', enabled: true, isReasoning: true },
+                    { id: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet (代码与逻辑标杆)', provider: 'openrouter', enabled: true },
+                    { id: 'anthropic/claude-3.5-haiku', name: 'Claude 3.5 Haiku (超轻量秒级响应)', provider: 'openrouter', enabled: false },
+                    { id: 'openai/gpt-4o', name: 'OpenAI GPT-4o (OpenRouter)', provider: 'openrouter', enabled: true },
+                    { id: 'deepseek/deepseek-r1', name: 'DeepSeek R1 (OpenRouter)', provider: 'openrouter', enabled: true, isReasoning: true }
+                ];
+            case 'ollama':
+                return [
+                    { id: 'qwen2.5:7b', name: '通义千问 Qwen 2.5 7B (本地推荐)', provider: 'ollama', enabled: true },
+                    { id: 'deepseek-r1:7b', name: 'DeepSeek R1 本地量化 7B', provider: 'ollama', enabled: true, isReasoning: true },
+                    { id: 'llama3.1:8b', name: 'Meta Llama 3.1 8B', provider: 'ollama', enabled: false }
+                ];
+            default:
+                return [
+                    { id: 'gpt-4o', name: 'GPT-4o 兼容', provider: 'custom', enabled: true },
+                    { id: 'deepseek-chat', name: 'DeepSeek-V3 兼容', provider: 'custom', enabled: true }
+                ];
+        }
+    }
+    function getLlmConfig() {
+        try {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                const provider = parsed.provider || 'gemini';
+                const defaultModels = getDefaultModelsForProvider(provider);
+                const models = Array.isArray(parsed.models) && parsed.models.length > 0
+                    ? parsed.models
+                    : defaultModels;
+                const model = parsed.model || models.find(m => m.enabled)?.id || defaultModels[0].id;
+                return {
+                    provider,
+                    endpoint: parsed.endpoint || LLM_PRESETS[provider]?.endpoint || 'https://generativelanguage.googleapis.com/v1beta/openai',
+                    apiKey: parsed.apiKey || '',
+                    model,
+                    temperature: typeof parsed.temperature === 'number' ? parsed.temperature : 0.3,
+                    models
+                };
+            }
+        }
+        catch (e) {
+            AutopilotLogger.warn('[LLM] 读取配置失败，采用默认配置');
+        }
+        const defaultModels = getDefaultModelsForProvider('gemini');
+        return {
+            provider: 'gemini',
+            endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai',
+            apiKey: '',
+            model: 'gemini-2.0-flash',
+            temperature: 0.3,
+            models: defaultModels
+        };
+    }
+    function saveLlmConfig(config) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+        AutopilotLogger.info('[LLM] 配置已保存');
+        try {
+            if (typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('autopilot:llm_config_changed', { detail: config }));
+            }
+        }
+        catch (e) { }
+    }
+    /**
+     * 自动探测与拉取远端 LLM 端点支持的模型列表
+     * 兼容 OpenAI /v1/models、Google Gemini API、Ollama /api/tags
+     */
+    async function fetchAvailableModels(config) {
+        const startTime = Date.now();
+        const rawEndpoint = (config.endpoint || '').trim();
+        if (!rawEndpoint) {
+            const fallbacks = getDefaultModelsForProvider(config.provider);
+            return {
+                success: false,
+                models: fallbacks,
+                message: '请先填写 API 基础地址'
+            };
+        }
+        const apiKey = (config.apiKey || '').trim();
+        // 1. Google Gemini
+        if (config.provider === 'gemini') {
+            // 优先尝试官方 OpenAI 兼容 /models 端点
+            try {
+                const openaiModelsUrl = rawEndpoint.replace(/\/chat\/completions\/?$/, '').replace(/\/+$/, '') + '/models';
+                const res = await fetch(openaiModelsUrl, {
+                    headers: apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    if (Array.isArray(data.data) && data.data.length > 0) {
+                        const list = data.data
+                            .filter((m) => m.id && !m.id.includes('embedding') && !m.id.includes('aqa') && !m.id.includes('imagen'))
+                            .map((m) => {
+                            const isReasoning = m.id.includes('thinking') || m.id.includes('pro');
+                            return {
+                                id: m.id,
+                                name: formatModelDisplayName(m.id),
+                                provider: 'gemini',
+                                enabled: isReasoning || m.id.includes('flash'),
+                                isReasoning
+                            };
+                        });
+                        if (list.length > 0) {
+                            return {
+                                success: true,
+                                models: list,
+                                message: `成功自动识别 ${list.length} 个 Gemini 模型 (${Date.now() - startTime}ms)`
+                            };
+                        }
+                    }
+                }
+            }
+            catch (e) { }
+            // 备用：Google AI Studio API
+            if (apiKey) {
+                try {
+                    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`;
+                    const res = await fetch(geminiUrl);
+                    if (res.ok) {
+                        const data = await res.json();
+                        if (Array.isArray(data.models) && data.models.length > 0) {
+                            const list = data.models
+                                .filter((m) => m.name && (m.supportedGenerationMethods?.includes('generateContent') || m.name.includes('gemini')))
+                                .map((m) => {
+                                const cleanId = m.name.replace(/^models\//, '');
+                                const isReasoning = cleanId.includes('thinking') || cleanId.includes('pro');
+                                return {
+                                    id: cleanId,
+                                    name: m.displayName || formatModelDisplayName(cleanId),
+                                    provider: 'gemini',
+                                    enabled: isReasoning || cleanId.includes('flash'),
+                                    isReasoning
+                                };
+                            });
+                            if (list.length > 0) {
+                                return {
+                                    success: true,
+                                    models: list,
+                                    message: `成功探测并载入 ${list.length} 个 Gemini 原生模型 (${Date.now() - startTime}ms)`
+                                };
+                            }
+                        }
+                    }
+                }
+                catch (e) { }
+            }
+        }
+        // 2. Ollama
+        if (config.provider === 'ollama') {
+            const base = rawEndpoint.replace(/\/v1\/?$/, '').replace(/\/+$/, '');
+            try {
+                const res = await fetch(`${base}/api/tags`);
+                if (res.ok) {
+                    const data = await res.json();
+                    if (Array.isArray(data.models) && data.models.length > 0) {
+                        const list = data.models.map((m) => ({
+                            id: m.name,
+                            name: `${m.name} (${m.details?.parameter_size || 'Local'})`,
+                            provider: 'ollama',
+                            enabled: true
+                        }));
+                        return {
+                            success: true,
+                            models: list,
+                            message: `成功检测到本地 Ollama 已运行的 ${list.length} 个模型 (${Date.now() - startTime}ms)`
+                        };
+                    }
+                }
+            }
+            catch (e) { }
+        }
+        // 3. 通用 OpenAI 兼容 /models
+        try {
+            const baseModelsUrl = rawEndpoint.replace(/\/chat\/completions\/?$/, '').replace(/\/+$/, '') + '/models';
+            const headers = { 'Content-Type': 'application/json' };
+            if (apiKey) {
+                headers['Authorization'] = `Bearer ${apiKey}`;
+            }
+            const res = await fetch(baseModelsUrl, { method: 'GET', headers });
+            if (res.ok) {
+                const data = await res.json();
+                const rawList = Array.isArray(data.data) ? data.data : (Array.isArray(data) ? data : []);
+                if (rawList.length > 0) {
+                    const list = rawList
+                        .filter((m) => m.id && !m.id.includes('embedding') && !m.id.includes('tts') && !m.id.includes('whisper') && !m.id.includes('dall-e') && !m.id.includes('moderation'))
+                        .map((m) => {
+                        const id = m.id;
+                        const isReasoning = id.includes('r1') || id.includes('reasoner') || id.includes('o1') || id.includes('o3') || id.includes('thinking');
+                        return {
+                            id,
+                            name: formatModelDisplayName(id),
+                            provider: config.provider,
+                            enabled: true,
+                            isReasoning
+                        };
+                    });
+                    if (list.length > 0) {
+                        return {
+                            success: true,
+                            models: list,
+                            message: `成功自动拉取 ${list.length} 个可用模型 (${Date.now() - startTime}ms)`
+                        };
+                    }
+                }
+            }
+        }
+        catch (e) {
+            AutopilotLogger.warn('[LLM] 远端 /models 接口探测失败或受同源策略限制: ' + (e instanceof Error ? e.message : String(e)));
+        }
+        // 兜底回退：载入官方预设推荐库
+        const defaultList = getDefaultModelsForProvider(config.provider);
+        return {
+            success: true,
+            models: defaultList,
+            message: `未能从远端自动拉取，已为您载入 ${defaultList.length} 个主流官方推荐模型（可手动增删）`
+        };
+    }
+    function formatModelDisplayName(id) {
+        if (id === 'gemini-2.0-flash')
+            return 'Gemini 2.0 Flash (新一代极速首选)';
+        if (id === 'gemini-2.0-flash-thinking-exp-01-21')
+            return 'Gemini 2.0 Flash Thinking (深度思考)';
+        if (id === 'gemini-2.5-pro')
+            return 'Gemini 2.5 Pro (最强复杂推理)';
+        if (id === 'deepseek-chat')
+            return 'DeepSeek-V3 (通用极速)';
+        if (id === 'deepseek-reasoner')
+            return 'DeepSeek-R1 (深度长链推理)';
+        if (id === 'gpt-4o')
+            return 'GPT-4o (全能旗舰)';
+        if (id === 'gpt-4o-mini')
+            return 'GPT-4o-mini (轻巧极速)';
+        if (id === 'o3-mini')
+            return 'o3-mini (高效推理)';
+        if (id.includes('claude-3-7-sonnet') || id.includes('claude-3.7-sonnet'))
+            return 'Claude 3.7 Sonnet (混合推理)';
+        if (id.includes('claude-3-5-sonnet') || id.includes('claude-3.5-sonnet'))
+            return 'Claude 3.5 Sonnet (逻辑标杆)';
+        return id;
+    }
+    function isLlmConfigured() {
+        const cfg = getLlmConfig();
+        return Boolean(cfg.apiKey && cfg.apiKey.trim().length > 0 && cfg.endpoint && cfg.endpoint.trim().length > 0);
+    }
+    /**
+     * 规范化 API 端点 URL
+     * 兼容 Google AI Studio (Gemini OpenAI Compatibility) 与各种标准 OpenAI 兼容端点变体
+     */
+    function normalizeEndpoint(endpoint) {
+        let url = (endpoint || '').trim().replace(/\/+$/, '');
+        if (!url)
+            return '';
+        // 特殊处理 Google Gemini (Google AI Studio) 域名变体
+        if (url.includes('generativelanguage.googleapis.com')) {
+            if (!url.includes('/openai')) {
+                url = url.replace(/\/+$/, '');
+                if (!url.endsWith('/openai')) {
+                    url = `${url}/openai`;
+                }
+            }
+        }
+        if (!url.endsWith('/chat/completions')) {
+            url = `${url}/chat/completions`;
+        }
+        return url;
+    }
+    /**
+     * 测试 LLM API 连通性
+     */
+    async function testLlmConnection(config) {
+        const startTime = Date.now();
+        const url = normalizeEndpoint(config.endpoint);
+        try {
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${config.apiKey.trim()}`
+                },
+                body: JSON.stringify({
+                    model: config.model.trim(),
+                    messages: [
+                        { role: 'system', content: 'You are a test agent.' },
+                        { role: 'user', content: 'Ping! Reply with "Pong" only.' }
+                    ],
+                    max_tokens: 10,
+                    temperature: 0.1
+                })
+            });
+            const latencyMs = Date.now() - startTime;
+            if (!res.ok) {
+                const errText = await res.text();
+                return {
+                    success: false,
+                    latencyMs,
+                    message: extractCleanErrorMessage(errText, res.status)
+                };
+            }
+            const data = await res.json();
+            const reply = data.choices?.[0]?.message?.content?.trim() || 'OK';
+            return {
+                success: true,
+                latencyMs,
+                message: `连接成功 (${latencyMs}ms): 模型回复 "${reply}"`
+            };
+        }
+        catch (err) {
+            return {
+                success: false,
+                latencyMs: Date.now() - startTime,
+                message: `网络异常: ${err.message}`
+            };
+        }
+    }
+    /**
+     * 提取并提炼出友好的错误信息，避免向用户裸露未经格式化的 JSON 字符串
+     */
+    function extractCleanErrorMessage(errText, status) {
+        try {
+            const data = JSON.parse(errText);
+            const item = Array.isArray(data) ? data[0] : data;
+            const msg = item?.error?.message || item?.message || item?.msg;
+            if (msg) {
+                if (msg.includes('high demand') || msg.includes('overloaded') || status === 503) {
+                    return `大模型服务繁忙 (HTTP 503: 服务高峰排队中，建议切换为 Gemini 1.5/2.0 Flash 或稍后重试)`;
+                }
+                if (msg.includes('rate limit') || status === 429) {
+                    return `模型调用超出频次限额 (HTTP 429: Rate Limit)`;
+                }
+                return `HTTP ${status}: ${msg}`;
+            }
+        }
+        catch {
+            // Not JSON
+        }
+        return `HTTP ${status}: ${errText.slice(0, 140)}`;
+    }
+    /**
+     * 直接调用大模型获取结构化 JSON 响应 (用于费用推断、单据分析等精准单步任务)
+     */
+    async function callDirectLlmJson(systemPrompt, userPrompt, signal, timeoutMs = 240000 // 默认 240 秒 (4 分钟) 超时守卫，兼顾慢速代理与复杂思维链模型
+    ) {
+        const config = getLlmConfig();
+        if (!config.apiKey || !config.endpoint) {
+            return { success: false, error: '未配置大模型 API Key 或端点' };
+        }
+        const url = normalizeEndpoint(config.endpoint);
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        const activeSignal = controller.signal;
+        try {
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${config.apiKey.trim()}`
+                },
+                body: JSON.stringify({
+                    model: config.model.trim(),
+                    messages: [
+                        { role: 'system', content: systemPrompt },
+                        { role: 'user', content: userPrompt }
+                    ],
+                    temperature: 0.1
+                }),
+                signal: activeSignal
+            });
+            clearTimeout(timeoutId);
+            if (!res.ok) {
+                const errText = await res.text();
+                return {
+                    success: false,
+                    error: extractCleanErrorMessage(errText, res.status)
+                };
+            }
+            const data = await res.json();
+            const content = data.choices?.[0]?.message?.content?.trim() || '';
+            // 过滤思维链标签 (如 <think>...</think> 或 <thought>...</thought>)
+            let cleanContent = content.replace(/<(?:think|thought)>[\s\S]*?<\/(?:think|thought)>/gi, '').trim();
+            // Extract JSON from markdown block ```json ... ``` or raw {...}
+            let cleanJson = cleanContent;
+            const match = cleanContent.match(/```(?:json)?\s*([\s\S]*?)```/);
+            if (match) {
+                cleanJson = match[1].trim();
+            }
+            else {
+                const firstBrace = cleanContent.indexOf('{');
+                const lastBrace = cleanContent.lastIndexOf('}');
+                if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+                    cleanJson = cleanContent.slice(firstBrace, lastBrace + 1);
+                }
+            }
+            const parsed = JSON.parse(cleanJson);
+            return { success: true, data: parsed, rawText: content };
+        }
+        catch (err) {
+            clearTimeout(timeoutId);
+            AutopilotLogger.warn(`[DirectLLM] 请求或解析 JSON 失败: ${err?.message || err}`);
+            const timeoutSec = Math.round(timeoutMs / 1000);
+            return {
+                success: false,
+                error: err.name === 'AbortError' ? `大模型请求超时 (超过 ${timeoutSec} 秒未响应，建议检查网络代理或将单批次记录分拆)` : (err.message || '大模型请求异常')
+            };
+        }
+    }
+    /**
+     * 直接调用大模型获取自然语言 / Markdown 文本响应 (用于报告撰写、对话问答等)
+     */
+    async function callDirectLlmText(systemPrompt, userPrompt, signal, timeoutMs = 180000) {
+        const config = getLlmConfig();
+        if (!config.apiKey || !config.endpoint) {
+            return { success: false, error: '未配置大模型 API Key 或端点' };
+        }
+        const url = normalizeEndpoint(config.endpoint);
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        const activeSignal = controller.signal;
+        try {
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${config.apiKey.trim()}`
+                },
+                body: JSON.stringify({
+                    model: config.model.trim(),
+                    messages: [
+                        { role: 'system', content: systemPrompt },
+                        { role: 'user', content: userPrompt }
+                    ],
+                    temperature: 0.3
+                }),
+                signal: activeSignal
+            });
+            clearTimeout(timeoutId);
+            if (!res.ok) {
+                const errText = await res.text();
+                return {
+                    success: false,
+                    error: extractCleanErrorMessage(errText, res.status)
+                };
+            }
+            const data = await res.json();
+            const content = data.choices?.[0]?.message?.content?.trim() || '';
+            // 过滤思维链标签 (如 <think>...</think> 或 <thought>...</thought>)
+            const cleanContent = content.replace(/<(?:think|thought)>[\s\S]*?<\/(?:think|thought)>/gi, '').trim();
+            return { success: true, text: cleanContent };
+        }
+        catch (err) {
+            clearTimeout(timeoutId);
+            AutopilotLogger.warn(`[DirectLLMText] 调用大模型失败: ${err?.message || err}`);
+            const timeoutSec = Math.round(timeoutMs / 1000);
+            return {
+                success: false,
+                error: err.name === 'AbortError' ? `大模型请求超时 (超过 ${timeoutSec} 秒未响应)` : (err.message || '大模型请求异常')
+            };
+        }
+    }
+
+    /**
+     * inferenceService.ts — 推断流水线服务
+     *
+     * 将 batchEditExpenseModal.ts 中的第二层 LLM 推断逻辑（~430 行）抽离重构为
+     * "时空骨架提取 + 分通道分流 + 极简 IO Schema" 的高性能推断管线。
+     *
+     * 三大核心优化：
+     * 1. 时空骨架压缩 (extractTripSkeleton)：tripTickets JSON → 纯文本时间线，压缩 ~93%
+     * 2. 按类型精准分流 (dispatchInferenceChannels)：三个独立通道并行执行
+     *    - 通道 A (TAXI)：出租车批量起止地，极简 [id, from, to] 输出
+     *    - 通道 B (STAY/TRANSIT)：住宿 + 大交通日程对齐
+     *    - 通道 C (UNKNOWN)：未识别类型归类
+     * 3. 极简 IO Schema：各通道仅传/仅返回该类型必要字段
+     *
+     * @since v4.38.0
+     */
+    /**
+     * 依据费用类型 ID 或名称确定单据流向 (BC 差旅报销 vs BJ 经费报销)
+     */
+    function getExpenseBillFlow(typeId, typeName) {
+        const s = `${typeName || ''} ${typeId || ''}`.toLowerCase();
+        // 1. 明确属于差旅大类的：飞机票、火车票、住宿费、出租车(taxi)、出差、差旅
+        if (s.includes('飞机') || s.includes('航空') || s.includes('jnc') || typeId === '035671613fdde1653e55bb00bc610000')
+            return 'BC';
+        if (s.includes('火车') || s.includes('高铁') || s.includes('hcp') || typeId === '0356c4c2b14de1653e55bb00bc610000')
+            return 'BC';
+        if (s.includes('住宿') || s.includes('酒店') || s.includes('zsf') || typeId === '0356c4e2b72de1653e55bb00bc610001')
+            return 'BC';
+        if ((s.includes('出租车') && s.includes('taxi')) || typeId === '0356c4cef03345af7f1906ec05cc0000')
+            return 'BC';
+        if (s.includes('差旅'))
+            return 'BC';
+        // 2. 明确属于非差旅/日常经费类的：市内交通费、手机通信费、交际费、会议费、福利费、培训费、办公用品、快递等
+        if (s.includes('市内交通') || typeId === '0356c529e72de1653e55bb00bc610001')
+            return 'BJ';
+        if (s.includes('手机') || s.includes('通信费-员工') || s.includes('txf') || typeId === '0356c577f8ede1653e55bb00bc610001')
+            return 'BJ';
+        if (s.includes('交际') || s.includes('会议') || s.includes('福利') || s.includes('礼金') || s.includes('培训') || s.includes('办公') || s.includes('快递') || s.includes('耗材') || s.includes('服务'))
+            return 'BJ';
+        // 3. 其它费用/未分类日常费用：在无出差特征时默认归入日常经费 (BJ)
+        if (s.includes('其他费用') || typeId === '0356c583e17de1653e55bb00bc610000')
+            return 'BJ';
+        return 'BJ';
+    }
+    /**
+     * 根据类型 ID 或类型名称智能识别费用主类别
+     */
+    function detectTypeCategory(typeId, typeName) {
+        const s = `${typeName || ''} ${typeId || ''}`.toLowerCase();
+        if (s.includes('住宿') || s.includes('酒店') || s.includes('zsf') || typeId === '0356c4e2b72de1653e55bb00bc610001')
+            return 'HOTEL';
+        if (s.includes('飞机') || s.includes('航空') || s.includes('jnc') || typeId === '035671613fdde1653e55bb00bc610000')
+            return 'FLIGHT';
+        if (s.includes('火车') || s.includes('高铁') || s.includes('hcp') || typeId === '0356c4c2b14de1653e55bb00bc610000')
+            return 'TRAIN';
+        if (s.includes('出租') || s.includes('taxi') || s.includes('czc') || s.includes('市内交通') || s.includes('snj') ||
+            typeId === '0356c4cef03345af7f1906ec05cc0000' || typeId === '0356c529e72de1653e55bb00bc610001')
+            return 'TAXI';
+        if (s.includes('手机') || s.includes('员工手机') || s.includes('通信') || s.includes('txf') || typeId === '0356c577f8ede1653e55bb00bc610001')
+            return 'MOBILE';
+        return 'OTHER';
+    }
+    /**
+     * 获取费用分组的识别主类别
+     */
+    function getGroupCategory(group) {
+        return detectTypeCategory(group.newExpenseTypeId || group.expenseTypeId, group.newExpenseTypeName || group.expenseTypeName);
+    }
+    /**
+     * 获取费用分组的单据流向
+     */
+    function getGroupBillFlow(group) {
+        return getExpenseBillFlow(group.newExpenseTypeId || group.expenseTypeId, group.newExpenseTypeName || group.expenseTypeName);
+    }
+    /**
+     * 检测出租车费用是否存在出差/日常错配嫌疑
+     */
+    function checkTaxiMisclassification(group, tripDateIntervals) {
+        // 核心铁律：已报销的费用已完成审批归档，严格只读展示，严禁触发错配报警或建议变更
+        if (normalizeExpenseStatus(group.status) === '已报销') {
+            return { hasMisclass: false };
+        }
+        const typeId = group.newExpenseTypeId || group.expenseTypeId;
+        const typeName = group.newExpenseTypeName || group.expenseTypeName;
+        const date = group.newBusinessDate || group.businessDate || group.earliestInvoiceDate;
+        if (!date)
+            return { hasMisclass: false };
+        const isLocalTaxi = typeName?.includes('市内交通') || typeId === '0356c529e72de1653e55bb00bc610001';
+        const isTripTaxi = (typeName?.includes('taxi') && !typeName?.includes('市内')) || typeId === '0356c4cef03345af7f1906ec05cc0000';
+        const hasTaxiInvoice = group.invoices?.some(inv => {
+            const s = `${inv.invoiceType || ''} ${inv.salesName || ''} ${inv.fileName || ''} ${inv.remarks || ''}`.toLowerCase();
+            return s.includes('出租车') || s.includes('打车') || s.includes('滴滴') || s.includes('taxi') || Boolean(inv.timeGetOn || inv.timeGetOff);
+        });
+        if (!isLocalTaxi && !isTripTaxi && !hasTaxiInvoice)
+            return { hasMisclass: false };
+        const matchedTrip = tripDateIntervals.find(t => date >= t.start && date <= t.end);
+        // 1. 发票明明是出租车，但费用类型被设置成了“其他费用”或未知类型
+        if (!isLocalTaxi && !isTripTaxi && hasTaxiInvoice) {
+            if (matchedTrip) {
+                return {
+                    hasMisclass: true,
+                    suggestedTypeId: '0356c4cef03345af7f1906ec05cc0000',
+                    suggestedTypeName: '出租车（taxi）',
+                    reason: `底层发票为出租车票且发生于 Trip ${matchedTrip.tripNo} (${matchedTrip.destination}) 出差期间，建议变更为【差旅费 - 出租车(taxi)】`
+                };
+            }
+            else {
+                return {
+                    hasMisclass: true,
+                    suggestedTypeId: '0356c529e72de1653e55bb00bc610001',
+                    suggestedTypeName: '市内交通费',
+                    reason: `底层发票为出租车打车票且非出差期间，建议变更为【交通费 - 市内交通费 (日常经费)】`
+                };
+            }
+        }
+        if (matchedTrip && isLocalTaxi) {
+            return {
+                hasMisclass: true,
+                suggestedTypeId: '0356c4cef03345af7f1906ec05cc0000',
+                suggestedTypeName: '出租车（taxi）',
+                reason: `该打车发生于 Trip ${matchedTrip.tripNo} (${matchedTrip.destination}) 出差期间，建议变更为【差旅费 - 出租车(taxi)】`
+            };
+        }
+        if (!matchedTrip && isTripTaxi && tripDateIntervals.length > 0) {
+            return {
+                hasMisclass: true,
+                suggestedTypeId: '0356c529e72de1653e55bb00bc610001',
+                suggestedTypeName: '市内交通费',
+                reason: `该打车不在任何出差期间内，建议变更为【交通费 - 市内交通费 (日常经费)】`
+            };
+        }
+        return { hasMisclass: false };
+    }
+    /**
+     * 判断费用分组是否为未识别类型 / 未分类 / OTHER
+     */
+    function isUnknownTypeGroup(group) {
+        const typeId = group.newExpenseTypeId || group.expenseTypeId;
+        const typeName = group.newExpenseTypeName || group.expenseTypeName;
+        return !typeId || typeId === 'UNIDENTIFIED' || typeName === '未知类型' || getGroupCategory(group) === 'OTHER';
+    }
+    /** 出租车通道分片阈值 */
+    const TAXI_BATCH_SIZE = 40;
+    // ============================================================
+    // 二、时空骨架提取 (Trip Skeleton Compression)
+    // ============================================================
+    /**
+     * 从已确认的大交通和住宿记录中提取极简纯文本时间线。
+     * 将数千 Token 的 JSON 上下文压缩至数百 Token 的人类可读时间线。
+     *
+     * 输出格式示例：
+     * ```
+     * [07-20] 机票: 上海虹桥→天津滨海 (MU5227 12:35) | 宿: 天津亚朵酒店
+     * [07-21~07-24] 宿: 天津美悦酒店
+     * [07-25] 机票: 天津滨海→上海虹桥 (FM9116 16:00)
+     * ```
+     */
+    function extractTripSkeleton(groups, itineraryText) {
+        // 收集大交通与住宿记录
+        const anchors = [];
+        for (const g of groups) {
+            const cat = getGroupCategory(g);
+            const dyn = g.dynamicFields || {};
+            const inv0 = g.invoices[0];
+            if (cat === 'FLIGHT') {
+                const from = dyn.flightFromCity || inv0?.stationGetOn || '?';
+                const to = dyn.flightToCity || inv0?.stationGetOff || '?';
+                const num = dyn.flightNum || inv0?.trainNo || '';
+                const depTime = inv0?.departureTime || '';
+                const date = dyn.flightStartDate || inv0?.departureDate || g.businessDate || g.earliestInvoiceDate;
+                const endDate = dyn.flightEndDate;
+                let text = `机票: ${from}→${to}`;
+                if (num)
+                    text += ` (${num}`;
+                if (depTime)
+                    text += num ? ` ${depTime})` : ` (${depTime})`;
+                else if (num)
+                    text += ')';
+                anchors.push({ date, endDate, type: 'FLIGHT', text });
+            }
+            else if (cat === 'TRAIN') {
+                const from = dyn.trainFromStation || inv0?.stationGetOn || '?';
+                const to = dyn.trainToStation || inv0?.stationGetOff || '?';
+                const num = inv0?.trainNo || '';
+                const depTime = inv0?.departureTime || '';
+                const date = dyn.trainStartDate || inv0?.departureDate || g.businessDate || g.earliestInvoiceDate;
+                const endDate = dyn.trainEndDate;
+                let text = `高铁: ${from}→${to}`;
+                if (num)
+                    text += ` (${num}`;
+                if (depTime)
+                    text += num ? ` ${depTime})` : ` (${depTime})`;
+                else if (num)
+                    text += ')';
+                anchors.push({ date, endDate, type: 'TRAIN', text });
+            }
+            else if (cat === 'HOTEL') {
+                const hotel = dyn.hotelName || inv0?.salesName || '?';
+                const city = dyn.city || '';
+                const checkIn = dyn.checkInDate || g.businessDate || g.earliestInvoiceDate;
+                const checkOut = dyn.checkOutDate;
+                let text = `宿: ${hotel}`;
+                if (city)
+                    text += ` (${city})`;
+                anchors.push({
+                    date: checkIn,
+                    endDate: checkOut,
+                    type: 'HOTEL',
+                    text
+                });
+            }
+        }
+        if (anchors.length === 0 && !itineraryText)
+            return '';
+        // 按日期正序排列
+        anchors.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+        // 按日期分组聚合
+        const dateMap = new Map();
+        for (const anchor of anchors) {
+            const dateKey = formatSkeletonDateRange(anchor.date, anchor.endDate);
+            if (!dateMap.has(dateKey))
+                dateMap.set(dateKey, []);
+            dateMap.get(dateKey).push(anchor.text);
+        }
+        const lines = [];
+        for (const [dateKey, texts] of dateMap) {
+            lines.push(`[${dateKey}] ${texts.join(' | ')}`);
+        }
+        let skeleton = lines.join('\n');
+        // 附加用户权威排期表（如果存在）
+        if (itineraryText) {
+            skeleton += '\n\n【用户权威出差排期日程 (Ground Truth)】：\n' + itineraryText;
+        }
+        return skeleton;
+    }
+    /** 格式化骨架日期范围：07-20 或 07-21~07-24 */
+    function formatSkeletonDateRange(startDate, endDate) {
+        const fmt = (d) => {
+            if (!d)
+                return '';
+            const m = d.match(/\d{4}-(\d{2}-\d{2})/);
+            return m ? m[1] : d;
+        };
+        const s = fmt(startDate);
+        const e = fmt(endDate);
+        if (!s)
+            return '?';
+        if (!e || e === s)
+            return s;
+        // 住宿的 endDate 减 1 天 (checkOut 日不算入住)
+        return `${s}~${e}`;
+    }
+    // ============================================================
+    // 三、分通道调度器 (Dispatcher)
+    // ============================================================
+    /**
+     * 将待推断记录按类型分流至三个独立通道，采用两阶段瀑布式并行执行后合并结果。
+     *
+     * 【关键设计决策：两阶段瀑布式并行 (Two-Phase Waterfall)】
+     * 出租车的时空闭环推理强依赖住宿酒店名称和大交通枢纽站点信息。
+     * 若三通道完全并行，出租车通道可能拿不到 Channel B (住宿/大交通) 的 LLM 推断结果
+     * （如从排期表匹配到的精确酒店商业品牌名、入离店日期等），导致推断质量下降。
+     *
+     * 因此采用瀑布式分阶段执行：
+     *   阶段 1：Channel B (住宿+大交通) + Channel C (未知类型) → 并行执行（数量少，~10-20s）
+     *   阶段 2：Channel A (出租车) → 使用被 Phase 1 结果增强后的骨架执行（信息完整）
+     *
+     * 总延迟 ≈ Phase1(~20s) + Phase2(~30s) ≈ 50s，远优于全串行 3~5 分钟。
+     */
+    async function dispatchInferenceChannels(groupsWithMissingFields, allGroups, tripSkeleton, itineraryText, onProgress) {
+        // 按类型分桶
+        const taxiGroups = [];
+        const stayTransitGroups = [];
+        const unknownGroups = [];
+        for (const g of groupsWithMissingFields) {
+            // 核心铁律：已报销记录严格只读，绝不分流至任何 LLM 推断通道
+            if (normalizeExpenseStatus(g.status) === '已报销')
+                continue;
+            if (isUnknownTypeGroup(g)) {
+                unknownGroups.push(g);
+            }
+            else {
+                const cat = getGroupCategory(g);
+                if (cat === 'TAXI') {
+                    taxiGroups.push(g);
+                }
+                else if (cat === 'HOTEL' || cat === 'FLIGHT' || cat === 'TRAIN') {
+                    stayTransitGroups.push(g);
+                }
+                // MOBILE 和 OTHER 通常在 Tier 1 规则层已处理完毕，不进入 LLM 通道
+            }
+        }
+        const results = {
+            taxi: [],
+            stayTransit: [],
+            unknown: []
+        };
+        // ================================================================
+        // 阶段 1：Channel B (住宿+大交通) + Channel C (未知类型) 并行执行
+        // 数量少（通常 5~15 笔），耗时短（~10-20s）
+        // ================================================================
+        const phase1Promises = [];
+        if (stayTransitGroups.length > 0) {
+            const statusPrefix = `🏨✈️ 差旅大项 ${stayTransitGroups.length} 笔`;
+            onProgress?.(`阶段1: ${statusPrefix} 推断中...`);
+            phase1Promises.push(executeStayTransitChannel(stayTransitGroups, tripSkeleton)
+                .then(r => { results.stayTransit = r; onProgress?.(`${statusPrefix} ✅`); })
+                .catch(err => {
+                AutopilotLogger.warn(`[InferenceService] 差旅大项通道异常: ${err?.message}`);
+                onProgress?.(`${statusPrefix} ⚠️ 部分失败`);
+            }));
+        }
+        if (unknownGroups.length > 0) {
+            const statusPrefix = `❓ 未知类型 ${unknownGroups.length} 笔`;
+            onProgress?.(`阶段1: ${statusPrefix} 推断中...`);
+            phase1Promises.push(executeUnknownChannel(unknownGroups, tripSkeleton)
+                .then(r => { results.unknown = r; onProgress?.(`${statusPrefix} ✅`); })
+                .catch(err => {
+                AutopilotLogger.warn(`[InferenceService] 未知类型通道异常: ${err?.message}`);
+                onProgress?.(`${statusPrefix} ⚠️ 部分失败`);
+            }));
+        }
+        // 等待阶段 1 全部完成
+        if (phase1Promises.length > 0) {
+            await Promise.allSettled(phase1Promises);
+        }
+        // ================================================================
+        // 阶段间增强：将 Phase 1 推断结果写回 groups，然后重新提取增强骨架
+        // 这样出租车通道拿到的骨架已包含 LLM 推断出的精确酒店名/入离店日期/航线等
+        // ================================================================
+        let enrichedSkeleton = tripSkeleton;
+        if (results.stayTransit.length > 0 || results.unknown.length > 0) {
+            // 临时将 Phase 1 结果写入 groups 的 dynamicFields（mergeInferenceResults 后续会正式处理）
+            applyPhase1ResultsToGroups(allGroups, results);
+            // 重新提取增强后的骨架
+            enrichedSkeleton = extractTripSkeleton(allGroups, itineraryText);
+            AutopilotLogger.info(`[InferenceService] Phase 1 完成，骨架已增强 (stayTransit=${results.stayTransit.length}, unknown=${results.unknown.length})`);
+        }
+        // ================================================================
+        // 阶段 2：Channel A (出租车) 使用增强骨架执行
+        // 数量最多（通常 60~80%），但此时信息完整
+        // ================================================================
+        if (taxiGroups.length > 0) {
+            const statusPrefix = `🚕 出租车 ${taxiGroups.length} 笔`;
+            onProgress?.(`阶段2: ${statusPrefix} 推断中...`);
+            try {
+                results.taxi = await executeTaxiChannel(taxiGroups, enrichedSkeleton, itineraryText);
+                onProgress?.(`${statusPrefix} ✅`);
+            }
+            catch (err) {
+                AutopilotLogger.warn(`[InferenceService] 出租车通道异常: ${err?.message}`);
+                onProgress?.(`${statusPrefix} ⚠️ 部分失败`);
+            }
+        }
+        return results;
+    }
+    /**
+     * 将阶段 1 推断结果临时写入 groups 的 dynamicFields，以便重新提取增强骨架。
+     * 仅写入影响骨架生成的关键锚点字段（酒店名/城市/入离店/航线/车站）。
+     */
+    function applyPhase1ResultsToGroups(groups, results) {
+        const groupMap = new Map(groups.map(g => [g.expenseRecordId, g]));
+        // 写入 Channel B (住宿+大交通) 推断结果
+        for (const st of results.stayTransit) {
+            const g = groupMap.get(st.id);
+            if (!g)
+                continue;
+            g.dynamicFields = g.dynamicFields || {};
+            const dyn = g.dynamicFields;
+            const f = st.fields;
+            if (f.hotelName && !dyn.hotelName)
+                dyn.hotelName = f.hotelName;
+            if (f.city && !dyn.city)
+                dyn.city = f.city;
+            if (f.checkInDate && !dyn.checkInDate)
+                dyn.checkInDate = f.checkInDate;
+            if (f.checkOutDate && !dyn.checkOutDate)
+                dyn.checkOutDate = f.checkOutDate;
+            if (f.flightFromCity && !dyn.flightFromCity)
+                dyn.flightFromCity = f.flightFromCity;
+            if (f.flightToCity && !dyn.flightToCity)
+                dyn.flightToCity = f.flightToCity;
+            if (f.flightNum && !dyn.flightNum)
+                dyn.flightNum = f.flightNum;
+            if (f.flightStartDate && !dyn.flightStartDate)
+                dyn.flightStartDate = f.flightStartDate;
+            if (f.trainFromStation && !dyn.trainFromStation)
+                dyn.trainFromStation = f.trainFromStation;
+            if (f.trainToStation && !dyn.trainToStation)
+                dyn.trainToStation = f.trainToStation;
+            if (f.trainStartDate && !dyn.trainStartDate)
+                dyn.trainStartDate = f.trainStartDate;
+        }
+        // 写入 Channel C (未知类型归类) 推断结果 — 更新类型以便骨架提取识别
+        for (const unk of results.unknown) {
+            const g = groupMap.get(unk.id);
+            if (!g)
+                continue;
+            g.newExpenseTypeId = unk.targetExpenseTypeId;
+            g.newExpenseTypeName = unk.targetExpenseTypeName;
+            if (unk.fields) {
+                g.dynamicFields = g.dynamicFields || {};
+                const dyn = g.dynamicFields;
+                const f = unk.fields;
+                if (f.hotelName && !dyn.hotelName)
+                    dyn.hotelName = f.hotelName;
+                if (f.city && !dyn.city)
+                    dyn.city = f.city;
+                if (f.checkInDate && !dyn.checkInDate)
+                    dyn.checkInDate = f.checkInDate;
+                if (f.checkOutDate && !dyn.checkOutDate)
+                    dyn.checkOutDate = f.checkOutDate;
+                if (f.flightFromCity && !dyn.flightFromCity)
+                    dyn.flightFromCity = f.flightFromCity;
+                if (f.flightToCity && !dyn.flightToCity)
+                    dyn.flightToCity = f.flightToCity;
+                if (f.trainFromStation && !dyn.trainFromStation)
+                    dyn.trainFromStation = f.trainFromStation;
+                if (f.trainToStation && !dyn.trainToStation)
+                    dyn.trainToStation = f.trainToStation;
+            }
+        }
+    }
+    // ============================================================
+    // 四、通道 A：出租车批量起止地推断
+    // ============================================================
+    const TAXI_SYSTEM_PROMPT_TEMPLATE = `你是元年云 FSSC 出租车行程智能推断专家。
+根据出差时空骨架与打车时间，推断每笔出租车的始发地与目的地。
+
+【出差时空骨架 (行程时间线)】：
+{SKELETON}
+
+【时空轨迹闭环推理规则】：
+1. 大交通出发首日 (去程日)：
+   - 出发前打车（早间/提前 1~2 小时）：始发地为「住所」，目的地为当天出发交通枢纽（如上海虹桥机场/上海虹桥站）
+   - 到达外地后打车：始发地为到达交通枢纽（如天津滨海机场），目的地为当天入住酒店的具体商业品牌名
+2. 大交通返程末日 (回程日)：
+   - 返程前打车：始发地为当天退房酒店，目的地为外地出发交通枢纽
+   - 返程到达常驻地后打车：始发地为到达交通枢纽，目的地为「住所」
+3. 在途常驻出差日：
+   - 在当天入住酒店与「客户现场」之间流转
+4.【去代称铁律】：严禁输出"酒店"、"机场"、"车站"、"Home"等模糊代称！必须解析为真实酒店名/真实枢纽站名或「住所」
+5. 仅对能确信推断的记录输出，无法判断的记录直接不放入数组
+
+JSON 输出格式 (严禁输出其他字段/废话/思考过程)：
+{"results":[{"id":"记录ID","from":"始发据点","to":"到达据点"}]}`;
+    async function executeTaxiChannel(groups, skeleton, itineraryText) {
+        const systemPrompt = TAXI_SYSTEM_PROMPT_TEMPLATE.replace('{SKELETON}', skeleton);
+        // 构建极简输入
+        const buildInputRecords = (gs) => gs.map(g => {
+            const inv = g.invoices.find(i => i.timeGetOn || i.timeGetOff) || g.invoices[0];
+            const rec = {
+                id: g.expenseRecordId,
+                date: g.businessDate || g.earliestInvoiceDate
+            };
+            if (inv?.timeGetOn)
+                rec.on = inv.timeGetOn;
+            if (inv?.timeGetOff)
+                rec.off = inv.timeGetOff;
+            if (inv?.salesName)
+                rec.sales = inv.salesName;
+            // 合并备注与文件名中的行程线索
+            const remark = [inv?.remarks, inv?.reconciliationNote].filter(Boolean).join(' ').trim();
+            if (remark)
+                rec.remark = remark;
+            return rec;
+        });
+        // 分片处理：超过阈值则分批并行
+        if (groups.length > TAXI_BATCH_SIZE) {
+            const batches = [];
+            for (let i = 0; i < groups.length; i += TAXI_BATCH_SIZE) {
+                batches.push(groups.slice(i, i + TAXI_BATCH_SIZE));
+            }
+            const batchResults = await Promise.allSettled(batches.map(batch => callTaxiLlm(systemPrompt, buildInputRecords(batch))));
+            const merged = [];
+            for (const r of batchResults) {
+                if (r.status === 'fulfilled' && r.value)
+                    merged.push(...r.value);
+            }
+            return merged;
+        }
+        return callTaxiLlm(systemPrompt, buildInputRecords(groups));
+    }
+    async function callTaxiLlm(systemPrompt, records) {
+        const userPrompt = JSON.stringify({ records });
+        const res = await callDirectLlmJson(systemPrompt, userPrompt, undefined, 120000);
+        if (res.success && res.data?.results) {
+            return res.data.results.filter(r => r.id && (r.from || r.to));
+        }
+        if (!res.success) {
+            AutopilotLogger.warn(`[TaxiChannel] LLM 调用失败: ${res.error}`);
+        }
+        return [];
+    }
+    // ============================================================
+    // 五、通道 B：差旅核心大项推断 (HOTEL / FLIGHT / TRAIN)
+    // ============================================================
+    const STAY_TRANSIT_SYSTEM_PROMPT_TEMPLATE = `你是元年云 FSSC 差旅核心大项（住宿/机票/火车票）智能推断专家。
+根据出差时空骨架与发票证据链，推断指定记录的缺失专属必填字段。
+
+【出差时空骨架 (行程时间线)】：
+{SKELETON}
+
+【住宿费 (HOTEL) 规则】：
+- checkInDate (YYYY-MM-DD)：实际入住日期，严禁误用开票日期！以排期/时间线为准
+- checkOutDate (YYYY-MM-DD)：实际离店日期
+- city：出差城市名（如天津、广州、大连），连锁酒店品牌词（亚朵、全季）不是城市
+- hotelName：酒店商业品牌名（如"全季酒店(天津津南新城店)"），严禁用开票抬头/管理公司
+- roomNum：数字，默认 1
+
+【飞机票 (FLIGHT) 规则】：
+- flightStartDate (YYYY-MM-DD)：出发日期
+- flightEndDate (YYYY-MM-DD)：到达日期
+- flightFromCity：出发城市
+- flightToCity：到达城市
+- flightNum：航班号。往返双程需完整填写并用正斜杠连接（如 CZ6534/CZ6523），严禁只截取单程！严禁把项目编号误识别为航班号！
+
+【火车票 (TRAIN) 规则】：
+- trainStartDate (YYYY-MM-DD)：出发日期
+- trainEndDate (YYYY-MM-DD)：到达日期
+- trainFromStation：出发站
+- trainToStation：到达站
+
+【输出约束】：
+- 仅对能确信推断的字段输出键值，严禁输出 null 字段
+- 严禁输出 reason / 思考过程 / 多余文字
+- 无法推断的记录直接不放入数组
+
+JSON 输出格式：
+{"inferences":[{"id":"记录ID","fields":{"checkInDate":"YYYY-MM-DD","city":"城市",...}}]}`;
+    async function executeStayTransitChannel(groups, skeleton, itineraryText) {
+        const systemPrompt = STAY_TRANSIT_SYSTEM_PROMPT_TEMPLATE.replace('{SKELETON}', skeleton);
+        const records = groups.map(g => {
+            const cat = getGroupCategory(g);
+            const inv0 = g.invoices[0];
+            const dyn = g.dynamicFields || {};
+            const rec = {
+                id: g.expenseRecordId,
+                type: cat,
+                amount: g.expenseAmount,
+                bizDate: g.businessDate,
+                invDate: g.earliestInvoiceDate,
+                missing: []
+            };
+            if (inv0?.salesName)
+                rec.sales = inv0.salesName;
+            if (inv0?.stationGetOn)
+                rec.stationOn = inv0.stationGetOn;
+            if (inv0?.stationGetOff)
+                rec.stationOff = inv0.stationGetOff;
+            if (inv0?.departureDate)
+                rec.depDate = inv0.departureDate;
+            if (inv0?.trainNo)
+                rec.flightNo = inv0.trainNo;
+            if (inv0?.remarks)
+                rec.remarks = inv0.remarks;
+            if (inv0?.fileName)
+                rec.fileName = inv0.fileName;
+            if (dyn.hotelName)
+                rec.hotelName = dyn.hotelName;
+            if (dyn.city)
+                rec.city = dyn.city;
+            if (dyn.checkInDate)
+                rec.checkIn = dyn.checkInDate;
+            if (dyn.checkOutDate)
+                rec.checkOut = dyn.checkOutDate;
+            // 明确列出缺失字段
+            if (cat === 'HOTEL') {
+                if (!dyn.checkInDate)
+                    rec.missing.push('checkInDate');
+                if (!dyn.checkOutDate)
+                    rec.missing.push('checkOutDate');
+                if (!dyn.city)
+                    rec.missing.push('city');
+                if (!dyn.hotelName)
+                    rec.missing.push('hotelName');
+            }
+            else if (cat === 'FLIGHT') {
+                if (!dyn.flightStartDate)
+                    rec.missing.push('flightStartDate');
+                if (!dyn.flightEndDate)
+                    rec.missing.push('flightEndDate');
+                if (!dyn.flightFromCity)
+                    rec.missing.push('flightFromCity');
+                if (!dyn.flightToCity)
+                    rec.missing.push('flightToCity');
+                if (!dyn.flightNum)
+                    rec.missing.push('flightNum');
+            }
+            else if (cat === 'TRAIN') {
+                if (!dyn.trainStartDate)
+                    rec.missing.push('trainStartDate');
+                if (!dyn.trainEndDate)
+                    rec.missing.push('trainEndDate');
+                if (!dyn.trainFromStation)
+                    rec.missing.push('trainFromStation');
+                if (!dyn.trainToStation)
+                    rec.missing.push('trainToStation');
+            }
+            return rec;
+        });
+        const userPrompt = JSON.stringify({ records });
+        const res = await callDirectLlmJson(systemPrompt, userPrompt, undefined, 120000);
+        if (res.success && res.data?.inferences) {
+            return res.data.inferences
+                .filter(inf => inf.id && inf.fields)
+                .map(inf => ({ id: inf.id, fields: inf.fields }));
+        }
+        if (!res.success) {
+            AutopilotLogger.warn(`[StayTransitChannel] LLM 调用失败: ${res.error}`);
+        }
+        return [];
+    }
+    // ============================================================
+    // 六、通道 C：未识别类型归类
+    // ============================================================
+    const UNKNOWN_SYSTEM_PROMPT = `你是元年云 FSSC 费用类型智能分类专家。
+根据发票金额、销售方、备注与文件名等证据，判定每笔未识别费用的标准类型，并一并补齐该类型的必填字段。
+
+【系统标准费用类型字典】：
+1. 飞机票（航空券）→ ID: "035671613fdde1653e55bb00bc610000", 必填: flightStartDate, flightEndDate, flightFromCity, flightToCity, flightNum
+2. 火车公交车票 （電車Bus代）→ ID: "0356c4c2b14de1653e55bb00bc610000", 必填: trainStartDate, trainEndDate, trainFromStation, trainToStation
+3. 住宿费（宿泊代）→ ID: "0356c4e2b72de1653e55bb00bc610001", 必填: checkInDate, checkOutDate, city, hotelName, roomNum
+4. 出租车（taxi）→ ID: "0356c4cef03345af7f1906ec05cc0000", 必填: startAddress, endAddress
+5. 通信传真费（通信代）→ ID: "0356c4f6701345af7f1906ec05cc0000", 必填: billMonth (YYYY-MM)
+6. 交通费-其他(その他）→ ID: "0356c529e72de1653e55bb00bc610001", 必填: startAddress, endAddress
+
+【分类判定规则】：
+- 飞机/航空/机票 → 飞机票
+- 火车/高铁/铁路/12306 → 火车公交车票
+- 酒店/住宿/客房/宾馆 → 住宿费
+- 出租车/滴滴/网约车/曹操/taxi → 出租车
+- 通信/话费/移动/电信/联通 → 通信传真费
+- 大额 (≥¥350) 且无打车特征 → 勿随意降级为出租车
+
+【输出约束】：
+- 仅输出能确信归类的记录，无法判断的不放入数组
+- 严禁输出 reason / 思考过程
+
+JSON 输出格式：
+{"classifications":[{"id":"记录ID","targetExpenseTypeId":"类型ID","targetExpenseTypeName":"类型名称","fields":{"startAddress":"...",...}}]}`;
+    async function executeUnknownChannel(groups, skeleton) {
+        const systemPrompt = skeleton
+            ? `${UNKNOWN_SYSTEM_PROMPT}\n\n【出差时空骨架 (辅助参考)】：\n${skeleton}`
+            : UNKNOWN_SYSTEM_PROMPT;
+        const records = groups.map(g => {
+            const inv0 = g.invoices[0];
+            const rec = {
+                id: g.expenseRecordId,
+                amount: g.expenseAmount,
+                bizDate: g.businessDate,
+                invDate: g.earliestInvoiceDate
+            };
+            if (inv0?.salesName)
+                rec.sales = inv0.salesName;
+            if (inv0?.fileName)
+                rec.fileName = inv0.fileName;
+            if (inv0?.remarks)
+                rec.remarks = inv0.remarks;
+            if (inv0?.timeGetOn)
+                rec.timeGetOn = inv0.timeGetOn;
+            if (inv0?.timeGetOff)
+                rec.timeGetOff = inv0.timeGetOff;
+            if (inv0?.stationGetOn)
+                rec.stationOn = inv0.stationGetOn;
+            if (inv0?.stationGetOff)
+                rec.stationOff = inv0.stationGetOff;
+            return rec;
+        });
+        const userPrompt = JSON.stringify({ records });
+        const res = await callDirectLlmJson(systemPrompt, userPrompt, undefined, 60000);
+        if (res.success && res.data?.classifications) {
+            return res.data.classifications
+                .filter(c => c.id && c.targetExpenseTypeId && c.targetExpenseTypeName)
+                .map(c => ({
+                id: c.id,
+                targetExpenseTypeId: c.targetExpenseTypeId,
+                targetExpenseTypeName: c.targetExpenseTypeName,
+                fields: c.fields
+            }));
+        }
+        if (!res.success) {
+            AutopilotLogger.warn(`[UnknownChannel] LLM 调用失败: ${res.error}`);
+        }
+        return [];
+    }
+    // ============================================================
+    // 七、结果合并回填 (Merge & Backfill)
+    // ============================================================
+    /**
+     * 将三通道推断结果统一映射回 groups 的 dynamicFields / inferredFields。
+     * 完整保留现有的联动逻辑：
+     * - 住宿城市 → cityType 自动推导
+     * - 住宿/大交通业务日期 → newBusinessDate 同步
+     * - selectedRecordIds 自动选中
+     *
+     * @returns LLM 推断填充的总字段数
+     */
+    function mergeInferenceResults(groups, inferenceResults, selectedRecordIds) {
+        let llmInferredCount = 0;
+        const groupMap = new Map(groups.map(g => [g.expenseRecordId, g]));
+        // ---- 合并通道 C：未知类型归类 ----
+        for (const unk of inferenceResults.unknown) {
+            const targetG = groupMap.get(unk.id);
+            if (!targetG)
+                continue;
+            targetG.dynamicFields = targetG.dynamicFields || {};
+            targetG.inferredFields = targetG.inferredFields || {};
+            targetG.newExpenseTypeId = unk.targetExpenseTypeId;
+            targetG.newExpenseTypeName = unk.targetExpenseTypeName;
+            targetG.inferredFields['expenseType'] = 'llm';
+            llmInferredCount++;
+            selectedRecordIds.add(targetG.expenseRecordId);
+            // 归类后一并补齐的字段
+            if (unk.fields) {
+                llmInferredCount += applyFieldsToGroup(targetG, unk.fields);
+            }
+        }
+        // ---- 合并通道 A：出租车起止地 ----
+        for (const taxi of inferenceResults.taxi) {
+            const targetG = groupMap.get(taxi.id);
+            if (!targetG)
+                continue;
+            targetG.dynamicFields = targetG.dynamicFields || {};
+            targetG.inferredFields = targetG.inferredFields || {};
+            if (taxi.from) {
+                targetG.dynamicFields.startAddress = taxi.from;
+                targetG.inferredFields['dynAddrFrom'] = 'llm';
+                targetG.inferredFields['startAddress'] = 'llm';
+                llmInferredCount++;
+            }
+            if (taxi.to) {
+                targetG.dynamicFields.endAddress = taxi.to;
+                targetG.inferredFields['dynAddrTo'] = 'llm';
+                targetG.inferredFields['endAddress'] = 'llm';
+                llmInferredCount++;
+            }
+            if (taxi.from || taxi.to) {
+                selectedRecordIds.add(targetG.expenseRecordId);
+            }
+        }
+        // ---- 合并通道 B：差旅大项 ----
+        for (const st of inferenceResults.stayTransit) {
+            const targetG = groupMap.get(st.id);
+            if (!targetG)
+                continue;
+            targetG.dynamicFields = targetG.dynamicFields || {};
+            targetG.inferredFields = targetG.inferredFields || {};
+            const count = applyFieldsToGroup(targetG, st.fields);
+            if (count > 0) {
+                llmInferredCount += count;
+                selectedRecordIds.add(targetG.expenseRecordId);
+            }
+        }
+        return llmInferredCount;
+    }
+    /**
+     * 将推断字段应用到目标分组，包含完整的联动逻辑
+     * @returns 实际填充的字段数
+     */
+    function applyFieldsToGroup(targetG, fields) {
+        const dyn = targetG.dynamicFields;
+        const inf = targetG.inferredFields;
+        const effectiveCat = getGroupCategory(targetG);
+        let count = 0;
+        // 住宿费专属字段
+        if (fields.checkInDate) {
+            dyn.checkInDate = fields.checkInDate;
+            inf['dynCheckIn'] = 'llm';
+            inf['checkInDate'] = 'llm';
+            if (effectiveCat === 'HOTEL') {
+                targetG.newBusinessDate = fields.checkInDate;
+                inf['businessDate'] = 'llm';
+            }
+            count++;
+        }
+        if (fields.checkOutDate) {
+            dyn.checkOutDate = fields.checkOutDate;
+            inf['dynCheckOut'] = 'llm';
+            inf['checkOutDate'] = 'llm';
+            count++;
+        }
+        if (fields.city) {
+            dyn.city = fields.city;
+            inf['dynCity'] = 'llm';
+            inf['city'] = 'llm';
+            // 城市级别自动推导
+            const c = String(fields.city).replace(/市|区|县/g, '').trim();
+            const isTier1 = /北京|上海|广州|深圳/.test(c);
+            dyn.cityType = isTier1 ? '境内-北上广深' : '境内-其他';
+            inf['dynCityType'] = 'rule';
+            inf['cityType'] = 'rule';
+            count++;
+        }
+        if (fields.hotelName) {
+            dyn.hotelName = fields.hotelName;
+            inf['dynHotel'] = 'llm';
+            inf['hotelName'] = 'llm';
+            count++;
+        }
+        if (fields.roomNum !== undefined) {
+            dyn.roomNum = Number(fields.roomNum) || 1;
+            inf['dynRoomNum'] = 'llm';
+            inf['roomNum'] = 'llm';
+            count++;
+        }
+        // 出租车始发到达
+        if (fields.startAddress) {
+            dyn.startAddress = fields.startAddress;
+            inf['dynAddrFrom'] = 'llm';
+            inf['startAddress'] = 'llm';
+            count++;
+        }
+        if (fields.endAddress) {
+            dyn.endAddress = fields.endAddress;
+            inf['dynAddrTo'] = 'llm';
+            inf['endAddress'] = 'llm';
+            count++;
+        }
+        // 飞机票专属字段
+        if (fields.flightStartDate) {
+            dyn.flightStartDate = fields.flightStartDate;
+            inf['dynStartDate'] = 'llm';
+            inf['flightStartDate'] = 'llm';
+            if (effectiveCat === 'FLIGHT') {
+                targetG.newBusinessDate = fields.flightStartDate;
+                inf['businessDate'] = 'llm';
+            }
+            count++;
+        }
+        if (fields.flightEndDate) {
+            dyn.flightEndDate = fields.flightEndDate;
+            inf['dynEndDate'] = 'llm';
+            inf['flightEndDate'] = 'llm';
+            count++;
+        }
+        if (fields.flightFromCity) {
+            dyn.flightFromCity = fields.flightFromCity;
+            inf['dynFrom'] = 'llm';
+            inf['flightFromCity'] = 'llm';
+            count++;
+        }
+        if (fields.flightToCity) {
+            dyn.flightToCity = fields.flightToCity;
+            inf['dynTo'] = 'llm';
+            inf['flightToCity'] = 'llm';
+            count++;
+        }
+        if (fields.flightNum) {
+            dyn.flightNum = fields.flightNum;
+            inf['dynTransitNo'] = 'llm';
+            inf['flightNum'] = 'llm';
+            count++;
+        }
+        // 火车票专属字段
+        if (fields.trainStartDate) {
+            dyn.trainStartDate = fields.trainStartDate;
+            inf['dynStartDate'] = 'llm';
+            inf['trainStartDate'] = 'llm';
+            if (effectiveCat === 'TRAIN') {
+                targetG.newBusinessDate = fields.trainStartDate;
+                inf['businessDate'] = 'llm';
+            }
+            count++;
+        }
+        if (fields.trainEndDate) {
+            dyn.trainEndDate = fields.trainEndDate;
+            inf['dynEndDate'] = 'llm';
+            inf['trainEndDate'] = 'llm';
+            count++;
+        }
+        if (fields.trainFromStation) {
+            dyn.trainFromStation = fields.trainFromStation;
+            inf['dynFrom'] = 'llm';
+            inf['trainFromStation'] = 'llm';
+            count++;
+        }
+        if (fields.trainToStation) {
+            dyn.trainToStation = fields.trainToStation;
+            inf['dynTo'] = 'llm';
+            inf['trainToStation'] = 'llm';
+            count++;
+        }
+        // 通信费专属字段
+        if (fields.billMonth) {
+            dyn.billMonth = fields.billMonth;
+            inf['dynBillMonth'] = 'llm';
+            inf['billMonth'] = 'llm';
+            count++;
+        }
+        return count;
+    }
+    const ITINERARY_PARSER_SYSTEM_PROMPT = `你是一个专业的企业财务差旅排期与出行行程认知推理专家。
+用户会提供一段出差排期文本（可能来自 Excel 表格复制、日程备忘录、微信聊天、邮件通知等）。
+请运用大语言模型的常识认知决策与世界地理常识，精准识别并切分出本次日程中包含的所有“出差行程轮次 (Trips)”。
+
+【严格遵循的输出 JSON Schema】：
+{
+  "trips": [
+    {
+      "tripNo": 1,
+      "destination": "目的地城市名（如 天津、广州、合肥、大连、嘉兴；若为同城园区特殊出差可带园区如 上海金山）",
+      "startDate": "YYYY-MM-DD",
+      "endDate": "YYYY-MM-DD",
+      "hotelName": "排期中入住的酒店名称（多家用 / 分隔）",
+      "flightOrTrain": "主要交通工具（飞机 / 高铁 / 火车）",
+      "purpose": "出差目的或调研事由（如：天津业务差旅与实地调研 (住理工津荣模具、環宇住理工、東海化成)）",
+      "targetFactories": "走访据点或企业客户名称列表（用、分隔）",
+      "travelers": ["出行人员姓名列表"],
+      "legs": [
+        { "date": "YYYY-MM-DD", "fromCity": "出发城市", "toCity": "到达城市", "transport": "飞机/高铁" },
+        { "date": "YYYY-MM-DD", "fromCity": "离开城市", "toCity": "返回城市", "transport": "飞机/高铁" }
+      ]
+    }
+  ]
+}
+
+【认知推理核心铁律】：
+1. 往返闭环定义：从常驻出发地出发，到外地开展活动，最终返回常驻地，视为一轮完整独立的出差 (Trip)；
+2. 往返周期绝对隔离：若同一月份前往同一城市多次（例如 7/20~7/25 去天津，8/17~8/21 又去天津），必须切分为独立的两个 Trip，绝对不可跨往返周期合并；
+3. 有住宿即为出差：只要排期中包含酒店住宿（即使是同城或同省远距离据点园区住宿），均应作为独立出差单据识别；
+4. 标准化日期：将各种日期格式（如 2026/7/20、7月20日、2026.07.20）一律归一化为标准的 YYYY-MM-DD；
+5. 必须返回纯 JSON，严禁输出任何 markdown 代码块以外的解释说明文字。
+`;
+    /**
+     * 将解析出的多轮 Trip 渲染为清晰规整的 Markdown 业务报表供对话框与看板展示
+     */
+    function formatTripsToMarkdownSummary(trips, engine, latencyMs) {
+        if (!trips || trips.length === 0) {
+            return `未能从排期文本中识别出有效出差行程。请确认文本包含目的地、起止日期或活动类型。`;
+        }
+        const headerBadge = engine === 'llm'
+            ? `✨ **大模型 (LLM) 深度认知解析完成**` + (latencyMs ? ` (耗时 ${(latencyMs / 1000).toFixed(1)}s)` : '')
+            : `⚡ **轻量规则引擎已解析排期** (已启用本地确定性规则切分)`;
+        let totalDays = 0;
+        trips.forEach(t => {
+            try {
+                const d1 = new Date(t.startDate.replace(/-/g, '/')).getTime();
+                const d2 = new Date(t.endDate.replace(/-/g, '/')).getTime();
+                const diff = Math.max(1, Math.round((d2 - d1) / (1000 * 3600 * 24)) + 1);
+                totalDays += diff;
+            }
+            catch (e) {
+                totalDays += 1;
+            }
+        });
+        let md = `${headerBadge}\n\n`;
+        md += `共精准切分出 **${trips.length}** 轮独立往返 Trip（累计约 **${totalDays}** 天出差日程），大表格已按 Trip 自动归集聚类：\n\n`;
+        md += `| 轮次 | 目的地 | 日期区间 | 交通工具 | 住宿酒店 | 走访据点/企业 | 出行人 |\n`;
+        md += `| :---: | :--- | :--- | :---: | :--- | :--- | :--- |\n`;
+        trips.forEach((t, idx) => {
+            const no = t.tripNo || (idx + 1);
+            const dest = t.destination || '待定';
+            const dates = t.startDate === t.endDate ? t.startDate : `${t.startDate} ~ ${t.endDate}`;
+            const transport = t.flightOrTrain || '飞机/高铁';
+            const hotel = t.hotelName || '-';
+            const factories = t.targetFactories ? t.targetFactories.replace(/、/g, '<br>') : '-';
+            const travelers = (t.travelers && t.travelers.length > 0) ? t.travelers.join(', ') : (t.applicantName || '本人');
+            md += `| **Trip #${no}** | **${dest}** | ${dates} | ${transport} | ${hotel} | ${factories} | ${travelers} |\n`;
+        });
+        md += `\n> 💡 **系统状态**：大表格已切换至 **Trip 分组** 视图。正在结合发票证据链智能推断专属必填字段...`;
+        return md;
+    }
+    /**
+     * 结构化排期解析主调度器：
+     * 1. 优先调用大语言模型 (LLM) 进行概率认知决策与常识往返切分；
+     * 2. 若未配置 API Key、网络断开或调用异常，自动无缝降级为本地规则解析器 (parseItineraryTable)，提供高可用保障。
+     */
+    async function parseItineraryWithAiDetailed(itineraryText, signal) {
+        if (!itineraryText || itineraryText.trim().length < 10) {
+            return {
+                trips: [],
+                summaryMarkdown: '排期内容过短，无法解析。',
+                engine: 'rule'
+            };
+        }
+        const trimmed = itineraryText.trim();
+        const canUseLlm = isLlmConfigured();
+        if (canUseLlm) {
+            const startTime = Date.now();
+            try {
+                AutopilotLogger.info(`[InferenceService] 开始调用大模型解析排期文本...`);
+                const res = await callDirectLlmJson(ITINERARY_PARSER_SYSTEM_PROMPT, trimmed, signal, 45000 // 45s 超时守卫
+                );
+                const latencyMs = Date.now() - startTime;
+                if (res.success && res.data?.trips && Array.isArray(res.data.trips) && res.data.trips.length > 0) {
+                    const trips = res.data.trips.map((t, idx) => ({
+                        tripNo: t.tripNo || (idx + 1),
+                        applicantName: (t.travelers && t.travelers[0]) || t.applicantName || '当前用户',
+                        isProxy: false,
+                        destination: (t.destination || '出差地').replace(/省|市/g, ''),
+                        startDate: t.startDate,
+                        endDate: t.endDate || t.startDate,
+                        hotelName: (t.hotelName || '').replace(/^[-—\s]+|[-—\s]+$/g, ''),
+                        flightOrTrain: t.flightOrTrain || '飞机/高铁',
+                        purpose: t.purpose || `出差${t.destination}业务交流及现场技术支持`,
+                        targetFactories: t.targetFactories || '',
+                        travelers: t.travelers || [],
+                        legs: t.legs || []
+                    }));
+                    AutopilotLogger.info(`[InferenceService] 大模型成功解析排期文本，识别出 ${trips.length} 轮 Trip (耗时 ${latencyMs}ms)`);
+                    return {
+                        trips,
+                        summaryMarkdown: formatTripsToMarkdownSummary(trips, 'llm', latencyMs),
+                        engine: 'llm',
+                        latencyMs
+                    };
+                }
+            }
+            catch (e) {
+                AutopilotLogger.warn(`[InferenceService] parseItineraryWithAi 调用大模型异常: ${e?.message || e}，将降级使用规则提取`);
+            }
+        }
+        // 容灾兜底：降级使用确定性规则解析器 (Zero-LLM Guard)
+        try {
+            const trips = parseItineraryTable(trimmed);
+            if (trips.length > 0) {
+                AutopilotLogger.info(`[InferenceService] 本地规则引擎成功切分出 ${trips.length} 轮 Trip`);
+                return {
+                    trips,
+                    summaryMarkdown: formatTripsToMarkdownSummary(trips, 'rule'),
+                    engine: 'rule'
+                };
+            }
+        }
+        catch (ruleErr) {
+            AutopilotLogger.warn(`[InferenceService] parseItineraryTable 规则解析失败: ${ruleErr?.message || ruleErr}`);
+        }
+        return {
+            trips: [],
+            summaryMarkdown: '未能从输入文本中解析出有效排期，请检查表格表头或格式。',
+            engine: 'rule'
+        };
+    }
+    /**
+     * 运用大语言模型 (LLM) 概率认知决策深度解析非结构化或复杂出差排期文本
+     * 严格遵照 AGENTS.md 反硬编码铁律，不依赖任何静态正则字典，由大模型完成世界常识推理与往返切分
+     */
+    async function parseItineraryWithAi(itineraryText, signal) {
+        const res = await parseItineraryWithAiDetailed(itineraryText, signal);
+        return res.trips;
+    }
+
+    /**
+     * 报销单管理纯表格模式 (Grid Mode) — 数据聚合与业务服务
+     *
+     * 核心逻辑：
+     * 1. 严格对齐真实单据原生字段，移除一切多余非原生输入框；
+     * 2. 从费用记录中按费用类型提取并初始化预算归属分摊表 (BudgetAllocationItem)；
+     * 3. 提供预算归属拆分功能 (例如某笔费用 50% 请款，50% 自负)；
+     * 4. 4 项原生预算联动重算合计 (TOTAL)，确保预算总额覆盖实报金额。
+     */
+    let billIdCounter = 0;
+    function nextBillId(type) {
+        billIdCounter += 1;
+        return `bill_${type.toLowerCase()}_${billIdCounter}`;
+    }
+    function formatDateShort(dateStr) {
+        if (!dateStr)
+            return '';
+        const parts = dateStr.split('-');
+        if (parts.length >= 3) {
+            return `${parts[1]}-${parts[2]}`;
+        }
+        return dateStr;
+    }
+    /**
+     * 标准化任何输入日期为 HTML5 datetime-local 及元年标准的 YYYY-MM-DDTHH:mm 格式
+     * 解决浏览器 <input type="datetime-local"> 无法识别导致回显空白 (mm/dd/yyyy --:-- --) 的严重缺陷
+     */
+    function normalizeToDatetimeLocal(val, defaultTime = '09:00') {
+        if (!val)
+            return '';
+        const str = String(val).trim();
+        if (!str)
+            return '';
+        // 1. 如果已是标准 YYYY-MM-DDTHH:mm
+        if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(str)) {
+            return str.slice(0, 16);
+        }
+        // 2. 如果是 YYYY-MM-DD HH:mm:ss 或 YYYY-MM-DD HH:mm
+        if (/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/.test(str)) {
+            return str.replace(/\s+/, 'T').slice(0, 16);
+        }
+        // 3. 如果是纯日期 YYYY-MM-DD
+        if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
+            return `${str}T${defaultTime}`;
+        }
+        // 4. 如果是 MM/DD/YYYY 或 MM/DD/YYYY HH:mm
+        const slashMatch = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2}))?/);
+        if (slashMatch) {
+            const month = slashMatch[1].padStart(2, '0');
+            const day = slashMatch[2].padStart(2, '0');
+            const year = slashMatch[3];
+            const hh = slashMatch[4] ? slashMatch[4].padStart(2, '0') : defaultTime.split(':')[0];
+            const mm = slashMatch[5] || defaultTime.split(':')[1] || '00';
+            return `${year}-${month}-${day}T${hh}:${mm}`;
+        }
+        // 5. 如果是 YYYY/MM/DD 或 YYYY/MM/DD HH:mm
+        const ySlashMatch = str.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?/);
+        if (ySlashMatch) {
+            const year = ySlashMatch[1];
+            const month = ySlashMatch[2].padStart(2, '0');
+            const day = ySlashMatch[3].padStart(2, '0');
+            const hh = ySlashMatch[4] ? ySlashMatch[4].padStart(2, '0') : defaultTime.split(':')[0];
+            const mm = ySlashMatch[5] || defaultTime.split(':')[1] || '00';
+            return `${year}-${month}-${day}T${hh}:${mm}`;
+        }
+        // 6. 如果是时间戳数字
+        const num = Number(str);
+        if (!isNaN(num) && num > 100000000000) {
+            const d = new Date(num);
+            if (!isNaN(d.getTime())) {
+                const year = d.getFullYear();
+                const month = String(d.getMonth() + 1).padStart(2, '0');
+                const day = String(d.getDate()).padStart(2, '0');
+                const hh = String(d.getHours()).padStart(2, '0');
+                const mm = String(d.getMinutes()).padStart(2, '0');
+                return `${year}-${month}-${day}T${hh}:${mm}`;
+            }
+        }
+        // 7. Date.parse 兜底
+        const d = new Date(str);
+        if (!isNaN(d.getTime())) {
+            const year = d.getFullYear();
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            const hh = String(d.getHours()).padStart(2, '0');
+            const mm = String(d.getMinutes()).padStart(2, '0');
+            return `${year}-${month}-${day}T${hh}:${mm}`;
+        }
+        return '';
+    }
+    /**
+     * 格式化航班/车次备注为统一规范格式：
+     * 建议格式：[人名|外驻:人名]-[飞机|高铁|出租车]-[项目号]
+     * 例如：
+     *  - [陈浩]-[飞机]-[X2607-001]
+     *  - [外驻:成勇]-[飞机]-[X2607-001]
+     *  - [外驻:李建勇]-[飞机/高铁]-[X2607-001]
+     */
+    function formatFlightTrainRemark(rawText, travelerName, isExternal, projectNameOrCode) {
+        // 1. 动态提取项目编号 (如 X2607-001, PRJ-001)
+        let projCode = '';
+        const projMatch = (projectNameOrCode || '').match(/(X\d{4}-\d{3}|[A-Z0-9]{2,8}-\d{3,4}|PRJ-[A-Z0-9\-]+)/);
+        if (projMatch) {
+            projCode = projMatch[1];
+        }
+        else if (projectNameOrCode && projectNameOrCode.trim().length <= 15 && !projectNameOrCode.includes(' ')) {
+            projCode = projectNameOrCode.trim();
+        }
+        const cleanRaw = (rawText || '').trim();
+        // 若传入的 rawText 中已携带项目编号且前面未提取到
+        if (!projCode) {
+            const m = cleanRaw.match(/(?:\[)?(X\d{4}-\d{3}|[A-Z0-9]{2,8}-\d{3,4}|PRJ-[A-Z0-9\-]+)(?:\])?/);
+            if (m)
+                projCode = m[1];
+        }
+        // 2. 解析出行人姓名与外驻身份
+        let effectiveTraveler = (travelerName || '').trim();
+        let effectiveExternal = isExternal;
+        if (!effectiveTraveler) {
+            const tMatch = cleanRaw.match(/\[(?:外驻[:：])?([^\]]+)\]/) || cleanRaw.match(/\((?:外驻[:：])?([^)]+)\)/);
+            if (tMatch) {
+                effectiveTraveler = (tMatch[1] || '').trim();
+                if (cleanRaw.includes('外驻'))
+                    effectiveExternal = true;
+            }
+        }
+        else {
+            if (effectiveTraveler.includes('外驻')) {
+                effectiveExternal = true;
+                effectiveTraveler = effectiveTraveler.replace(/外驻[:：]/, '').trim();
+            }
+        }
+        // 剔除括号
+        effectiveTraveler = effectiveTraveler.replace(/[（()）\[\]]/g, '').trim();
+        // 3. 提取纯交通方式/车次 (从 rawText 中剥离括号、出行人、项目号)
+        let transport = cleanRaw
+            .replace(/\[(?:外驻[:：])?[^\]]+\]/g, '')
+            .replace(/\((?:外驻[:：])?[^)]+\)/g, '')
+            .replace(/(?:\[)?(X\d{4}-\d{3}|[A-Z0-9]{2,8}-\d{3,4}|PRJ-[A-Z0-9\-]+)(?:\])?/g, '')
+            .replace(/[|\-—_]+/g, ' ')
+            .trim();
+        // 针对常见交通词汇进行标准化清洗
+        if (!transport || transport === '未知' || transport === '待定') {
+            transport = '飞机/高铁';
+        }
+        else if (/MU|CZ|CA|MF|ZH|3U|HU|FM|9C|航空|机/.test(transport) && !/高铁|火车|动车/.test(transport)) {
+            if (!/^[A-Z0-9]{5,7}$/.test(transport)) {
+                transport = transport.includes('机') ? '飞机' : transport;
+            }
+        }
+        else if (/高铁|火车|动车|G\d|D\d/.test(transport) && !/机/.test(transport)) {
+            if (!/^[GD]\d{1,5}$/.test(transport)) {
+                transport = '高铁';
+            }
+        }
+        else if (/出租|打车|Taxi|滴滴/.test(transport)) {
+            transport = '出租车';
+        }
+        // 4. 组装标准三段式格式: [人名|外驻:人名]-[飞机|高铁|出租车]-[项目号]
+        const travelerTag = effectiveExternal
+            ? `[外驻:${effectiveTraveler || '同行人'}]`
+            : `[${effectiveTraveler || '出差人'}]`;
+        const transportTag = `[${transport}]`;
+        const projTag = projCode ? `-[${projCode}]` : '';
+        return `${travelerTag}-${transportTag}${projTag}`;
+    }
+    /**
+     * 提取一组费用记录按费用类型分组的预算归属行
+     */
+    function buildInitialBudgetAllocations(expenses, projectId, projectName, mealAllowanceAmount = 0) {
+        const typeMap = new Map();
+        for (const g of expenses) {
+            const tName = g.expenseTypeName || '日常报销费用';
+            const amt = Number(g.expenseAmount || 0);
+            typeMap.set(tName, (typeMap.get(tName) || 0) + amt);
+        }
+        // 正社员出差误餐补助：若费用池中尚未包含，则按出差天数标准自动追加正社员餐补
+        if (mealAllowanceAmount > 0 && !typeMap.has('误餐补助') && !typeMap.has('误餐补助（誤餐補助）') && !typeMap.has('差旅费-误餐补贴')) {
+            typeMap.set('误餐补助（誤餐補助）', mealAllowanceAmount);
+        }
+        const allocations = [];
+        let idx = 1;
+        typeMap.forEach((amt, tName) => {
+            allocations.push({
+                id: `alloc_${idx++}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                expenseTypeName: tName,
+                expenseAmount: Math.round(amt * 100) / 100,
+                projectId: projectId || '',
+                projectName: projectName || '',
+                allocatedAmount: Math.round(amt * 100) / 100,
+                ratioPercent: 100,
+                customerCharge: false,
+            });
+        });
+        return allocations;
+    }
+    /**
+     * 动态提取行程全部出差人员及全员大交通往返行程 (零硬编码，严格遵循 Anti-Hardcoding 铁律)
+     */
+    function extractTripTravelersAndLegs(plan, expenses, defaultApplicant) {
+        const rawApplicant = plan.applicantName || defaultApplicant || '当前社员';
+        const mainApplicant = rawApplicant.replace(/（.*）|\(.*\)/g, '').trim();
+        const travelerSet = new Set();
+        if (mainApplicant) {
+            travelerSet.add(mainApplicant);
+        }
+        // 1. 从 travelReport 中动态提取出差人员名单 (如 "出差人员：陈浩、成勇、李建勇" 或 "调研人员为陈浩、成勇、李建勇")
+        if (plan.travelReport) {
+            const reportMatch = plan.travelReport.match(/(?:调研人员为|出差人员[：:]\s*|同行人员[：:]\s*|同行者[：:]\s*)([^\n。\r]+)/);
+            if (reportMatch && reportMatch[1]) {
+                const rawNames = reportMatch[1].split(/[、,，\s]+/);
+                for (const name of rawNames) {
+                    const clean = name.replace(/（.*）|\(.*\)/g, '').replace(/[*#-]/g, '').trim();
+                    if (clean && clean.length >= 2 && clean.length <= 10 && !['人员', '同行', '等', '至', '到'].includes(clean)) {
+                        travelerSet.add(clean);
+                    }
+                }
+            }
+        }
+        // 2. 从关联费用记录的备注中动态提取外驻出行人 ([外驻:姓名])
+        if (Array.isArray(expenses)) {
+            for (const exp of expenses) {
+                if (plan.expenseRecordIds.includes(exp.expenseRecordId)) {
+                    const textsToCheck = [
+                        exp.newDescription,
+                        exp.description,
+                        exp.remarks,
+                        ...(exp.invoices || []).map((inv) => inv.remarks || inv.description || '')
+                    ].filter(Boolean);
+                    for (const text of textsToCheck) {
+                        const externalMatches = text.matchAll(/\[外驻[:：]([^\]]+)\]/g);
+                        for (const m of externalMatches) {
+                            const clean = (m[1] || '').replace(/（.*）|\(.*\)/g, '').trim();
+                            if (clean && clean.length >= 2 && clean.length <= 10) {
+                                travelerSet.add(clean);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        const allTravelers = Array.from(travelerSet);
+        const companionsList = allTravelers.filter(t => t !== mainApplicant);
+        const companions = companionsList.join('、');
+        // 3. 构建包含所有人员的大交通行程 (ITINERARY legs)
+        const legs = [];
+        const destCity = plan.destination || '目的地';
+        const originCity = '上海';
+        // 从该 Trip 关联的所有费用记录及发票中推测大交通工具类型
+        const tripInvoiceTypes = [];
+        if (Array.isArray(expenses)) {
+            for (const exp of expenses) {
+                if (plan.expenseRecordIds.includes(exp.expenseRecordId)) {
+                    if (exp.expenseTypeName)
+                        tripInvoiceTypes.push(exp.expenseTypeName);
+                    if (exp.newExpenseTypeName)
+                        tripInvoiceTypes.push(exp.newExpenseTypeName);
+                    for (const inv of (exp.invoices || [])) {
+                        if (inv.invoiceType)
+                            tripInvoiceTypes.push(inv.invoiceType);
+                        if (inv.remarks)
+                            tripInvoiceTypes.push(inv.remarks);
+                        if (inv.salesName)
+                            tripInvoiceTypes.push(inv.salesName);
+                        if (inv.fileName)
+                            tripInvoiceTypes.push(inv.fileName);
+                    }
+                }
+            }
+        }
+        const tripTransportDefault = resolveTransportLabel(plan.scPlan?.flightOrTrain, tripInvoiceTypes);
+        // 若原有 scPlan.legs 中已有具体航班/车次信息，按人员归类
+        const existingLegs = plan.scPlan?.legs || [];
+        const projName = plan.scPlan?.projectName || plan.projectName || '';
+        for (const t of allTravelers) {
+            const isExt = t !== mainApplicant && !t.includes(mainApplicant);
+            const tLegs = existingLegs.filter(l => {
+                const legTraveler = (l.travelerName || '').replace(/（.*）|\(.*\)/g, '').trim();
+                return legTraveler === t || (!legTraveler && t === mainApplicant);
+            });
+            if (tLegs.length > 0) {
+                tLegs.forEach(l => {
+                    const legTransport = resolveTransportLabel(l.flightOrTrain || l.transport, tripInvoiceTypes) || tripTransportDefault;
+                    legs.push({
+                        date: normalizeToDatetimeLocal(l.date || plan.startDate || '', '09:00'),
+                        fromCity: (!l.fromCity || l.fromCity === '出发地') ? originCity : l.fromCity,
+                        toCity: (!l.toCity || l.toCity === '返回地') ? destCity : l.toCity,
+                        transport: legTransport,
+                        flightOrTrain: formatFlightTrainRemark(l.flightOrTrain || legTransport, t, isExt, projName),
+                        travelerName: t
+                    });
+                });
+            }
+            else {
+                // 为该人员自动补齐去程与返程对称大交通
+                legs.push({
+                    date: normalizeToDatetimeLocal(plan.startDate || '', '09:00'),
+                    fromCity: originCity,
+                    toCity: destCity,
+                    transport: tripTransportDefault,
+                    flightOrTrain: formatFlightTrainRemark(tripTransportDefault, t, isExt, projName),
+                    travelerName: t
+                });
+                legs.push({
+                    date: normalizeToDatetimeLocal(plan.endDate || '', '18:00'),
+                    fromCity: destCity,
+                    toCity: originCity,
+                    transport: tripTransportDefault,
+                    flightOrTrain: formatFlightTrainRemark(tripTransportDefault, t, isExt, projName),
+                    travelerName: t
+                });
+            }
+        }
+        // 按日期与出行人正序排序
+        legs.sort((a, b) => {
+            const timeDiff = new Date(a.date.replace(/-/g, '/')).getTime() - new Date(b.date.replace(/-/g, '/')).getTime();
+            if (timeDiff !== 0)
+                return timeDiff;
+            return (a.travelerName || '').localeCompare(b.travelerName || '');
+        });
+        return { allTravelers, companions, legs };
+    }
+    /**
+     * 从费用记录分组和 Trip 规划中聚合生成报销单计划行
+     */
+    function aggregateExpensesIntoBillPlans(groups, tripPlans, applicantName = '', projectName = '') {
+        billIdCounter = 0;
+        const plans = [];
+        // ── 1. 为每个 Trip 生成 BC 报销单行 ──
+        if (tripPlans.length > 0) {
+            for (const trip of tripPlans) {
+                const tripExpenses = groups.filter(g => g.tripId === trip.id);
+                const expenseRecordIds = tripExpenses.map(g => g.expenseRecordId);
+                const invoiceCount = tripExpenses.reduce((sum, g) => sum + (g.invoiceCount || 0), 0);
+                // 原生 4 项预算估算
+                const airfare = Math.round(trip.trafficFee * 100) / 100;
+                const hotel = Math.round(trip.hotelFee * 100) / 100;
+                const meal = Math.round(trip.mealFee * 100) / 100;
+                const other = Math.round(trip.otherFee * 100) / 100;
+                const totalBudget = Math.round((airfare + hotel + meal + other) * 100) / 100;
+                const hasMealInExpenses = tripExpenses.some(g => (g.expenseTypeName || '').includes('误餐'));
+                const effectiveMealAmt = hasMealInExpenses ? 0 : meal;
+                const totalAmount = tripExpenses.reduce((sum, g) => sum + Number(g.expenseAmount || 0), 0) + effectiveMealAmt;
+                const projId = trip.projectVO?.value || '';
+                let tripProjName = trip.projectName || '';
+                if (!tripProjName) {
+                    for (const g of tripExpenses) {
+                        const m = (g.description || g.newDescription || '').match(/(?:\[)?(X\d{4}-\d{3}|[A-Z0-9]{2,8}-\d{3,4}|PRJ-[A-Z0-9\-]+)/);
+                        if (m) {
+                            tripProjName = m[1].trim();
+                            break;
+                        }
+                    }
+                }
+                const projName = tripProjName;
+                // 动态多出行人及往返大交通航段派生 (零硬编码，支持单据初始回显全员 6 段往返)
+                const planLike = {
+                    applicantName: trip.applicantName || applicantName,
+                    destination: trip.destination,
+                    startDate: trip.startDate,
+                    endDate: trip.endDate,
+                    travelReport: trip.travelReport || '',
+                    expenseRecordIds,
+                    scPlan: {
+                        legs: trip.legs || [],
+                        flightOrTrain: ''
+                    }
+                };
+                const extractedTravelers = extractTripTravelersAndLegs(planLike, tripExpenses, applicantName);
+                const effectiveLegs = (trip.legs && trip.legs.length > 2) ? trip.legs : extractedTravelers.legs;
+                const scPlan = {
+                    applicantName: trip.applicantName || applicantName,
+                    tripType: '境内出張',
+                    destination: trip.destination,
+                    purpose: trip.purpose || `出差${trip.destination}技术支持与业务交流`,
+                    startDate: trip.startDate,
+                    endDate: trip.endDate,
+                    days: trip.days,
+                    nights: trip.nights,
+                    legs: effectiveLegs,
+                    airfareBudget: airfare,
+                    hotelBudget: hotel,
+                    mealAllowance: meal,
+                    otherBudget: other,
+                    totalBudget: totalBudget,
+                    projectId: projId,
+                    projectName: projName,
+                    customerCharge: false,
+                    billCode: trip.billCode,
+                    billMainId: trip.billMainId,
+                };
+                const budgetAllocations = buildInitialBudgetAllocations(tripExpenses, projId, projName, effectiveMealAmt);
+                plans.push({
+                    id: nextBillId('BC'),
+                    type: 'BC',
+                    title: `Trip ${trip.tripNo}: ${trip.destination}出差 (${formatDateShort(trip.startDate)} ~ ${formatDateShort(trip.endDate)})`,
+                    tripType: '境内出張',
+                    destination: trip.destination,
+                    purpose: trip.purpose || `出差${trip.destination}技术交流与业务交流`,
+                    startDate: trip.startDate,
+                    endDate: trip.endDate,
+                    applicantName: trip.applicantName || applicantName,
+                    expenseRecordIds,
+                    expenseCount: expenseRecordIds.length,
+                    invoiceCount,
+                    totalAmount: Math.round(totalAmount * 100) / 100,
+                    budgetAllocations,
+                    projectId: projId,
+                    projectName: projName,
+                    customerCharge: false,
+                    departmentName: '',
+                    travelReport: trip.travelReport || '',
+                    scPlan,
+                    status: 'draft',
+                    errorMessage: '',
+                    sourceTripId: trip.id,
+                    billCode: trip.billCode,
+                    billMainId: trip.billMainId,
+                });
+            }
+        }
+        // ── 2. 日常经费 → BJ 报销单行 ──
+        const nonTripExpenses = groups.filter(g => tripPlans.length > 0
+            ? (g.tripId === 'NON_TRIP' || !g.tripId)
+            : getGroupBillFlow(g) === 'BJ');
+        if (nonTripExpenses.length > 0) {
+            const expenseRecordIds = nonTripExpenses.map(g => g.expenseRecordId);
+            const invoiceCount = nonTripExpenses.reduce((sum, g) => sum + (g.invoiceCount || 0), 0);
+            const totalAmount = nonTripExpenses.reduce((sum, g) => sum + Number(g.expenseAmount || 0), 0);
+            const budgetAllocations = buildInitialBudgetAllocations(nonTripExpenses, '', projectName);
+            plans.push({
+                id: nextBillId('BJ'),
+                type: 'BJ',
+                title: `日常经费报销 (${nonTripExpenses.length}笔费用)`,
+                tripType: '境内出張',
+                destination: '',
+                purpose: '日常办公与技术服务经费报销',
+                startDate: '',
+                endDate: '',
+                applicantName,
+                expenseRecordIds,
+                expenseCount: expenseRecordIds.length,
+                invoiceCount,
+                totalAmount: Math.round(totalAmount * 100) / 100,
+                budgetAllocations,
+                projectId: '',
+                projectName: projectName,
+                customerCharge: false,
+                departmentName: '',
+                travelReport: '',
+                scPlan: null,
+                status: 'draft',
+                errorMessage: '',
+                sourceTripId: 'NON_TRIP',
+            });
+        }
+        return plans;
+    }
+    /**
+     * 创建看板初始状态
+     */
+    function createInitialBillManagementState(groups, tripPlans, applicantName = '', projectName = '') {
+        const plans = aggregateExpensesIntoBillPlans(groups, tripPlans, applicantName, projectName);
+        return {
+            billPlans: plans,
+            selectedBillIds: new Set(plans.map(p => p.id)),
+            expandedBillIds: new Set(plans.filter(p => p.type === 'BC').map(p => p.id)),
+            isProcessing: false,
+            progressText: '',
+            searchQuery: '',
+        };
+    }
+    /**
+     * 不可变更新单据主表行字段
+     */
+    function updateBillPlanField(plans, billId, field, value) {
+        return plans.map(p => {
+            if (p.id !== billId)
+                return p;
+            const updated = { ...p, [field]: value };
+            // 若同时修改了主项目，且有关联 SC 申请单，同步 SC 项目及航段备注中的项目号
+            if (field === 'projectName' && updated.scPlan) {
+                const sc = updated.scPlan;
+                const updatedLegs = (sc.legs || []).map(leg => {
+                    const isExt = leg.travelerName ? (leg.travelerName !== p.applicantName && !leg.travelerName.includes(p.applicantName)) : false;
+                    return {
+                        ...leg,
+                        flightOrTrain: formatFlightTrainRemark(leg.flightOrTrain || leg.transport || '', leg.travelerName || '', isExt, value)
+                    };
+                });
+                updated.scPlan = { ...sc, projectName: value, legs: updatedLegs };
+            }
+            return updated;
+        });
+    }
+    /**
+     * 不可变更新 SC 申请单字段
+     */
+    function updateSCField(plans, billId, field, value) {
+        return plans.map(p => {
+            if (p.id !== billId || !p.scPlan)
+                return p;
+            const updatedSC = { ...p.scPlan, [field]: value };
+            // 自动重算 4 项预算合计
+            if (['airfareBudget', 'hotelBudget', 'mealAllowance', 'otherBudget'].includes(field)) {
+                updatedSC.totalBudget = computeSCTotal(updatedSC);
+            }
+            return {
+                ...p,
+                scPlan: updatedSC,
+            };
+        });
+    }
+    /**
+     * 拆分某项费用的预算归属 (例如 50% 客户请款，50% 公司负担)
+     */
+    function splitBudgetAllocation(plans, billId, allocationId) {
+        return plans.map(p => {
+            if (p.id !== billId)
+                return p;
+            const target = p.budgetAllocations.find(a => a.id === allocationId);
+            if (!target)
+                return p;
+            // 默认将比例对半拆分
+            const halfRatio = Math.round((target.ratioPercent / 2) * 100) / 100;
+            const halfAmount = Math.round((target.allocatedAmount / 2) * 100) / 100;
+            const updatedAllocations = p.budgetAllocations.flatMap(a => {
+                if (a.id !== allocationId)
+                    return [a];
+                const originalUpdated = {
+                    ...a,
+                    ratioPercent: halfRatio,
+                    allocatedAmount: halfAmount,
+                };
+                const newSplitRow = {
+                    ...a,
+                    id: `alloc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                    ratioPercent: halfRatio,
+                    allocatedAmount: halfAmount,
+                    customerCharge: !a.customerCharge, // 另一半默认请款状态相反
+                };
+                return [originalUpdated, newSplitRow];
+            });
+            return { ...p, budgetAllocations: updatedAllocations };
+        });
+    }
+    /**
+     * 删除拆分出来的多余预算归属行
+     */
+    function removeBudgetAllocation(plans, billId, allocationId) {
+        return plans.map(p => {
+            if (p.id !== billId)
+                return p;
+            if (p.budgetAllocations.length <= 1)
+                return p;
+            return {
+                ...p,
+                budgetAllocations: p.budgetAllocations.filter(a => a.id !== allocationId),
+            };
+        });
+    }
+    /**
+     * 修改预算归属行字段
+     */
+    function updateBudgetAllocationField(plans, billId, allocationId, field, value) {
+        return plans.map(p => {
+            if (p.id !== billId)
+                return p;
+            return {
+                ...p,
+                budgetAllocations: p.budgetAllocations.map(a => a.id === allocationId ? { ...a, [field]: value } : a),
+            };
+        });
+    }
+    /**
+     * 校验所有待建报销单的必填项与合规性
+     */
+    function validateBillPlans(plans) {
+        const errors = [];
+        const errorMapByBillId = {};
+        const addError = (err) => {
+            errors.push(err);
+            if (!errorMapByBillId[err.billId]) {
+                errorMapByBillId[err.billId] = {};
+            }
+            errorMapByBillId[err.billId][err.field] = err.message;
+        };
+        for (const plan of plans) {
+            // 1. 出差人员 / 申请人
+            if (!plan.applicantName || !plan.applicantName.trim()) {
+                addError({
+                    billId: plan.id,
+                    field: 'applicantName',
+                    label: '出差人员',
+                    message: '出差人员/申请人不能为空',
+                });
+            }
+            // 2. 出差目的 (PURPOSE)
+            if (!plan.purpose || !plan.purpose.trim()) {
+                addError({
+                    billId: plan.id,
+                    field: 'purpose',
+                    label: '出差目的',
+                    message: '出差目的/业务事由不能为空',
+                });
+            }
+            // 3. 项目维表 (主预算归属)
+            if (!plan.projectName || !plan.projectName.trim()) {
+                addError({
+                    billId: plan.id,
+                    field: 'projectName',
+                    label: '预算归属',
+                    message: '预算归属(项目维表)不能为空',
+                });
+            }
+            // 4. BC 专属校验
+            if (plan.type === 'BC') {
+                // 出差目的地 (出張先)
+                if (!plan.destination || !plan.destination.trim()) {
+                    addError({
+                        billId: plan.id,
+                        field: 'destination',
+                        label: '出張先',
+                        message: '出張先(目的地城市)不能为空',
+                    });
+                }
+                // 期間 From ~ To
+                if (!plan.startDate) {
+                    addError({
+                        billId: plan.id,
+                        field: 'startDate',
+                        label: '期间From',
+                        message: '出差起始日期不能为空',
+                    });
+                }
+                if (!plan.endDate) {
+                    addError({
+                        billId: plan.id,
+                        field: 'endDate',
+                        label: '期间To',
+                        message: '出差回程日期不能为空',
+                    });
+                }
+                if (plan.startDate && plan.endDate && plan.startDate > plan.endDate) {
+                    addError({
+                        billId: plan.id,
+                        field: 'startDate',
+                        label: '期间范围',
+                        message: '回程日期不可早于出发日期',
+                    });
+                }
+                // SC 申请单子表校验
+                if (plan.scPlan) {
+                    // 预算总额需 >= 实际报销金额
+                    if (plan.scPlan.totalBudget < plan.totalAmount) {
+                        addError({
+                            billId: plan.id,
+                            field: 'scTotalBudget',
+                            label: '预算合计',
+                            message: `预算合计(¥${plan.scPlan.totalBudget})低于实报金额(¥${plan.totalAmount})，需大于等于实际报销`,
+                            subTable: 'BUDGET',
+                        });
+                    }
+                    // 航段明细检验
+                    if (!plan.scPlan.legs || plan.scPlan.legs.length === 0) {
+                        addError({
+                            billId: plan.id,
+                            field: 'legs_empty',
+                            label: '旅程明细',
+                            message: '旅程(ITINERARY)子表格至少需要包含 1 趟航段明细',
+                            subTable: 'ITINERARY',
+                        });
+                    }
+                    else {
+                        plan.scPlan.legs.forEach((leg, idx) => {
+                            if (!leg.date) {
+                                addError({
+                                    billId: plan.id,
+                                    field: `leg_${idx}_date`,
+                                    label: `航段${idx + 1}日期`,
+                                    message: `航段 ${idx + 1} 日期时间不能为空`,
+                                    subTable: 'ITINERARY',
+                                    rowIndex: idx,
+                                });
+                            }
+                            if (!leg.fromCity || !leg.fromCity.trim()) {
+                                addError({
+                                    billId: plan.id,
+                                    field: `leg_${idx}_fromCity`,
+                                    label: `航段${idx + 1}出发地`,
+                                    message: `航段 ${idx + 1} 出发地不能为空`,
+                                    subTable: 'ITINERARY',
+                                    rowIndex: idx,
+                                });
+                            }
+                            if (!leg.toCity || !leg.toCity.trim()) {
+                                addError({
+                                    billId: plan.id,
+                                    field: `leg_${idx}_toCity`,
+                                    label: `航段${idx + 1}目的地`,
+                                    message: `航段 ${idx + 1} 目的地不能为空`,
+                                    subTable: 'ITINERARY',
+                                    rowIndex: idx,
+                                });
+                            }
+                        });
+                    }
+                }
+            }
+            // 5. 预算归属分摊子表格 (BUDGET ALLOCATION & SPLIT)
+            if (plan.budgetAllocations && plan.budgetAllocations.length > 0) {
+                const ratioSumsByType = new Map();
+                plan.budgetAllocations.forEach((alloc, idx) => {
+                    if (!alloc.projectName || !alloc.projectName.trim()) {
+                        addError({
+                            billId: plan.id,
+                            field: `alloc_${alloc.id}_projectName`,
+                            label: `分摊行${idx + 1}项目`,
+                            message: `费用类型"${alloc.expenseTypeName}"分摊行 ${idx + 1} 的项目归属不能为空`,
+                            subTable: 'ALLOCATION',
+                            rowIndex: idx,
+                        });
+                    }
+                    const cur = ratioSumsByType.get(alloc.expenseTypeName) || 0;
+                    ratioSumsByType.set(alloc.expenseTypeName, cur + Number(alloc.ratioPercent || 0));
+                });
+                ratioSumsByType.forEach((sum, expType) => {
+                    if (Math.abs(sum - 100) > 0.01) {
+                        addError({
+                            billId: plan.id,
+                            field: `alloc_ratio_sum_${expType}`,
+                            label: `${expType}比例合计`,
+                            message: `费用类型"${expType}"的分摊比例合计为 ${sum}%，必须等于 100%`,
+                            subTable: 'ALLOCATION',
+                        });
+                    }
+                });
+            }
+        }
+        return {
+            isValid: errors.length === 0,
+            missingCount: errors.length,
+            errors,
+            errorMapByBillId,
+        };
+    }
+    /**
+     * 动态提取通用城市名（去除站、机场、市等标准后缀，严禁写死静态城市表）
+     */
+    function cleanCityName(raw) {
+        if (!raw)
+            return '';
+        let s = raw.trim();
+        s = s.replace(/(?:站|南站|北站|东站|西站|客运站|火车站|国际机场|机场|航站楼|高铁站)$/, '');
+        if (s.length > 2 && s.endsWith('市')) {
+            s = s.slice(0, -1);
+        }
+        return s.trim();
+    }
+    /**
+     * AI 智能副驾一键补全漏填字段（通用推理，无任何特定人员/客户/城市硬编码）
+     */
+    function autoFillBillPlansWithAi(plans, groups, defaultProjectName, defaultApplicantName) {
+        let filledCount = 0;
+        const updatedPlans = plans.map(plan => {
+            const aiFilled = new Set(plan.aiFilledFields || []);
+            let updated = { ...plan };
+            const associatedGroups = groups.filter(g => plan.expenseRecordIds.includes(g.expenseRecordId));
+            // 1. 补全出差人员
+            if (!updated.applicantName || !updated.applicantName.trim()) {
+                const foundName = defaultApplicantName ||
+                    associatedGroups.find(g => g.applicantName)?.applicantName ||
+                    '';
+                if (foundName) {
+                    updated.applicantName = foundName;
+                    aiFilled.add('applicantName');
+                    filledCount++;
+                }
+            }
+            // 2. 补全目的地城市 (从发票详情与动态字段中智能频率提取)
+            if (updated.type === 'BC' && (!updated.destination || !updated.destination.trim())) {
+                const cityFreq = new Map();
+                for (const g of associatedGroups) {
+                    if (g.dynamicFields?.city) {
+                        const c = cleanCityName(g.dynamicFields.city);
+                        if (c)
+                            cityFreq.set(c, (cityFreq.get(c) || 0) + 3);
+                    }
+                    if (g.dynamicFields?.dynTo) {
+                        const c = cleanCityName(g.dynamicFields.dynTo);
+                        if (c)
+                            cityFreq.set(c, (cityFreq.get(c) || 0) + 2);
+                    }
+                    if (g.invoices) {
+                        for (const inv of g.invoices) {
+                            if (inv.stationGetOff) {
+                                const c = cleanCityName(inv.stationGetOff);
+                                if (c)
+                                    cityFreq.set(c, (cityFreq.get(c) || 0) + 2);
+                            }
+                        }
+                    }
+                }
+                let bestCity = '';
+                let maxCount = 0;
+                cityFreq.forEach((cnt, city) => {
+                    if (cnt > maxCount) {
+                        maxCount = cnt;
+                        bestCity = city;
+                    }
+                });
+                if (bestCity) {
+                    updated.destination = bestCity;
+                    aiFilled.add('destination');
+                    filledCount++;
+                }
+            }
+            // 3. 补全起止日期 (从费用业务日与发票日提取范围)
+            if (updated.type === 'BC' && (!updated.startDate || !updated.endDate)) {
+                const allDates = [];
+                for (const g of associatedGroups) {
+                    if (g.businessDate && /^\d{4}-\d{2}-\d{2}/.test(g.businessDate)) {
+                        allDates.push(g.businessDate.slice(0, 10));
+                    }
+                    if (g.earliestInvoiceDate && /^\d{4}-\d{2}-\d{2}/.test(g.earliestInvoiceDate)) {
+                        allDates.push(g.earliestInvoiceDate.slice(0, 10));
+                    }
+                    if (g.dynamicFields?.dynStartDate && /^\d{4}-\d{2}-\d{2}/.test(g.dynamicFields.dynStartDate)) {
+                        allDates.push(g.dynamicFields.dynStartDate.slice(0, 10));
+                    }
+                    if (g.dynamicFields?.dynEndDate && /^\d{4}-\d{2}-\d{2}/.test(g.dynamicFields.dynEndDate)) {
+                        allDates.push(g.dynamicFields.dynEndDate.slice(0, 10));
+                    }
+                }
+                allDates.sort();
+                if (allDates.length > 0) {
+                    if (!updated.startDate) {
+                        updated.startDate = allDates[0];
+                        aiFilled.add('startDate');
+                        filledCount++;
+                    }
+                    if (!updated.endDate) {
+                        updated.endDate = allDates[allDates.length - 1];
+                        aiFilled.add('endDate');
+                        filledCount++;
+                    }
+                }
+            }
+            // 4. 补全项目维表 (优先从该 Trip 自身费用说明中提取，防止全局串行污染)
+            if (!updated.projectName || !updated.projectName.trim()) {
+                let foundProj = '';
+                for (const g of associatedGroups) {
+                    const match = (g.description || g.newDescription || '').match(/(?:\[)?([A-Z0-9]{3,}-[0-9]+[^\]\s]*)/);
+                    if (match) {
+                        foundProj = match[1];
+                        break;
+                    }
+                }
+                if (!foundProj && defaultProjectName) {
+                    foundProj = defaultProjectName;
+                }
+                if (foundProj) {
+                    updated.projectName = foundProj;
+                    if (updated.scPlan) {
+                        updated.scPlan.projectName = updated.scPlan.projectName || foundProj;
+                    }
+                    updated.budgetAllocations = (updated.budgetAllocations || []).map(alloc => ({
+                        ...alloc,
+                        projectName: alloc.projectName || foundProj
+                    }));
+                    aiFilled.add('projectName');
+                    filledCount++;
+                }
+            }
+            // 5. 补全出差目的 (PURPOSE)
+            if (!updated.purpose || !updated.purpose.trim() || updated.purpose.includes('暂无')) {
+                const dest = updated.destination || '出差地';
+                const projStr = updated.projectName ? `${updated.projectName} ` : '';
+                updated.purpose = `赴${dest}开展${projStr}现场业务交流与系统导入技术支持`;
+                aiFilled.add('purpose');
+                filledCount++;
+            }
+            // 6. SC 申请单预算与旅程深度推导 (仅BC)
+            if (updated.type === 'BC') {
+                const dest = updated.destination || '出差地';
+                const start = updated.startDate || '2026-07-20';
+                const end = updated.endDate || '2026-07-25';
+                const sTime = new Date(start).getTime();
+                const eTime = new Date(end).getTime();
+                const days = Math.max(1, Math.round((eTime - sTime) / 86400000) + 1);
+                const nights = Math.max(1, days - 1);
+                // 统计已发生的真实交通、酒店与杂费
+                let actualAirfare = 0;
+                let actualHotel = 0;
+                let actualOther = 0;
+                for (const g of associatedGroups) {
+                    const amt = Number(g.expenseAmount) || 0;
+                    const type = g.expenseTypeName || '';
+                    if (type.includes('飞机') || type.includes('火车') || type.includes('机票') || type.includes('交通')) {
+                        actualAirfare += amt;
+                    }
+                    else if (type.includes('住宿') || type.includes('酒店')) {
+                        actualHotel += amt;
+                    }
+                    else {
+                        actualOther += amt;
+                    }
+                }
+                // 计算合规充裕预算
+                const airfareBudget = Math.round(Math.max(actualAirfare * 1.25, actualAirfare + 500, 1800) * 100) / 100;
+                const hotelBudget = Math.round(Math.max(actualHotel * 1.15, nights * 700, 700) * 100) / 100;
+                const mealAllowance = Math.round(Math.max(days * 250, 250) * 100) / 100;
+                let otherBudget = Math.round(Math.max(actualOther * 1.2, days * 100, 300) * 100) / 100;
+                let totalBudget = computeSCTotal({ airfareBudget, hotelBudget, mealAllowance, otherBudget });
+                // 确保总预算覆盖实报金额
+                if (totalBudget < updated.totalAmount) {
+                    const gap = Math.round((updated.totalAmount - totalBudget + 300) * 100) / 100;
+                    otherBudget = Math.round((otherBudget + gap) * 100) / 100;
+                    totalBudget = computeSCTotal({ airfareBudget, hotelBudget, mealAllowance, otherBudget });
+                }
+                // 智能推导航段 (若为空，生成标准往返闭环)
+                let existingLegs = updated.scPlan?.legs || [];
+                if (existingLegs.length === 0) {
+                    // 尝试从真实发票提取航段起点与终点
+                    let originCity = '上海';
+                    for (const g of associatedGroups) {
+                        if (g.dynamicFields?.dynFrom) {
+                            const oc = cleanCityName(g.dynamicFields.dynFrom);
+                            if (oc && oc !== dest) {
+                                originCity = oc;
+                                break;
+                            }
+                        }
+                        if (g.invoices) {
+                            for (const inv of g.invoices) {
+                                if (inv.stationGetOn) {
+                                    const oc = cleanCityName(inv.stationGetOn);
+                                    if (oc && oc !== dest) {
+                                        originCity = oc;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // 从关联费用记录中推测大交通工具
+                    const associatedInvoiceTypes = [];
+                    for (const g of associatedGroups) {
+                        if (g.expenseTypeName)
+                            associatedInvoiceTypes.push(g.expenseTypeName);
+                        if (g.newExpenseTypeName)
+                            associatedInvoiceTypes.push(g.newExpenseTypeName);
+                        if (g.invoices) {
+                            for (const inv of g.invoices) {
+                                if (inv.invoiceType)
+                                    associatedInvoiceTypes.push(inv.invoiceType);
+                                if (inv.remarks)
+                                    associatedInvoiceTypes.push(inv.remarks);
+                                if (inv.salesName)
+                                    associatedInvoiceTypes.push(inv.salesName);
+                                if (inv.fileName)
+                                    associatedInvoiceTypes.push(inv.fileName);
+                            }
+                        }
+                    }
+                    const inferredTransport = resolveTransportLabel(updated.scPlan?.flightOrTrain, associatedInvoiceTypes);
+                    existingLegs = [
+                        {
+                            date: `${start}T09:00`,
+                            fromCity: originCity,
+                            toCity: dest,
+                            transport: inferredTransport,
+                            flightOrTrain: inferredTransport ? `${inferredTransport} | 外驻:${updated.applicantName || '出差人'}` : '',
+                            travelerName: updated.applicantName,
+                        },
+                        {
+                            date: `${end}T18:00`,
+                            fromCity: dest,
+                            toCity: originCity,
+                            transport: inferredTransport,
+                            flightOrTrain: inferredTransport ? `${inferredTransport} | 外驻:${updated.applicantName || '出差人'}` : '',
+                            travelerName: updated.applicantName,
+                        }
+                    ];
+                    aiFilled.add('legs');
+                    filledCount++;
+                }
+                const scPlan = {
+                    applicantName: updated.applicantName,
+                    tripType: updated.tripType,
+                    destination: dest,
+                    purpose: updated.purpose,
+                    startDate: start,
+                    endDate: end,
+                    days,
+                    nights,
+                    legs: existingLegs,
+                    airfareBudget,
+                    hotelBudget,
+                    mealAllowance,
+                    otherBudget,
+                    totalBudget,
+                    projectId: updated.projectId,
+                    projectName: updated.projectName,
+                    customerCharge: updated.customerCharge,
+                };
+                updated.scPlan = scPlan;
+                aiFilled.add('scPlan');
+                filledCount++;
+                // 7. 补全出差报告草稿 (若为空)
+                if (!updated.travelReport || !updated.travelReport.trim()) {
+                    updated.travelReport = `## ${dest}出差工作总结报告\n\n- **出差时间**：${start} 至 ${end} (共 ${days} 天)\n- **出差人员**：${updated.applicantName}\n- **主要目的地**：${dest}\n- **归属项目**：${updated.projectName || '未指定'}\n\n### 一、主要任务与工作成果\n1. 赴 ${dest} 据点开展现场系统导入与技术需求对齐，完成了业务场景与系统接口的技术论证；\n2. 会同客户项目组进行联合联调测试，梳理并闭环关键业务用例；\n3. 现场举行系统交接与培训会，收集现场反馈并形成后续迭代待办清单。\n\n### 二、后续跟进计划\n- 推进联调遗留事项整改，完成交付物归档与验收；\n- 持续关注客户运行环境稳定性，提供线上技术支持。`;
+                    aiFilled.add('travelReport');
+                    filledCount++;
+                }
+            }
+            // 8. 同步预算归属分摊表中的项目名称
+            if (updated.projectName && updated.budgetAllocations) {
+                updated.budgetAllocations = updated.budgetAllocations.map(alloc => {
+                    if (!alloc.projectName || !alloc.projectName.trim()) {
+                        aiFilled.add(`alloc_${alloc.id}_projectName`);
+                        filledCount++;
+                        return {
+                            ...alloc,
+                            projectName: updated.projectName,
+                            projectId: updated.projectId,
+                        };
+                    }
+                    return alloc;
+                });
+            }
+            return {
+                ...updated,
+                aiFilledFields: Array.from(aiFilled),
+            };
+        });
+        return { updatedPlans, filledCount };
+    }
+
     function prepareBillSceneVO(billData) {
         if (!billData)
             return null;
@@ -1450,6 +10099,418 @@
             totalExpenses: grandTotalExpenses,
             personMap
         };
+    }
+    /**
+     * 报销单台账关联回填接口 (Official relationWriteBack API)
+     * 将选中的台账行自动回填至指定区域与字段（支持主表区与预算明细子表区）
+     */
+    async function relationWriteBackApi(areaId, areaFieldId, rowId, writeBackDataList, billData, parentAreaId = '', parentRowId, state) {
+        const payload = {
+            areaId,
+            areaFieldId,
+            rowId,
+            parentAreaId,
+            writeBackDataList,
+            relationType: 'RELATION_MACHINE_ACCOUNT',
+            validateInfoList: [],
+            billData: billData,
+            userId: state?.applicantId || state?.currentUser?.userId || billData?.currentUserId || ''
+        };
+        const targetMenuId = inferLegalMenuId('/fssc/expenseClaim/billData/relationWriteBack', payload);
+        const res = await callNativeHttp('/fssc/expenseClaim/billData/relationWriteBack', 'POST', payload, null, undefined, targetMenuId) || await apiRequest('/fssc/expenseClaim/billData/relationWriteBack', 'POST', payload, state, false, false, targetMenuId);
+        if (res && res.success && res.data) {
+            return res.data;
+        }
+        throw new Error(res?.message || '关联台账回填失败');
+    }
+    /**
+     * 获取当前用户已审批通过并入库出差申请台账的单据列表
+     */
+    async function fetchApprovedTripApplicationsFromMachineAccountApi(state, billData) {
+        let userId = state?.applicantId || state?.currentUser?.userId || '';
+        if (!userId && typeof window !== 'undefined') {
+            try {
+                const raw = window.sessionStorage?.getItem('ecs_currentUser') || window.localStorage?.getItem('ecs_currentUser');
+                if (raw) {
+                    const u = JSON.parse(raw);
+                    if (u && u.id)
+                        userId = u.id;
+                }
+            }
+            catch (e) { }
+        }
+        const effectiveBillData = {
+            area: {
+                rowDatas: [{
+                        rowId: '00000000000000000000000000000000',
+                        datas: {
+                            e2bf037da4f211e88f5e11f085684a5f: {
+                                dataType: 'PERSON',
+                                value: [{ value: userId }]
+                            },
+                            APPLICANT_ID: {
+                                dataType: 'PERSON',
+                                value: [{ value: userId }]
+                            }
+                        }
+                    }]
+            },
+            billMainId: '00000000000000000000000000000000',
+            billDefineId: BILL_DEFINE_IDS$1.BC
+        };
+        const payload = {
+            machineAccountDefineId: null,
+            requestUserId: userId,
+            boAreaId: '59b6f7cec84e441db2fea4a63700a175',
+            boAreaFieldId: '03976cebfeec42ef00eb2e736fda0000',
+            triggerRowId: effectiveBillData.area?.rowDatas?.[0]?.rowId || '00000000000000000000000000000000',
+            conditions: [
+                {
+                    compileType: 'SQL',
+                    conditionAggregate: false,
+                    conditionRuleDesc: '申请人(申请台账) 等于 申请人(主表区) 并且 申请费用类型(申请台账) 隶属于 国内出張(IVCCLX_01),海外出張(IVCCLX_02)',
+                    conditionRuleItemList: [
+                        {
+                            areaId: '3299661bb34111e8846f7b262b3e5000',
+                            compileType: 'SQL',
+                            deleteFlag: '',
+                            dimTypeId: '6b8ce3209ebe11e88b72d1f897294e91',
+                            displayName: '申请人',
+                            moduleDataType: 'PERSON',
+                            multiSelect: false,
+                            multiType: false,
+                            originalDataType: 'PERSON',
+                            pointCode: 'APPLICANT_ID',
+                            pointId: '2d6120e7ba4511e8bf347b96f5340a89',
+                            pointName: '申请人(申请台账)',
+                            pointValueType: 'DIM',
+                            ruleIndex: 0,
+                            rulePointType: 'MACHINE_ACCOUNT_ATTRIBUTE',
+                            sourceType: 'MACHINE_ACCOUNT'
+                        },
+                        {
+                            areaId: '',
+                            compileType: 'SQL',
+                            displayName: '等于',
+                            i18nInfo: 'RuleSpecialI18nEnum.DIM_EQUAL',
+                            pointCode: 'DIM_EQUAL',
+                            pointId: '32daf5c48a4f11e8bb0fcf1bb8fe3657',
+                            pointName: '等于',
+                            ruleIndex: 0,
+                            rulePointType: 'DIM_RELATION_SYMBOL'
+                        },
+                        {
+                            areaId: '59b6f7cec84e441db2fea4a63700a175',
+                            compileType: 'JS',
+                            displayName: '申请人',
+                            i18nInfo: '2d61b475afe47cde99aadfbe6f04762e',
+                            moduleDataType: 'PERSON',
+                            pointCode: 'APPLICANT_ID',
+                            pointId: 'e2bf037da4f211e88f5e11f085684a5f',
+                            pointName: '申请人(主表区)',
+                            pointValueType: 'DIM',
+                            ruleIndex: 0,
+                            rulePointType: 'BILL_ATTRIBUTE',
+                            sourceType: 'BILL'
+                        },
+                        {
+                            areaId: '',
+                            displayName: '并且',
+                            i18nInfo: 'RuleSpecialI18nEnum.AND',
+                            pointId: '&&',
+                            pointName: '并且',
+                            ruleIndex: 0,
+                            rulePointType: 'LOGICAL_AND_SYMBOL'
+                        },
+                        {
+                            areaId: '3299661bb34111e8846f7b262b3e5000',
+                            compileType: 'SQL',
+                            dimTypeId: '03560c39cf4345af7f1906ec05cc0000',
+                            displayName: '申请费用类型',
+                            moduleDataType: 'DROPDOWN',
+                            pointCode: 'F_SQFYLX',
+                            pointId: '035af06e420de1653e55bb00bc610001',
+                            pointName: '申请费用类型(申请台账)',
+                            pointValueType: 'DIM',
+                            ruleIndex: 0,
+                            rulePointType: 'MACHINE_ACCOUNT_ATTRIBUTE',
+                            sourceType: 'MACHINE_ACCOUNT'
+                        },
+                        {
+                            areaId: '',
+                            compileType: 'SQL',
+                            displayName: '',
+                            i18nInfo: 'RuleSpecialI18nEnum.DIM_MULTI_RADIO_BELONG',
+                            pointCode: 'DIM_MULTI_RADIO_BELONG',
+                            pointId: '11ec45dbcc3f086797df4196023dd92f',
+                            pointName: '隶属于',
+                            ruleIndex: 0,
+                            rulePointType: 'DIM_RELATION_SYMBOL'
+                        },
+                        {
+                            areaId: '',
+                            dimTypeId: '03560c39cf4345af7f1906ec05cc0000',
+                            displayName: '国内出張(IVCCLX_01)……',
+                            edit: 'true',
+                            pointId: '03560c40cb4de1653e55bb00bc610000,03560c4598ade1653e55bb00bc610000',
+                            pointName: '国内出張(IVCCLX_01),海外出張(IVCCLX_02)',
+                            ruleIndex: 0,
+                            rulePointType: 'DIM_VALUE'
+                        }
+                    ]
+                }
+            ],
+            billDataVO: prepareBillSceneVO(effectiveBillData),
+            appId: state.appId || 'e3d5e4787ff911e88b1997bee3518b4d',
+            queryConditionParam: {
+                pageOrderParam: {
+                    pageNum: 1,
+                    pageSize: 50,
+                    count: false,
+                    enableCountLimit: true,
+                    countLimit: 1000
+                }
+            }
+        };
+        const targetMenuId = inferLegalMenuId('/fssc/machaccount/relationMachineAccount/getBillRelationMachAccountData', payload);
+        const res = await callNativeHttp('/fssc/machaccount/relationMachineAccount/getBillRelationMachAccountData', 'POST', payload, null, undefined, targetMenuId) || await apiRequest('/fssc/machaccount/relationMachineAccount/getBillRelationMachAccountData', 'POST', payload, state, false, false, targetMenuId);
+        const list = res?.data?.billRowDataPageInfo?.list || [];
+        return list.map((item) => {
+            const d = item.datas || {};
+            const balanceObj = d.BALANCE_AMOUNT?.value || {};
+            const balanceNum = typeof balanceObj === 'object' ? (balanceObj.amount || 0) : Number(balanceObj || 0);
+            const khfqVal = d.F_SFXKHQ?.value?.value || d.F_SFXKHQ?.value;
+            const customerCharge = khfqVal === '6b8ff07f9ebe11e88b72e5ee60bf5166' || d.F_SFXKHQ?.value?.title?.zh_CN === '是';
+            // 穿透提取台账关联申请单中原本审批通过的权威预算项目 (DIM_PROJECT 与 BUDGET_DIM)
+            let projName = d.DIM_PROJECT?.value?.title?.zh_CN || d.DIM_PROJECT?.value?.name || '';
+            let projId = d.DIM_PROJECT?.value?.value || d.DIM_PROJECT?.value?.id || '';
+            const bDimList = d.BUDGET_DIM?.value || [];
+            if (Array.isArray(bDimList)) {
+                for (const bDim of bDimList) {
+                    const cols = bDim?.columns || [];
+                    const pCol = cols.find((c) => c.column === 'DIM_PROJECT');
+                    if (pCol) {
+                        projName = pCol.title?.zh_CN || pCol.title || projName;
+                        projId = pCol.value || projId;
+                        break;
+                    }
+                }
+            }
+            return {
+                machineAccountId: d.MACHINE_ACCOUNT_ID?.value || item.rowId || '',
+                machineAccountDefineId: d.MACHINE_ACCOUNT_DEFINE_ID?.value || '3299661bb34111e8846f7b262b3e5000',
+                billCode: d.BILL_CODE?.value || '',
+                billMainId: d.BILL_MAIN_ID?.value || '',
+                balanceAmount: balanceNum,
+                balanceAmountObj: balanceObj,
+                budgetDim: d.BUDGET_DIM?.value || [],
+                customerCharge,
+                destination: d.F_CZXCIT?.value || d.F_CZXSYD?.value || d.DESTINATION?.value || '',
+                purpose: d.F_CZMDPU?.value || d.F_CZMDZD?.value || d.PURPOSE?.value || '',
+                startDate: d.START_TRIP_DATE?.value || d.F_QJPERI?.value || '',
+                endDate: d.END_TRIP_DATE?.value || d.F_QJPERI_01?.value || '',
+                projectId: projId,
+                projectName: projName,
+                applicantDate: d.APPLICANT_DATE?.value || d.CREATE_TIME?.value || '',
+                rawRow: item
+            };
+        });
+    }
+    /**
+     * 查询当前用户发起的所有出差申请单审批流状态 (V_MYAPPLICATION)
+     */
+    async function fetchMyApplicationsStatusApi(state) {
+        const res = await callNativeHttp('/fssc/billViewConfig/getBillViewQueryDataList', 'POST', {
+            conditionMap: {},
+            pageOrderParam: { pageNum: 1, pageSize: 50, enableCountLimit: true, countLimit: 1000, count: false },
+            sheetId: 'df023624bfba11ec99e696d1bc9d5c7e',
+            appId: state.appId || 'e3d5e4787ff911e88b1997bee3518b4d'
+        });
+        const map = new Map();
+        const list = res?.data?.list || [];
+        for (const it of list) {
+            const billCode = it.e2bedc68a4f211e88f5e0154a3e7bffc?.value || it.e2bedc68a4f211e88f5e0154a3e7bffc || '';
+            const billMainId = it.BILL_MAIN_ID?.value || it.BILL_MAIN_ID || '';
+            const status = it.e2bf9fe2a4f211e88f5e9d87398070eb?.showValue || it.e2bf9fe2a4f211e88f5e9d87398070eb?.value || it.BILL_STATUS?.value || it.BILL_STATUS || '';
+            const statusEnum = it.BILL_STATUS?.id || it.e2bf9fe2a4f211e88f5e9d87398070eb?.id || (typeof it.BILL_STATUS === 'string' ? it.BILL_STATUS : '');
+            const currentNode = it.e2bf9fdfa4f211e88f5e19f3cc6bb546?.showValue || it.e2bf9fdfa4f211e88f5e19f3cc6bb546?.value || '';
+            const currentApprover = it.bd07382e45fe431faddfb4c206a7df85?.showValue || it.bd07382e45fe431faddfb4c206a7df85?.value || '';
+            const applicantDate = it.e2bedc6ba4f211e88f5e7bcfe24f5802?.showValue || it.e2bedc6ba4f211e88f5e7bcfe24f5802?.value || '';
+            const billName = it.e2bedc66a4f211e88f5ef99ecdff44af?.showValue || it.e2bedc66a4f211e88f5ef99ecdff44af?.value || '出張伺書';
+            const amtObj = it.e2bf51aea4f211e88f5e77f2e04472c7?.amount?.value || it.e2bf51aea4f211e88f5e77f2e04472c7?.value;
+            const budgetSum = typeof amtObj === 'string' ? parseFloat(amtObj.replace(/[^0-9.]/g, '')) || 0 : Number(amtObj || 0);
+            const machVOS = it.billRequestMachineAccountDataVOS?.value || it.billRequestMachineAccountDataVOS || [];
+            const firstMach = Array.isArray(machVOS) ? machVOS[0] : null;
+            const machId = firstMach?.machineAccountId || '';
+            const machDefId = firstMach?.machineAccountDefineId || '3299661bb34111e8846f7b262b3e5000';
+            if (billCode) {
+                map.set(billCode, {
+                    machineAccountId: machId,
+                    machineAccountDefineId: machDefId,
+                    billCode,
+                    billMainId,
+                    status,
+                    statusEnum,
+                    currentNode,
+                    currentApprover,
+                    applicantDate,
+                    budgetSum,
+                    billName
+                });
+            }
+        }
+        return map;
+    }
+    /**
+     * 获取出差申请单原生完整填报详情 (用于提取预算项目、起止日期、出差地、事由与旅程行程明细)
+     */
+    async function fetchApplicationDetailApi(billMainId, state) {
+        try {
+            const res = await fetchBillDataAndTemplateApi(billMainId, state);
+            const billData = res?.billData;
+            if (!billData)
+                return null;
+            const mainRow = billData.area?.rowDatas?.[0]?.datas || {};
+            const destination = mainRow.F_CZXCIT?.value || mainRow.F_CZXSYD?.value || mainRow.DESTINATION?.value || '';
+            const purpose = mainRow.F_CZMDPU?.value || mainRow.F_CZMDZD?.value || mainRow.PURPOSE?.value || '';
+            const startDate = (mainRow.START_TRIP_DATE?.value || mainRow.F_QJPERI?.value || '').split('T')[0];
+            const endDate = (mainRow.END_TRIP_DATE?.value || mainRow.F_QJPERI_01?.value || '').split('T')[0];
+            const billCode = billData.billCode || '';
+            const status = billData.statusEnum || '';
+            const amtVal = mainRow.BUDGET_SUM?.value?.amount ?? mainRow.BUDGET_SUM?.value ?? 0;
+            const budgetSum = Number(amtVal) || 0;
+            const departmentName = mainRow.APPLICANT_DEPARTMENT_ID?.value?.title?.zh_CN || mainRow.APPLICANT_DEPARTMENT_ID?.value?.name || '';
+            // 预算区提取项目 (遍历所有子表区寻找 DIM_PROJECT / BUDGET_DIM)
+            let projectName = '';
+            let projectId = '';
+            const subAreas = Object.values(billData.area?.rowDatas?.[0]?.subAreaDatas || {});
+            for (const boArea of subAreas) {
+                const boRows = boArea?.rowDatas || [];
+                for (const r of boRows) {
+                    const d = r.datas || {};
+                    const projObj = d.DIM_PROJECT?.value;
+                    if (projObj) {
+                        projectName = projObj.title?.zh_CN || projObj.title || projObj.name || (typeof projObj === 'string' ? projObj : '');
+                        projectId = projObj.value || projObj.id || '';
+                        if (projectName)
+                            break;
+                    }
+                    const bDim = d.BUDGET_DIM?.value || [];
+                    if (Array.isArray(bDim)) {
+                        for (const b of bDim) {
+                            const cols = b.columns || [];
+                            const pCol = cols.find((c) => c.column === 'DIM_PROJECT');
+                            if (pCol && (pCol.title?.zh_CN || pCol.title || pCol.name)) {
+                                projectName = pCol.title?.zh_CN || pCol.title || pCol.name;
+                                projectId = pCol.value || pCol.id || '';
+                                break;
+                            }
+                        }
+                    }
+                    if (projectName)
+                        break;
+                }
+                if (projectName)
+                    break;
+            }
+            // 旅程明细区 (T_BILL_AREA_CCS_DEF_001) 提取完整出行人及大交通航段 (零硬编码，精准回显多出行人行程)
+            const legs = [];
+            for (const boArea of subAreas) {
+                const isTripLegArea = boArea?.boAreaCode === 'T_BILL_AREA_CCS_DEF_001' ||
+                    boArea?.boAreaId === '035af6afcfade1653e55bb00bc610000' ||
+                    (boArea?.rowDatas || []).some((r) => r?.datas?.F_DATE && (r?.datas?.F_FROM || r?.datas?.F_TO || r?.datas?.F_FLIGHT));
+                if (isTripLegArea) {
+                    const boRows = boArea?.rowDatas || [];
+                    for (const r of boRows) {
+                        const d = r.datas || {};
+                        const rawDate = d.F_DATE?.value || '';
+                        const dateVal = normalizeToDatetimeLocal(rawDate, '09:00');
+                        const fromCity = d.F_FROM?.value?.title?.zh_CN || d.F_FROM?.value?.title || d.F_FROM?.value?.name || d.F_FROM?.value || '';
+                        const toCity = d.F_TO?.value?.title?.zh_CN || d.F_TO?.value?.title || d.F_TO?.value?.name || d.F_TO?.value || '';
+                        const flightRaw = d.F_FLIGHT?.value || '';
+                        let travelerName = '';
+                        const tMatch = flightRaw.match(/\[(?:外驻[:：])?([^\]]+)\]/) || flightRaw.match(/\((?:外驻[:：])?([^)]+)\)/);
+                        if (tMatch) {
+                            travelerName = (tMatch[1] || '').trim();
+                        }
+                        const applicantName = mainRow.APPLICANT_ID?.value?.name || mainRow.APPLICANT_ID?.value?.title || departmentName;
+                        const isExternal = flightRaw.includes('外驻') || (Boolean(travelerName) && travelerName !== applicantName && !applicantName.includes(travelerName));
+                        const formattedFlight = formatFlightTrainRemark(flightRaw, travelerName, isExternal, projectName);
+                        const transport = (flightRaw.includes('机') || flightRaw.includes('MU') || flightRaw.includes('CA') || flightRaw.includes('CZ'))
+                            ? '飞机'
+                            : (flightRaw.includes('高铁') || flightRaw.includes('火车') || flightRaw.includes('G') || flightRaw.includes('D'))
+                                ? '高铁'
+                                : '飞机/高铁';
+                        if (dateVal || fromCity || toCity || flightRaw) {
+                            legs.push({
+                                date: dateVal,
+                                fromCity,
+                                toCity,
+                                transport,
+                                flightOrTrain: formattedFlight,
+                                travelerName
+                            });
+                        }
+                    }
+                    if (legs.length > 0)
+                        break;
+                }
+            }
+            return {
+                billMainId,
+                billCode,
+                destination,
+                purpose,
+                startDate,
+                endDate,
+                projectName,
+                projectId,
+                departmentName,
+                status,
+                budgetSum,
+                legs: legs.length > 0 ? legs : undefined
+            };
+        }
+        catch (e) {
+            return null;
+        }
+    }
+    /**
+     * 查询当前用户发起的报销单列表 (V_MYREIMBURSEMENT)
+     */
+    async function fetchUserReimbursementBillsListApi(state) {
+        const appId = state?.appId || 'e3d5e4787ff911e88b1997bee3518b4d';
+        const listRes = await callNativeHttp('/fssc/billViewConfig/getBillViewQueryDataList', 'POST', {
+            conditionMap: {},
+            pageOrderParam: { pageNum: 1, pageSize: 50, enableCountLimit: true, countLimit: 1000, count: false },
+            sheetId: '80b9cd76d02611ec99e696d1bc9d5c7e',
+            appId
+        }) || await apiRequest('/fssc/billViewConfig/getBillViewQueryDataList', 'POST', {
+            conditionMap: {},
+            pageOrderParam: { pageNum: 1, pageSize: 50, enableCountLimit: true, countLimit: 1000, count: false },
+            sheetId: '80b9cd76d02611ec99e696d1bc9d5c7e',
+            appId
+        }, state);
+        const items = listRes?.data?.list || [];
+        return items.map((it) => {
+            const codeObj = Object.values(it).find((v) => typeof v === 'string' && (v.startsWith('BC') || v.startsWith('BJ')))
+                || Object.values(it).find((v) => typeof v === 'object' && (String(v?.value).startsWith('BC') || String(v?.value).startsWith('BJ')));
+            const billCode = typeof codeObj === 'object' ? codeObj?.value : (codeObj || '');
+            const billMainId = it.BILL_MAIN_ID?.value || it.BILL_MAIN_ID?.id || it.BILL_MAIN_ID || '';
+            const billName = it.e2bedc66a4f211e88f5ef99ecdff44af?.showValue || it.e2bedc66a4f211e88f5ef99ecdff44af?.value || '';
+            const status = it.e2bf9fe2a4f211e88f5e9d87398070eb?.showValue || it.e2bf9fe2a4f211e88f5e9d87398070eb?.value || it.BILL_STATUS || '';
+            const createTime = it.e2bedc68a4f211e88f5e27a9ff593444?.showValue || it.e2bedc68a4f211e88f5e27a9ff593444?.value || '';
+            const amtObj = it.e2bf51aea4f211e88f5e77f2e04472c7?.amount?.value || it.e2bf51aea4f211e88f5e77f2e04472c7?.value || 0;
+            const amount = typeof amtObj === 'string' ? parseFloat(amtObj.replace(/[^0-9.]/g, '')) || 0 : Number(amtObj || 0);
+            return {
+                billCode,
+                billMainId,
+                status,
+                billName,
+                createTime,
+                amount
+            };
+        });
     }
 
     // 生成 32 位唯一十六进制 ID
@@ -2061,18 +11122,21 @@
             if (res && res.success && res.data && Array.isArray(res.data)) {
                 const traverse = (nodes) => {
                     nodes.forEach(node => {
-                        const d = node.data || node;
-                        const id = d.objectId || d.id || node.id || node.key;
-                        const name = d.description || d.name || node.name || (d.externalSysAttr?.NAME) || '';
+                        const d = node.objectAllInfo || node.data || node;
+                        const id = d.objectId || d.id || node.memberId || node.id || node.key || '';
+                        let name = node.memberName || d.name || d.description || node.name || (d.externalSysAttr?.NAME) || '';
                         const code = d.code || node.code || (d.externalSysAttr?.CODE) || '';
+                        if (code && name && !name.includes(code)) {
+                            name = `${code} ${name}`;
+                        }
                         if (id && (name || code)) {
                             list.push({
                                 id,
                                 code,
-                                name,
+                                name: name || code,
                                 vo: {
                                     value: id,
-                                    title: { zh_CN: name }
+                                    title: { zh_CN: name || code }
                                 }
                             });
                         }
@@ -4301,3000 +13365,6 @@
             summaryText,
             matchedTrips: tripSegments.length > 0 ? tripSegments : undefined
         };
-    }
-
-    let keepaliveTimer = null;
-    let isPinging = false;
-    let lastPingTime = 0;
-    /**
-     * 执行轻量级心跳请求，向系统服务端报活以刷新 Session 会话空闲倒计时 (30分钟超时防跌落)
-     * 接口选用 YuanNian 极为轻量的只读接口：/expenseClaim/expenseRecord/countAlreadyRecoverExpenseRecord
-     */
-    async function touchSessionKeepalive(state, win) {
-        if (isPinging)
-            return true;
-        isPinging = true;
-        try {
-            // 1. 每次心跳前动态嗅探提取最新 Token
-            extractLatestTokens(state);
-            // 2. 优先通过宿主原生 HTTP/Axios 客户端触发保活（与官方 UI 行为完全一致，该端点为 GET）
-            let res = await callNativeHttp('/expenseClaim/expenseRecord/countAlreadyRecoverExpenseRecord', 'GET', null, win);
-            // 3. 仅当原生客户端完全未连接时，降级使用备用 apiRequest 保活
-            if (res === null) {
-                res = await apiRequest('/fssc/expenseClaim/expenseRecord/countAlreadyRecoverExpenseRecord', 'GET', null, state);
-            }
-            const isSuccess = Boolean(res && res.success !== false && res.code !== '401');
-            if (isSuccess) {
-                lastPingTime = Date.now();
-                AutopilotLogger.info(`[SessionKeepalive] 会话心跳保活成功，Session 空闲倒计时已刷新 (${new Date().toLocaleTimeString()})`);
-            }
-            else {
-                AutopilotLogger.warn(`[SessionKeepalive] 会话心跳响应异常: ${res?.message || '未知状态'}`);
-            }
-            return isSuccess;
-        }
-        catch (err) {
-            AutopilotLogger.warn(`[SessionKeepalive] 会话心跳保活失败: ${err.message}`);
-            return false;
-        }
-        finally {
-            isPinging = false;
-        }
-    }
-    /**
-     * 启动定时会话保活循环 (默认每 2.5 分钟保活一次，彻底杜绝长时间编辑导致的“登录失效”)
-     */
-    function startSessionKeepalive(state, intervalMs = 150000, win) {
-        if (keepaliveTimer) {
-            clearInterval(keepaliveTimer);
-            keepaliveTimer = null;
-        }
-        AutopilotLogger.info(`[SessionKeepalive] 启动后台会话保活守护进程 (心跳间隔: ${Math.round(intervalMs / 1000)}s)`);
-        // 立即执行一次初次保活与 Token 刷新
-        touchSessionKeepalive(state, win);
-        keepaliveTimer = setInterval(() => {
-            touchSessionKeepalive(state, win);
-        }, intervalMs);
-    }
-
-    async function mapConcurrent(items, concurrency, asyncFn) {
-        const results = new Array(items.length);
-        let currentIndex = 0;
-        const worker = async () => {
-            while (currentIndex < items.length) {
-                const idx = currentIndex++;
-                try {
-                    results[idx] = await asyncFn(items[idx], idx);
-                }
-                catch (err) {
-                    console.error(`Error in mapConcurrent at index ${idx}:`, err);
-                    results[idx] = null;
-                }
-            }
-        };
-        const workers = [];
-        const actualConcurrency = Math.min(concurrency, items.length);
-        for (let i = 0; i < actualConcurrency; i++) {
-            workers.push(worker());
-        }
-        await Promise.all(workers);
-        return results;
-    }
-
-    /**
-     * 将不同来源的发票对象统一解构并扁平化为标准化字段结构
-     */
-    function normalizeInvoiceData(raw) {
-        if (!raw) {
-            return {
-                id: '',
-                invoiceNo: '',
-                invoiceCode: '',
-                invoiceDate: '',
-                amount: 0,
-                typeName: '',
-                sellerName: '',
-                goodsName: '',
-                timeGetOn: '',
-                timeGetOff: '',
-                detailChecked: false
-            };
-        }
-        // 1. 如果是原生发票池行结构 (包含 datas 字典)
-        if (raw.datas && typeof raw.datas === 'object') {
-            const d = raw.datas;
-            const res = {
-                id: raw.boSourceRowId || raw.rowId || (d.ID ? d.ID.value : '') || '',
-                invoiceNo: '',
-                invoiceCode: '',
-                invoiceDate: '',
-                amount: 0,
-                typeName: '',
-                sellerName: '',
-                goodsName: '',
-                timeGetOn: '',
-                timeGetOff: '',
-                detailChecked: Boolean(raw.detailChecked)
-            };
-            Object.values(d).forEach((field) => {
-                if (!field || !field.columnCode)
-                    return;
-                const code = field.columnCode;
-                const val = field.value;
-                if (code === 'INVOICE_NO') {
-                    res.invoiceNo = (typeof val === 'string' ? val : (val ? String(val) : '')).trim();
-                }
-                else if (code === 'INVOICE_CODE') {
-                    res.invoiceCode = (typeof val === 'string' ? val : (val ? String(val) : '')).trim();
-                }
-                else if (code === 'INVOICE_DATE') {
-                    res.invoiceDate = normalizeDate(typeof val === 'string' ? val : (val ? String(val) : ''));
-                }
-                else if (code === 'AMOUNT_TAX' || code === 'TOTAL_AMOUNT') {
-                    if (val && typeof val === 'object' && val.amount !== undefined) {
-                        const parsed = parseFloat(val.amount);
-                        if (!isNaN(parsed) && parsed > 0)
-                            res.amount = parsed;
-                    }
-                    else if (val !== undefined && val !== null && typeof val !== 'object') {
-                        const parsed = parseFloat(String(val).replace(/[^0-9.]/g, ''));
-                        if (!isNaN(parsed) && parsed > 0)
-                            res.amount = parsed;
-                    }
-                }
-                else if (code === 'BO_TYPE_DEFINE_ID') {
-                    if (val && typeof val === 'object') {
-                        res.typeName = val.onlyTitle?.zh_CN || val.title?.zh_CN || val.name || '';
-                    }
-                    else if (typeof val === 'string') {
-                        res.typeName = val;
-                    }
-                }
-                else if (code === 'SELLER_NAME' || code === 'SALES_NAME') {
-                    res.sellerName = (typeof val === 'string' ? val : '').trim();
-                }
-                else if (code === 'GOODS_NAME' || code === 'COMMODITY_NAME') {
-                    res.goodsName = (typeof val === 'string' ? val : '').trim();
-                }
-            });
-            // 二次回填：如果 AMOUNT_TAX 没取到有效值，再看 raw.datas 里有没有其他金额字段
-            if (res.amount <= 0 && d.AMOUNT_TAX && d.AMOUNT_TAX.value) {
-                const parsed = parseFloat(d.AMOUNT_TAX.value.amount || d.AMOUNT_TAX.value);
-                if (!isNaN(parsed) && parsed > 0)
-                    res.amount = parsed;
-            }
-            return res;
-        }
-        // 2. 如果是发票穿透详情 (invDetail / invoiceVO) 或标准 InvoiceItem
-        const invVO = raw.invoiceVO || raw;
-        const rawAmt = raw.amount !== undefined
-            ? raw.amount
-            : (invVO.amountTax !== undefined ? invVO.amountTax : (invVO.totalAmount !== undefined ? invVO.totalAmount : 0));
-        const parsedAmt = typeof rawAmt === 'number' ? rawAmt : (parseFloat(String(rawAmt).replace(/[^0-9.]/g, '')) || 0);
-        const rawDate = raw.invoiceDate || invVO.invoiceDate || raw.businessDate || '';
-        const normDate = normalizeDate(typeof rawDate === 'string' ? rawDate : (rawDate ? String(rawDate) : ''));
-        const no = (raw.invoiceNo || invVO.invoiceNo || invVO.invoiceNumber || '').trim();
-        const code = (raw.invoiceCode || invVO.invoiceCode || '').trim();
-        const typeName = raw.typeName || raw.expenseTypeName || invVO.invoiceTypeName || invVO.typeName || '';
-        const seller = (raw.salesName || invVO.salesName || invVO.seller || invVO.sellerName || '').trim();
-        const goods = (raw.invoiceDetails || invVO.goodsName || invVO.commodityNames || invVO.cargoInformation || '').trim();
-        return {
-            id: raw.id || raw.expenseRecordId || raw.boDataId || raw.boSourceRowId || invVO.invoiceDataId || '',
-            invoiceNo: no,
-            invoiceCode: code,
-            invoiceDate: normDate,
-            amount: parsedAmt,
-            typeName,
-            sellerName: seller,
-            goodsName: goods,
-            timeGetOn: raw.timeGetOn || invVO.timeGetOn || '',
-            timeGetOff: raw.timeGetOff || invVO.timeGetOff || '',
-            detailChecked: Boolean(raw.detailChecked || invVO.detailChecked)
-        };
-    }
-    /**
-     * 对单张发票执行完整性与合规校验
-     */
-    function validateSingleInvoice(rawInvoice) {
-        const data = normalizeInvoiceData(rawInvoice);
-        const issues = [];
-        // 1. 发票金额校验 (🔴 阻断性必要字段)
-        if (!data.amount || isNaN(data.amount) || data.amount <= 0) {
-            issues.push({
-                field: 'amount',
-                severity: 'error',
-                message: '发票金额未识别或金额为 0 元，请核实发票实付金额',
-                shortBadge: '缺金额'
-            });
-        }
-        // 2. 开票日期校验 (🔴 阻断性必要字段)
-        if (!data.invoiceDate || data.invoiceDate.trim().length === 0) {
-            issues.push({
-                field: 'date',
-                severity: 'error',
-                message: '未识别到有效开票日期，报销与记费用必须具备开票日期',
-                shortBadge: '缺日期'
-            });
-        }
-        else {
-            // 校验日期格式与合理年份 (避免 OCR 错识出如 2002 年、1990 年或未来年份)
-            const dateMatch = data.invoiceDate.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
-            if (!dateMatch) {
-                issues.push({
-                    field: 'date',
-                    severity: 'error',
-                    message: `开票日期格式非法 (${data.invoiceDate})，无法作为有效财务期间`,
-                    shortBadge: '日期非法'
-                });
-            }
-            else {
-                const year = parseInt(dateMatch[1], 10);
-                const month = parseInt(dateMatch[2], 10);
-                const day = parseInt(dateMatch[3], 10);
-                const currentYear = new Date().getFullYear();
-                // 基础日历真实性校验
-                const d = new Date(year, month - 1, day);
-                if (isNaN(d.getTime()) || d.getFullYear() !== year || d.getMonth() !== month - 1 || d.getDate() !== day) {
-                    issues.push({
-                        field: 'date',
-                        severity: 'error',
-                        message: `开票日期(${data.invoiceDate})为无效日历日期`,
-                        shortBadge: '无效日期'
-                    });
-                }
-                else if (year < currentYear - 2) {
-                    // 偏离 2 年以上（例如 2002 年），属于严重超期或 OCR 识别失真，阻断级错误
-                    issues.push({
-                        field: 'date',
-                        severity: 'error',
-                        message: `开票年份严重偏离当前财务期间 (${year}年)，可能为 OCR 识别失真或超期失效发票，请核验修改`,
-                        shortBadge: '年份存疑'
-                    });
-                }
-                else if (year < currentYear) {
-                    // 上一年度跨年发票
-                    issues.push({
-                        field: 'date',
-                        severity: 'warning',
-                        message: `开票年份为往年 (${year}年)，请确认是否在跨年财务报销有效期内`,
-                        shortBadge: '跨年发票'
-                    });
-                }
-                else if (year > currentYear) {
-                    issues.push({
-                        field: 'date',
-                        severity: 'error',
-                        message: `开票年份为未来时间 (${year}年)，OCR 识别明显异常`,
-                        shortBadge: '未来日期'
-                    });
-                }
-            }
-        }
-        // 3. 发票号码校验 (🔴 阻断性必要字段)
-        if (!data.invoiceNo || data.invoiceNo.trim().length === 0) {
-            issues.push({
-                field: 'invoiceNo',
-                severity: 'error',
-                message: '未识别到发票号码，系统无法进行发票查验与防重报销',
-                shortBadge: '缺发票号'
-            });
-        }
-        else if (data.invoiceNo.length < 4) {
-            issues.push({
-                field: 'invoiceNo',
-                severity: 'warning',
-                message: `发票号码位数过短 (${data.invoiceNo})，可能存在识别残缺`,
-                shortBadge: '票号残缺'
-            });
-        }
-        // 4. 发票类型校验 (🟡 建议完备字段)
-        if (!data.typeName || data.typeName.includes('未识别') || data.typeName === 'OTHER' || data.typeName === 'None') {
-            issues.push({
-                field: 'invoiceType',
-                severity: 'warning',
-                message: '发票类型未明确归类，可能影响税率及报销科目自动匹配',
-                shortBadge: '类型待定'
-            });
-        }
-        // 5. 销售方与品名校验 (🟡 辅助校验：交通通行类票据免除此校验)
-        const transportKeywords = [
-            '出租车', '网约车', '客运', '火车', '铁路', '高铁', '动车',
-            '机票', '航空', '行程单', '过路费', '通行费', '高速', 'ETC',
-            '轮渡', '船票', '公交', '地铁', '轨道交通', '停车', '泊车', '客票'
-        ];
-        const isTransport = transportKeywords.some(kw => data.typeName.includes(kw));
-        if (!isTransport && !data.sellerName && !data.goodsName) {
-            issues.push({
-                field: 'seller',
-                severity: 'warning',
-                message: '销售方名称与货物品名均未识别，建议点击修改补充',
-                shortBadge: '缺销方品名'
-            });
-        }
-        // 6. 出租车打车票乘车时间提示 (🟡 警示级提示：缺失将无法自动对齐差旅/考勤行程)
-        // 状态守卫：仅当发票详情接口核验完毕 (detailChecked === true) 且确认未提取到上下车时间时才提示，杜绝未请求前抢跑误报
-        if (data.typeName.includes('出租车')) {
-            if (data.detailChecked) {
-                if (!data.timeGetOn && !data.timeGetOff) {
-                    issues.push({
-                        field: 'time',
-                        severity: 'warning',
-                        message: '发票详情接口(/getBoDataAndTemplateWF)已核验：发票底层数据中未提取到上下车时间，无法自动对齐差旅与考勤行程，建议点击修改补充',
-                        shortBadge: '缺乘车时间'
-                    });
-                }
-            }
-        }
-        const hasErrors = issues.some(i => i.severity === 'error');
-        const hasWarnings = issues.some(i => i.severity === 'warning');
-        const errorBadges = issues
-            .filter(i => i.severity === 'error')
-            .map(i => i.shortBadge);
-        const warningBadges = issues
-            .filter(i => i.severity === 'warning')
-            .map(i => i.shortBadge);
-        const descList = [...errorBadges, ...warningBadges];
-        const missingFieldsDesc = descList.length > 0 ? descList.join(' · ') : '信息完备';
-        return {
-            id: data.id,
-            invoiceNo: data.invoiceNo,
-            invoiceCode: data.invoiceCode,
-            invoiceDate: data.invoiceDate,
-            amount: data.amount,
-            typeName: data.typeName,
-            isValid: !hasErrors,
-            hasWarnings: hasWarnings,
-            issues,
-            missingFieldsDesc
-        };
-    }
-    /**
-     * 批量校验发票列表并输出汇总结算体检报告
-     */
-    function validateInvoiceList(invoices) {
-        const list = Array.isArray(invoices) ? invoices : [];
-        const results = [];
-        const invalidList = [];
-        let missingAmountCount = 0;
-        let missingDateCount = 0;
-        let missingInvoiceNoCount = 0;
-        let missingTypeCount = 0;
-        let missingTimeCount = 0;
-        let warningCount = 0;
-        list.forEach(inv => {
-            const res = validateSingleInvoice(inv);
-            results.push(res);
-            if (!res.isValid) {
-                invalidList.push(res);
-            }
-            if (res.hasWarnings) {
-                warningCount++;
-            }
-            res.issues.forEach(issue => {
-                if (issue.severity === 'error') {
-                    if (issue.field === 'amount')
-                        missingAmountCount++;
-                    if (issue.field === 'date')
-                        missingDateCount++;
-                    if (issue.field === 'invoiceNo')
-                        missingInvoiceNoCount++;
-                }
-                else if (issue.field === 'invoiceType') {
-                    missingTypeCount++;
-                }
-                else if (issue.field === 'time') {
-                    missingTimeCount++;
-                }
-            });
-        });
-        return {
-            totalCount: list.length,
-            validCount: results.filter(r => r.isValid).length,
-            invalidCount: invalidList.length,
-            warningCount,
-            missingAmountCount,
-            missingDateCount,
-            missingInvoiceNoCount,
-            missingTypeCount,
-            missingTimeCount,
-            results,
-            invalidList
-        };
-    }
-    /**
-     * 将校验结果回填并富化至 InvoiceItem 实体中
-     */
-    function enrichInvoiceWithValidation(item) {
-        const report = validateSingleInvoice(item);
-        item.validationIssues = report.issues;
-        item.isValidInvoice = report.isValid;
-        item.missingFieldsDesc = report.missingFieldsDesc;
-        if (!report.isValid) {
-            item.status = '残缺';
-        }
-        return item;
-    }
-
-    function normalizeTimeHelper(t) {
-        if (!t)
-            return '';
-        const clean = t.toString().trim();
-        const parts = clean.split(':');
-        if (parts.length >= 2) {
-            return `${parts[0].trim().padStart(2, '0')}:${parts[1].trim().padStart(2, '0')}`;
-        }
-        return clean;
-    }
-    function sortInvoices(list) {
-        return list.sort((a, b) => {
-            const dateA = normalizeDate(a.invoiceDate || '') || '9999-99-99';
-            const dateB = normalizeDate(b.invoiceDate || '') || '9999-99-99';
-            if (dateA !== dateB)
-                return dateA.localeCompare(dateB);
-            const timeA = normalizeTimeHelper(a.timeGetOn) || '99:99';
-            const timeB = normalizeTimeHelper(b.timeGetOn) || '99:99';
-            return timeA.localeCompare(timeB);
-        });
-    }
-    /**
-     * 全量同步发票夹与未报销费用记录列表（带多级容灾与 DOM 降级兜底）
-     */
-    async function loadAllInvoicesAndExpenses(state) {
-        // 0. 刷新当前真实登录人信息
-        try {
-            await fetchLoginUserInfo(state);
-        }
-        catch (e) { }
-        const loaded = [];
-        const processedRecordIds = new Set();
-        const processedInvoiceDataIds = new Set();
-        const processedInvoiceNos = new Set();
-        // 1. 发票夹池
-        const poolList = await queryInvoicePoolListApi(state);
-        const poolInvoices = await mapConcurrent(poolList, 8, async (pItem) => {
-            const dataId = pItem.boSourceRowId || (pItem.datas && pItem.datas.ID ? pItem.datas.ID.value : '');
-            if (!dataId)
-                return null;
-            try {
-                const invDetail = await getInvoiceDetailByDataIdApi(dataId, state);
-                return { dataId, invDetail, pItem };
-            }
-            catch (e) {
-                return null;
-            }
-        });
-        const invoiceOcrMap = new Map();
-        poolInvoices.forEach(item => {
-            if (!item || !item.invDetail)
-                return;
-            const inv = item.invDetail;
-            if (inv.invoiceNo)
-                invoiceOcrMap.set(inv.invoiceNo, inv);
-            if (item.dataId)
-                invoiceOcrMap.set(item.dataId, inv);
-            if (inv.invoiceDate && inv.amountTax !== undefined) {
-                invoiceOcrMap.set(`${normalizeDate(inv.invoiceDate)}_${inv.amountTax}`, inv);
-            }
-        });
-        // 2. 未报销费用明细
-        const recordList = await queryExpenseRecordListApi(state);
-        const parsedRecords = await mapConcurrent(recordList, 8, async (item) => {
-            const recId = item.expenseRecordId;
-            if (!recId)
-                return null;
-            try {
-                const ruleData = await getExpenseTypeRuleAndRowDatasApi(recId, item.expenseTypeId || 'UNIDENTIFIED', state);
-                const rowDatas = ruleData.rowDatas || {};
-                const v = ruleData.version || 1;
-                let invVO = {};
-                const invListField = rowDatas.expenseRecordInvoiceList;
-                if (invListField && invListField.value && invListField.value.length > 0) {
-                    invVO = invListField.value[0].invoiceVO || {};
-                }
-                let matchedInv = null;
-                if (invVO.invoiceNo && invoiceOcrMap.has(invVO.invoiceNo))
-                    matchedInv = invoiceOcrMap.get(invVO.invoiceNo);
-                else if (invVO.invoiceDataId && invoiceOcrMap.has(invVO.invoiceDataId))
-                    matchedInv = invoiceOcrMap.get(invVO.invoiceDataId);
-                else if (item.businessDate && item.amountObj) {
-                    const key = `${normalizeDate(item.businessDate)}_${item.amountObj.amount}`;
-                    if (invoiceOcrMap.has(key))
-                        matchedInv = invoiceOcrMap.get(key);
-                }
-                if (matchedInv) {
-                    if (!invVO.timeGetOn && matchedInv.timeGetOn)
-                        invVO.timeGetOn = matchedInv.timeGetOn;
-                    if (!invVO.timeGetOff && matchedInv.timeGetOff)
-                        invVO.timeGetOff = matchedInv.timeGetOff;
-                    if (!invVO.mileage && matchedInv.mileage)
-                        invVO.mileage = matchedInv.mileage;
-                    if (!invVO.salesName && (matchedInv.salesName || matchedInv.seller))
-                        invVO.salesName = matchedInv.salesName || matchedInv.seller;
-                    if (!invVO.seller && (matchedInv.seller || matchedInv.salesName))
-                        invVO.seller = matchedInv.seller || matchedInv.salesName;
-                    if (!invVO.invoiceNo && matchedInv.invoiceNo)
-                        invVO.invoiceNo = matchedInv.invoiceNo;
-                    if (!invVO.invoiceCode && matchedInv.invoiceCode)
-                        invVO.invoiceCode = matchedInv.invoiceCode;
-                    if (matchedInv.invoiceDataId)
-                        invVO.invoiceDataId = matchedInv.invoiceDataId;
-                    if (!invVO.commodityNames && matchedInv.commodityNames)
-                        invVO.commodityNames = matchedInv.commodityNames;
-                    if (!invVO.cargoInformation && matchedInv.cargoInformation)
-                        invVO.cargoInformation = matchedInv.cargoInformation;
-                    if (!invVO.invoiceDetails && matchedInv.invoiceDetails)
-                        invVO.invoiceDetails = matchedInv.invoiceDetails;
-                    if (!invVO.goodsName && matchedInv.goodsName)
-                        invVO.goodsName = matchedInv.goodsName;
-                    if (!invVO.invoiceTypeAbbreviation && matchedInv.invoiceTypeAbbreviation)
-                        invVO.invoiceTypeAbbreviation = matchedInv.invoiceTypeAbbreviation;
-                    if (!invVO.invoiceTypeCode && matchedInv.invoiceTypeCode)
-                        invVO.invoiceTypeCode = matchedInv.invoiceTypeCode;
-                }
-                let attachList = [];
-                if (rowDatas.expenseRecordAttachmentList && rowDatas.expenseRecordAttachmentList.value) {
-                    attachList = rowDatas.expenseRecordAttachmentList.value;
-                }
-                const cat = detectInvoiceCategory(invVO, item, item.expenseTypeName || '');
-                const rawDate = invVO.invoiceDate || (item.businessDate ? item.businessDate.split(' ')[0] : '');
-                const invDate = normalizeDate(rawDate);
-                const amt = item.amountObj ? item.amountObj.amount : (invVO.amountTax || 0);
-                const isComm = cat === 'COMMUNICATION';
-                let cleanPeriod = '';
-                const existingPeriod = (rowDatas.F_ZY_DEF_001 ? rowDatas.F_ZY_DEF_001.value : '').replace(/^期间[：:]\s*/, '').trim();
-                cleanPeriod = (existingPeriod && existingPeriod.length === 7) ? existingPeriod : computePeriod(invDate, isComm);
-                return {
-                    expenseRecordId: recId,
-                    version: v,
-                    invoiceVO: invVO,
-                    invoiceNo: invVO.invoiceNo || '',
-                    invoiceCode: invVO.invoiceCode || '',
-                    invoiceDate: invDate,
-                    fileName: invVO.fileName || '',
-                    salesName: invVO.salesName || invVO.seller || '',
-                    timeGetOn: normalizeTimeHelper(invVO.timeGetOn),
-                    timeGetOff: normalizeTimeHelper(invVO.timeGetOff),
-                    mileage: invVO.mileage ? `${invVO.mileage}km` : '',
-                    amount: amt,
-                    type: cat,
-                    expenseTypeId: item.expenseTypeId || '',
-                    expenseTypeName: item.expenseTypeName || '',
-                    startAddress: rowDatas.START_ADDRESS ? (rowDatas.START_ADDRESS.value || '') : '',
-                    endAddress: rowDatas.END_ADDRESS ? (rowDatas.END_ADDRESS.value || '') : '',
-                    description: item.description || (rowDatas.DESCRIPTION ? rowDatas.DESCRIPTION.value || '' : ''),
-                    period: cleanPeriod,
-                    attachments: attachList,
-                    errorMessages: item.expenseRecordTypeMessageVO?.errorMessages || [],
-                    status: (item.expenseRecordTypeMessageVO?.errorMessages && item.expenseRecordTypeMessageVO.errorMessages.length > 0)
-                        ? '异常'
-                        : ((item.expenseTypeName && item.expenseTypeName !== 'None') ? '成功' : '就绪')
-                };
-            }
-            catch (e) {
-                AutopilotLogger.warn(`[ExpenseService] 解析单笔费用记录详情异常 (${recId}): ${e.message}`);
-                const invDate = normalizeDate(item.businessDate ? item.businessDate.split(' ')[0] : '');
-                const amt = item.amountObj ? item.amountObj.amount : 0;
-                const fallbackCat = detectInvoiceCategory({}, item, item.expenseTypeName || '');
-                return {
-                    expenseRecordId: recId,
-                    version: item.version || 1,
-                    invoiceVO: {},
-                    invoiceNo: '',
-                    invoiceCode: '',
-                    invoiceDate: invDate,
-                    timeGetOn: '',
-                    timeGetOff: '',
-                    mileage: '',
-                    amount: amt,
-                    type: fallbackCat !== 'OTHER' ? fallbackCat : (amt >= 350 ? 'HOTEL' : 'TAXI'),
-                    startAddress: '',
-                    endAddress: '',
-                    description: item.description || '',
-                    period: computePeriod(invDate, false),
-                    attachments: [],
-                    errorMessages: item.expenseRecordTypeMessageVO?.errorMessages || [],
-                    status: (item.expenseRecordTypeMessageVO?.errorMessages && item.expenseRecordTypeMessageVO.errorMessages.length > 0) ? '异常' : '就绪'
-                };
-            }
-        });
-        parsedRecords.forEach(r => {
-            if (r) {
-                loaded.push(r);
-                if (r.expenseRecordId)
-                    processedRecordIds.add(r.expenseRecordId);
-                if (r.invoiceVO && r.invoiceVO.invoiceDataId)
-                    processedInvoiceDataIds.add(r.invoiceVO.invoiceDataId);
-                if (r.invoiceNo)
-                    processedInvoiceNos.add(r.invoiceNo);
-            }
-        });
-        poolInvoices.forEach(item => {
-            if (!item || !item.invDetail)
-                return;
-            const invDetail = item.invDetail;
-            const dataId = item.dataId;
-            const invNo = invDetail.invoiceNo || '';
-            if (processedInvoiceDataIds.has(dataId) || (invNo && processedInvoiceNos.has(invNo)))
-                return;
-            const invDate = normalizeDate(invDetail.invoiceDate || '');
-            const amt = invDetail.amountTax !== undefined ? invDetail.amountTax : 0;
-            const cat = detectInvoiceCategory(invDetail, {}, '');
-            const isComm = cat === 'COMMUNICATION';
-            loaded.push({
-                expenseRecordId: '',
-                version: 1,
-                boDataId: dataId,
-                invoiceVO: invDetail,
-                invoiceNo: invNo,
-                invoiceCode: invDetail.invoiceCode || '',
-                invoiceDate: invDate,
-                timeGetOn: normalizeTimeHelper(invDetail.timeGetOn),
-                timeGetOff: normalizeTimeHelper(invDetail.timeGetOff),
-                mileage: invDetail.mileage ? `${invDetail.mileage}km` : '',
-                amount: amt,
-                type: cat,
-                startAddress: '',
-                endAddress: '',
-                description: '',
-                period: computePeriod(invDate, isComm),
-                attachments: [],
-                status: '待流转'
-            });
-        });
-        // 智能容灾层 1：若发票池和费用记录均为 0，检测是否在报销单编辑页 (#billWrite)
-        if (loaded.length === 0) {
-            let billMainId = state.currentBillMainId;
-            if (!billMainId && typeof window !== 'undefined') {
-                const hash = window.location.hash || '';
-                const match = hash.match(/billMainId=([a-zA-Z0-9_\-]+)/) || hash.match(/id=([a-zA-Z0-9_\-]+)/);
-                if (match)
-                    billMainId = match[1];
-                if (!billMainId) {
-                    const search = window.location.search || '';
-                    const m2 = search.match(/billMainId=([a-zA-Z0-9_\-]+)/) || search.match(/id=([a-zA-Z0-9_\-]+)/);
-                    if (m2)
-                        billMainId = m2[1];
-                }
-            }
-            if (billMainId && (!state.billRows || state.billRows.length === 0)) {
-                try {
-                    const { billData } = await fetchBillDataAndTemplateApi(billMainId, state);
-                    state.currentBillData = billData;
-                    const parsed = parseBillDataStructure(billData);
-                    state.billRows = parsed.billRows;
-                    state.billTags = parsed.billTags;
-                }
-                catch (e) {
-                    AutopilotLogger.warn(`[ExpenseService] 自动拉取报销单明细行失败: ${e.message}`);
-                }
-            }
-            if (state.billRows && state.billRows.length > 0) {
-                state.billRows.forEach((row, idx) => {
-                    loaded.push({
-                        id: row.claimRowId || `bill-row-${idx}`,
-                        expenseRecordId: row.claimRowId,
-                        version: 1,
-                        invoiceVO: {},
-                        invoiceNo: '',
-                        invoiceCode: '',
-                        invoiceDate: '',
-                        timeGetOn: '',
-                        timeGetOff: '',
-                        mileage: '',
-                        amount: row.amount,
-                        type: detectInvoiceCategory({}, {}, row.expTypeName),
-                        expenseTypeName: row.expTypeName || '市内交通费',
-                        startAddress: '',
-                        endAddress: '',
-                        description: row.recDesc || '',
-                        period: '',
-                        attachments: [],
-                        status: '就绪',
-                        isModified: false
-                    });
-                });
-            }
-        }
-        // 智能融合层：从当前宿主页面 DOM / React Fiber 中增量融合发票（保障 100% 提取发票夹全部发票）
-        const domItems = scrapeInvoicesFromDom();
-        if (domItems.length > 0) {
-            domItems.forEach(d => {
-                const dataId = d.boDataId || d.id;
-                const invNo = d.invoiceNo || '';
-                if (dataId && processedInvoiceDataIds.has(dataId))
-                    return;
-                if (invNo && processedInvoiceNos.has(invNo))
-                    return;
-                loaded.push(d);
-                if (dataId)
-                    processedInvoiceDataIds.add(dataId);
-                if (invNo)
-                    processedInvoiceNos.add(invNo);
-            });
-        }
-        const sorted = sortInvoices(loaded);
-        // 对每条发票执行完整性体检与残缺字段标记
-        sorted.forEach(item => enrichInvoiceWithValidation(item));
-        state.invoices = sorted;
-        state.selectedIndices.clear();
-        sorted.forEach((_, idx) => state.selectedIndices.add(idx));
-        return sorted;
-    }
-    /**
-     * 宿主页面 DOM 表格穿透兜底爬取
-     * 当后端接口因权限、状态过滤返回 0 条时，直接从用户屏幕可见的表格中提取数据
-     */
-    function scrapeInvoicesFromDom(state) {
-        if (typeof document === 'undefined')
-            return [];
-        const results = [];
-        const seenIds = new Set();
-        const seenNos = new Set();
-        // 辅助：从 DOM 节点探测 React Fiber
-        function findFiber(el) {
-            if (!el)
-                return null;
-            const key = Object.keys(el).find(k => k.startsWith('__reactInternalInstance$') || k.startsWith('__reactFiber$'));
-            return key ? el[key] : null;
-        }
-        // 辅助：从单个 document 中提取 React Table dataSource
-        function extractFromDocFiber(doc) {
-            if (!doc)
-                return null;
-            const trs = Array.from(doc.querySelectorAll('tbody tr'));
-            for (const tr of trs) {
-                let fiber = findFiber(tr);
-                while (fiber) {
-                    if (fiber.memoizedProps?.dataSource && Array.isArray(fiber.memoizedProps.dataSource) && fiber.memoizedProps.dataSource.length > 0) {
-                        return fiber.memoizedProps.dataSource;
-                    }
-                    fiber = fiber.return;
-                }
-            }
-            return null;
-        }
-        // 收集主文档及所有同源 iframe 文档
-        const docs = [document];
-        document.querySelectorAll('iframe').forEach(f => {
-            try {
-                const d = f.contentDocument || f.contentWindow?.document;
-                if (d && !docs.includes(d))
-                    docs.push(d);
-            }
-            catch (e) { }
-        });
-        // 辅助：从 Fiber 节点数据对象中按 columnCode 动态提取值
-        function getColumnValue(record, code) {
-            if (!record || typeof record !== 'object')
-                return undefined;
-            if (record[code]?.value !== undefined)
-                return record[code].value;
-            for (const key of Object.keys(record)) {
-                const item = record[key];
-                if (item && typeof item === 'object' && item.columnCode === code) {
-                    return item.value;
-                }
-            }
-            return undefined;
-        }
-        // 1. 优先从 React Fiber 提取最完整的发票池原生数据 (穿透发票夹 iframe 与宿主页面)
-        for (const doc of docs) {
-            const dataSource = extractFromDocFiber(doc);
-            if (dataSource && dataSource.length > 0) {
-                for (let idx = 0; idx < dataSource.length; idx++) {
-                    const d = dataSource[idx];
-                    const dataId = d.ID?.value || d.boSourceRowId?.value || d.boSourceRowId || getColumnValue(d, 'ID') || `inv-fiber-${idx}`;
-                    const typeName = d.BO_TYPE_DEFINE_ID?.value?.onlyTitle?.zh_CN || d.BO_TYPE_DEFINE_ID?.value?.title?.zh_CN || d.BO_TYPE_DEFINE_ID?.title?.zh_CN || '';
-                    const invCode = getColumnValue(d, 'INVOICE_CODE') || d['8f8eb6197a4411e9b0eddf7f464b08f2']?.value || '';
-                    const invNo = getColumnValue(d, 'INVOICE_NO') || d['9b1993717a4411e9b0ed17d010f97c63']?.value || '';
-                    const rawDate = getColumnValue(d, 'INVOICE_DATE') || d['ba31ef167a4411e9b0ed9162dd502459']?.value || '';
-                    const invDate = normalizeDate(rawDate);
-                    const taxAmtObj = getColumnValue(d, 'AMOUNT_TAX') ?? d['d3f7fcbc7a4411e9b0ed576d29ce88e9']?.value;
-                    const amt = typeof taxAmtObj === 'object' ? (taxAmtObj?.amount ?? 0) : (Number(taxAmtObj) || 0);
-                    const rawSales = getColumnValue(d, 'SALES_NAME');
-                    const salesName = typeof rawSales === 'string' ? rawSales : (rawSales?.title?.zh_CN || rawSales?.[0]?.title?.zh_CN || '');
-                    const rawPurchaser = getColumnValue(d, 'PURCHASER_NAME');
-                    const purchaserName = typeof rawPurchaser === 'string' ? rawPurchaser : (rawPurchaser?.title?.zh_CN || rawPurchaser?.[0]?.title?.zh_CN || '');
-                    if (seenIds.has(dataId) || (invNo && seenNos.has(invNo)))
-                        continue;
-                    if (dataId)
-                        seenIds.add(dataId);
-                    if (invNo)
-                        seenNos.add(invNo);
-                    const invoiceVO = {
-                        invoiceDataId: dataId,
-                        invoiceNo: invNo,
-                        invoiceCode: invCode,
-                        invoiceDate: invDate,
-                        amountTax: amt,
-                        salesName: salesName,
-                        seller: salesName,
-                        purchaserName: purchaserName,
-                        invoiceTypeAbbreviation: typeName,
-                        commodityNames: typeName,
-                        fileName: `${invDate}_${typeName}_¥${amt}`
-                    };
-                    const cat = detectInvoiceCategory(invoiceVO, {}, typeName);
-                    const isComm = cat === 'COMMUNICATION';
-                    results.push({
-                        id: dataId,
-                        boDataId: dataId,
-                        expenseRecordId: '',
-                        version: 1,
-                        invoiceVO: invoiceVO,
-                        invoiceNo: invNo,
-                        invoiceCode: invCode,
-                        invoiceDate: invDate,
-                        salesName: salesName,
-                        timeGetOn: '',
-                        timeGetOff: '',
-                        mileage: '',
-                        amount: amt,
-                        type: cat,
-                        expenseTypeName: typeName || (cat === 'HOTEL' ? '住宿费' : cat === 'FLIGHT' ? '飞机票' : cat === 'TRAIN' ? '火车票' : '市内交通费'),
-                        startAddress: '',
-                        endAddress: '',
-                        description: '',
-                        period: computePeriod(invDate, isComm),
-                        attachments: [],
-                        status: '待流转',
-                        isModified: false
-                    });
-                }
-                if (results.length > 0) {
-                    AutopilotLogger.info(`[ExpenseService] 成功通过 React Fiber 穿透提取发票池数据 (${results.length} 笔记录)`);
-                    return results;
-                }
-            }
-        }
-        // 2. 降级：从 HTML 表格 DOM 中爬取
-        for (const doc of docs) {
-            const allTables = Array.from(doc.querySelectorAll('table')).filter(t => {
-                const id = t.id || '';
-                const cls = t.className || '';
-                return !id.includes('yn-') && !cls.includes('webmcp') && !id.includes('webmcp') && !id.includes('trip-');
-            });
-            for (const table of allTables) {
-                const rows = Array.from(table.querySelectorAll('tbody tr'));
-                if (rows.length === 0)
-                    continue;
-                const headers = Array.from(table.querySelectorAll('thead th, thead td')).map(h => (h.textContent || '').trim());
-                const dateColIdx = headers.findIndex(h => /日期|时间|date/i.test(h));
-                const typeColIdx = headers.findIndex(h => /类型|类别|科目|type|category/i.test(h));
-                const amtColIdx = headers.findIndex(h => /金额|价税|含税|amount|price/i.test(h));
-                const descColIdx = headers.findIndex(h => /说明|事由|描述|备注|desc/i.test(h));
-                const startColIdx = headers.findIndex(h => /出发|起点|origin|from/i.test(h));
-                const endColIdx = headers.findIndex(h => /到达|目的|destination|to/i.test(h));
-                const invNoColIdx = headers.findIndex(h => /发票号|单据号|no|code/i.test(h));
-                for (let i = 0; i < rows.length; i++) {
-                    const tr = rows[i];
-                    const cells = Array.from(tr.querySelectorAll('td'));
-                    if (cells.length < 3)
-                        continue;
-                    const getCellText = (idx) => (idx !== -1 && idx < cells.length ? (cells[idx].textContent || '').trim() : '');
-                    const fullRowText = cells.map(c => c.textContent || '').join(' ');
-                    let invDate = '';
-                    if (dateColIdx !== -1) {
-                        invDate = normalizeDate(getCellText(dateColIdx));
-                    }
-                    if (!invDate) {
-                        const m = fullRowText.match(/\b(20\d{2}[-/.]\d{1,2}[-/.]\d{1,2})\b/);
-                        if (m)
-                            invDate = normalizeDate(m[1]);
-                    }
-                    let amount = 0;
-                    if (amtColIdx !== -1) {
-                        const amtStr = getCellText(amtColIdx).replace(/[^\d.]/g, '');
-                        amount = parseFloat(amtStr) || 0;
-                    }
-                    if (!amount) {
-                        const m = fullRowText.match(/(?:¥|￥)\s*(\d+(?:\.\d{1,2})?)/);
-                        if (m)
-                            amount = parseFloat(m[1]) || 0;
-                    }
-                    const typeName = typeColIdx !== -1 ? getCellText(typeColIdx) : '';
-                    const cat = detectInvoiceCategory({}, {}, typeName || fullRowText);
-                    let startAddress = startColIdx !== -1 ? getCellText(startColIdx) : '';
-                    let endAddress = endColIdx !== -1 ? getCellText(endColIdx) : '';
-                    if (!startAddress && !endAddress) {
-                        const m = fullRowText.match(/([^\s,，]+)\s*(?:至|➔|->|-->|到)\s*([^\s,，]+)/);
-                        if (m) {
-                            startAddress = m[1].trim();
-                            endAddress = m[2].trim();
-                        }
-                    }
-                    const description = descColIdx !== -1 ? getCellText(descColIdx) : '';
-                    const invoiceNo = invNoColIdx !== -1 ? getCellText(invNoColIdx) : '';
-                    const rowId = tr.getAttribute('data-id') || tr.getAttribute('row-key') || tr.getAttribute('id') || `dom-row-${i}`;
-                    if (amount > 0 || invDate || typeName) {
-                        results.push({
-                            id: rowId,
-                            expenseRecordId: rowId,
-                            version: 1,
-                            invoiceVO: {},
-                            invoiceNo: invoiceNo,
-                            invoiceCode: '',
-                            invoiceDate: invDate,
-                            timeGetOn: '',
-                            timeGetOff: '',
-                            mileage: '',
-                            amount,
-                            type: cat,
-                            expenseTypeName: typeName || (cat === 'HOTEL' ? '住宿费' : cat === 'FLIGHT' ? '飞机票' : cat === 'TRAIN' ? '火车票' : '市内交通费'),
-                            startAddress,
-                            endAddress,
-                            description,
-                            period: computePeriod(invDate, cat === 'COMMUNICATION'),
-                            attachments: [],
-                            status: '待流转',
-                            isModified: false
-                        });
-                    }
-                }
-                if (results.length > 0)
-                    break;
-            }
-            if (results.length > 0)
-                break;
-        }
-        if (results.length > 0) {
-            AutopilotLogger.info(`[ExpenseService] 从宿主 DOM 表格中兜底爬取成功 (${results.length} 笔记录)`);
-        }
-        return results;
-    }
-    async function queryInvoicePoolListApi(state) {
-        if (state.lastInterceptedInvoicePool && state.lastInterceptedInvoicePool.length > 0) {
-            AutopilotLogger.info(`[ExpenseService] 复用最近拦截到的发票池数据 (${state.lastInterceptedInvoicePool.length} 条)`);
-            return state.lastInterceptedInvoicePool;
-        }
-        const payload = {
-            boDefineId: '5f0971df7a4411e9b0edd9fcadd69462',
-            appId: state.appId || 'e3d5e4787ff911e88b1997bee3518b4d',
-            relationBO: {
-                boType: 'OBJECT_TYPE',
-                boDefineId: '5f0971df7a4411e9b0edd9fcadd69462'
-            },
-            conditions: '',
-            conditionMap: {},
-            pageOrderParam: {
-                pageNum: 1,
-                pageSize: 500,
-                enableCountLimit: true,
-                countLimit: 1000,
-                count: false,
-                orderList: {
-                    column: 'ba31ef167a4411e9b0ed9162dd502459',
-                    desc: false
-                }
-            },
-            boQuerySheetId: '026ef6e4a8a56756ace70c2002000001',
-            authority: 0
-        };
-        try {
-            let res = await apiRequest('/fssc/bo/boQuery/getBOQueryDataList', 'POST', payload, state);
-            let list = res.data && (res.data.pageInfoBOQueryRowDataList?.list || res.data.boQueryRowDataList || res.data.rowDatas)
-                ? (res.data.pageInfoBOQueryRowDataList?.list || res.data.boQueryRowDataList || res.data.rowDatas)
-                : [];
-            return list;
-        }
-        catch (e) {
-            AutopilotLogger.warn(`[ExpenseService] 查询发票池异常: ${e.message}`);
-            return [];
-        }
-    }
-    async function getInvoiceDetailByDataIdApi(dataId, state) {
-        const res = await apiRequest('/fssc/expenseClaim/expenseRecordInvoice/getInvoiceByDataId', 'POST', { invoiceDataId: dataId }, state);
-        return res.data;
-    }
-    async function queryExpenseRecordListApi(state, win, forceRefresh = true, statusList = ['NO_REIMBURSE', 'REIMBURSING']) {
-        // 只有在非强制刷新模式下，才允许复用最近拦截到的记录
-        if (!forceRefresh && state.lastInterceptedExpenseRecords && state.lastInterceptedExpenseRecords.length > 0) {
-            AutopilotLogger.info(`[ExpenseService] 复用最近拦截到的宿主费用记录 (${state.lastInterceptedExpenseRecords.length} 条)`);
-            return state.lastInterceptedExpenseRecords;
-        }
-        const applicantId = state.currentUser?.userId || state.applicantId;
-        // 1. 标准分页结构请求 (大分页 200 条，默认覆盖未报销与报销中)
-        const standardPayload = {
-            pageOrderParam: { pageNum: 1, pageSize: 200 },
-            status: statusList && statusList.length > 0 ? [...statusList] : ['NO_REIMBURSE', 'REIMBURSING'],
-            requestDate: null,
-            sortOrder: 'DESC',
-            sortColumnCode: 'CREATE_DATE'
-        };
-        try {
-            // 优先使用原生 HTTP 客户端 (100% 具备 session 与安全鉴权)
-            const nativeRes = await callNativeHttp('/expenseClaim/expenseRecord/getExpenseRecordListBySearchVO', 'POST', standardPayload, win);
-            if (nativeRes && nativeRes.success && nativeRes.data) {
-                let list = nativeRes.data.list || nativeRes.data.expenseRecordList || [];
-                if (list.length === 0) {
-                    // 若未报销状态为 0，尝试全部状态查询
-                    standardPayload.status = [];
-                    const allRes = await callNativeHttp('/expenseClaim/expenseRecord/getExpenseRecordListBySearchVO', 'POST', standardPayload, win);
-                    list = (allRes?.data?.list || allRes?.data?.expenseRecordList) || [];
-                }
-                // 自动多页循环拼接 (当记录数超过一页 pageSize 时)
-                const totalPages = nativeRes.data.pages || 1;
-                if (totalPages > 1) {
-                    for (let p = 2; p <= totalPages; p++) {
-                        standardPayload.pageOrderParam.pageNum = p;
-                        try {
-                            const nextRes = await callNativeHttp('/expenseClaim/expenseRecord/getExpenseRecordListBySearchVO', 'POST', standardPayload, win);
-                            const nextItems = nextRes?.data && (nextRes.data.list || nextRes.data.expenseRecordList) ? (nextRes.data.list || nextRes.data.expenseRecordList) : [];
-                            list = list.concat(nextItems);
-                        }
-                        catch (e) {
-                            AutopilotLogger.warn(`[ExpenseService] 原生 HTTP 拉取第 ${p} 页失败: ${e.message}`);
-                        }
-                    }
-                }
-                if (list.length > 0) {
-                    const uniqueMap = new Map();
-                    for (const item of list) {
-                        if (item && item.expenseRecordId) {
-                            uniqueMap.set(item.expenseRecordId, item);
-                        }
-                    }
-                    const deduplicated = Array.from(uniqueMap.values());
-                    state.lastInterceptedExpenseRecords = deduplicated;
-                    AutopilotLogger.info(`[ExpenseService] 成功通过原生 HTTP 获取费用记录列表共 ${deduplicated.length} 条`);
-                    return deduplicated;
-                }
-            }
-            let res = await apiRequest('/fssc/expenseClaim/expenseRecord/getExpenseRecordListBySearchVO', 'POST', standardPayload, state);
-            let list = (res.data && (res.data.list || res.data.expenseRecordList)) ? (res.data.list || res.data.expenseRecordList) : [];
-            // 智能容灾 1：若 status=['NO_REIMBURSE'] 查询为 0 条，尝试全部状态 (status: []) 查询
-            if (list.length === 0) {
-                standardPayload.status = [];
-                res = await apiRequest('/fssc/expenseClaim/expenseRecord/getExpenseRecordListBySearchVO', 'POST', standardPayload, state);
-                list = (res.data && (res.data.list || res.data.expenseRecordList)) ? (res.data.list || res.data.expenseRecordList) : [];
-            }
-            // 自动多页拼接 (当记录数超过一页 pageSize 时)
-            if (res.data && res.data.pages && res.data.pages > 1 && res.data.list) {
-                const totalPages = res.data.pages;
-                for (let p = 2; p <= totalPages; p++) {
-                    standardPayload.pageOrderParam.pageNum = p;
-                    try {
-                        const nextRes = await apiRequest('/fssc/expenseClaim/expenseRecord/getExpenseRecordListBySearchVO', 'POST', standardPayload, state);
-                        const nextItems = nextRes.data && (nextRes.data.list || nextRes.data.expenseRecordList) ? (nextRes.data.list || nextRes.data.expenseRecordList) : [];
-                        list = list.concat(nextItems);
-                    }
-                    catch (e) { }
-                }
-            }
-            // 智能容灾 2：若标准结构仍为 0，尝试历史兼容扁平结构
-            if (list.length === 0) {
-                const legacyPayload = {
-                    applicantId: applicantId,
-                    costCenterId: '',
-                    dateInterval: { dateType: 'ALL' },
-                    departmentId: '',
-                    expenseTypeId: '',
-                    hasBill: '',
-                    isAsc: true,
-                    orderField: 'CREATE_DATE',
-                    pageNo: 1,
-                    pageSize: 500,
-                    queryType: 'MY_CREATE',
-                    status: 'NO_REIMBURSE',
-                    subCompanyId: ''
-                };
-                const legRes = await apiRequest('/fssc/expenseClaim/expenseRecord/getExpenseRecordListBySearchVO', 'POST', legacyPayload, state);
-                const legList = legRes.data && (legRes.data.list || legRes.data.expenseRecordList) ? (legRes.data.list || legRes.data.expenseRecordList) : [];
-                if (legList.length > 0)
-                    list = legList;
-            }
-            if (list.length > 0) {
-                const uniqueMap = new Map();
-                for (const item of list) {
-                    if (item && item.expenseRecordId) {
-                        uniqueMap.set(item.expenseRecordId, item);
-                    }
-                }
-                const deduplicated = Array.from(uniqueMap.values());
-                state.lastInterceptedExpenseRecords = deduplicated;
-                AutopilotLogger.info(`[ExpenseService] 成功获取费用记录列表共 ${deduplicated.length} 条`);
-                return deduplicated;
-            }
-            return [];
-        }
-        catch (e) {
-            AutopilotLogger.warn(`[ExpenseService] 查询费用记录列表异常: ${e.message}`);
-            // 灾备兜底：若网络请求异常且本地有历史拦截记录，作为离线灾备返回
-            if (state.lastInterceptedExpenseRecords && state.lastInterceptedExpenseRecords.length > 0) {
-                AutopilotLogger.warn(`[ExpenseService] 网络查询失败，降级使用历史缓存的 ${state.lastInterceptedExpenseRecords.length} 笔记录`);
-                return state.lastInterceptedExpenseRecords;
-            }
-            return [];
-        }
-    }
-    async function getExpenseTypeRuleAndRowDatasApi(expenseRecordId, expenseTypeId, state, win) {
-        const payload = {
-            expenseRecordId,
-            expenseTypeId: expenseTypeId || 'UNIDENTIFIED',
-            intersectionScope: null,
-            dimensionMappingQueryVOList: [],
-            accountCurrencyId: state.accountCurrencyId || '6e589eb2dd9f11e8b5a69590a14a4e34'
-        };
-        // 优先尝试宿主原生 Axios/HTTP 客户端 (自带动态签名拦截器，100% 鉴权与防伪失效维持)
-        const nativeRes = await callNativeHttp('/expenseClaim/expenseRecord/getExpenseTypeFieldRuleListAndAllValueVO', 'POST', payload, win);
-        if (nativeRes) {
-            if (nativeRes.success && nativeRes.data) {
-                return {
-                    rowDatas: nativeRes.data.rowDatas || {},
-                    version: nativeRes.data.version !== undefined ? nativeRes.data.version : 1,
-                    fullData: nativeRes.data
-                };
-            }
-            if (nativeRes.success === false) {
-                throw new Error(`获取费用详情与规则失败: ${nativeRes.message || '后端异常'}`);
-            }
-        }
-        // 仅在完全没有原生客户端的环境下使用备用请求
-        const res = await apiRequest('/fssc/expenseClaim/expenseRecord/getExpenseTypeFieldRuleListAndAllValueVO', 'POST', payload, state);
-        if (res && res.success && res.data) {
-            return {
-                rowDatas: res.data.rowDatas || {},
-                version: res.data.version !== undefined ? res.data.version : 1,
-                fullData: res.data
-            };
-        }
-        throw new Error(res?.message || '获取费用详情与规则失败，请刷新重试');
-    }
-    async function initExpenseRecordWithTypeApi(expenseRecordId, targetExpenseTypeId, baseRowDatas = {}, state, win) {
-        const applicantId = baseRowDatas?.APPLICANT_ID?.value?.value ||
-            state.currentUser?.userId ||
-            state.applicantId ||
-            (typeof sessionStorage !== 'undefined' ? (sessionStorage.getItem('userId') || sessionStorage.getItem('loginUserId')) : '') || '';
-        const payload = {
-            accountCurrencyId: state.accountCurrencyId || '6e589eb2dd9f11e8b5a69590a14a4e34',
-            applicantId: applicantId || undefined,
-            expenseRecordId,
-            expenseTypeId: targetExpenseTypeId,
-            executeType: 'CHANGE_EXPENSE_TYPE',
-            triggerTiming: 'ADD_ROW',
-            source: 'CHANGE_EXPENSE_TYPE',
-            rowDatas: baseRowDatas
-        };
-        let res = await callNativeHttp('/expenseClaim/expenseRecord/initExpenseRecordData', 'POST', payload, win);
-        if (res) {
-            if (res.success && res.data) {
-                return res.data;
-            }
-            if (res.success === false) {
-                throw new Error(`初始化费用类型失败: ${res.message || '后端异常'}`);
-            }
-        }
-        res = await apiRequest('/fssc/expenseClaim/expenseRecord/initExpenseRecordData', 'POST', payload, state);
-        if (!res || !res.success) {
-            throw new Error(res?.message || '初始化费用类型失败');
-        }
-        return res.data || {};
-    }
-    async function createDraftExpenseRecordFromInvoiceApi(invoiceVO, boDataId, state, subInvoices) {
-        const list = [{
-                invoiceVO: invoiceVO || {},
-                invoiceDataId: boDataId || (invoiceVO ? (invoiceVO.invoiceDataId || invoiceVO.invoiceId) : '')
-            }];
-        if (subInvoices && subInvoices.length > 0) {
-            for (const sub of subInvoices) {
-                list.push({
-                    invoiceVO: sub.invoiceVO || {},
-                    invoiceDataId: sub.boDataId || (sub.invoiceVO ? (sub.invoiceVO.invoiceDataId || sub.invoiceVO.invoiceId) : '')
-                });
-            }
-        }
-        const payload = {
-            expenseRecordInvoiceList: list
-        };
-        const res = await apiRequest('/fssc/expenseClaim/expenseRecord/initAndSaveExpenseRecordData', 'POST', payload, state);
-        if (res.data && res.data.expenseRecordId) {
-            return res.data.expenseRecordId;
-        }
-        if (Array.isArray(res.data) && res.data.length > 0 && res.data[0]?.expenseRecordId) {
-            return res.data[0].expenseRecordId;
-        }
-        if (typeof res.data === 'string' && res.data.length > 10) {
-            return res.data;
-        }
-        throw new Error(res.message || '初始化发票草稿失败');
-    }
-    /**
-     * 执行费用记录规则联动重算 (Butterfly Effect / fieldValueChange)
-     * 典型场景：出差城市选择后，后端规则自动推导住宿城市类型 (F_ZSC_DEF_001) 与费用标准金额 (STANDARD_VALUE)
-     */
-    async function executeExpenseRecordFieldValueChangeApi(fieldId, fieldName, columnCode, fieldValue, expenseTypeId, rowDatas, state, win) {
-        const payload = {
-            fieldId: fieldId || '0356c803fdbde1653e55bb00bc610006',
-            fieldName: fieldName,
-            columnCode: columnCode,
-            fieldValue: fieldValue,
-            recordDataVO: {
-                accountCurrencyId: state.accountCurrencyId || '6e589eb2dd9f11e8b5a69590a14a4e34',
-                expenseTypeId: expenseTypeId,
-                rowDatas: rowDatas,
-                expenseRecordMessageList: []
-            }
-        };
-        try {
-            const nativeRes = await callNativeHttp('/expenseClaim/expenseRecordRuleExecute/fieldValueChange', 'POST', payload, win);
-            if (nativeRes) {
-                if (nativeRes.success && nativeRes.data) {
-                    return nativeRes.data.rowDatas || nativeRes.data.recordDataVO?.rowDatas || nativeRes.data;
-                }
-                if (nativeRes.success === false) {
-                    AutopilotLogger.warn(`[expenseRecordFieldValueChange] 原生联动规则校验提示: ${nativeRes.message || ''}`);
-                    return null;
-                }
-            }
-        }
-        catch (e) {
-            AutopilotLogger.warn(`[expenseRecordFieldValueChange] 原生请求异常: ${e?.message || e}`);
-        }
-        try {
-            const res = await apiRequest('/fssc/expenseClaim/expenseRecordRuleExecute/fieldValueChange', 'POST', payload, state);
-            if (res && res.success && res.data) {
-                return res.data.rowDatas || res.data.recordDataVO?.rowDatas || res.data;
-            }
-        }
-        catch (e) {
-            AutopilotLogger.warn(`[expenseRecordFieldValueChange] API 请求异常: ${e?.message || e}`);
-        }
-        return null;
-    }
-    async function saveFinalExpenseRecordApi(expenseRecordId, expenseTypeId, rowDatas, version, state, fallbackApplicantId, win) {
-        const applicantId = fallbackApplicantId ||
-            rowDatas?.APPLICANT_ID?.value?.value ||
-            state.currentUser?.userId ||
-            state.applicantId ||
-            (typeof sessionStorage !== 'undefined' ? (sessionStorage.getItem('userId') || sessionStorage.getItem('loginUserId')) : '') || '';
-        const payload = {
-            expenseRecordId,
-            expenseTypeId,
-            rowDatas,
-            version: version || 1,
-            operationType: 'UPDATE',
-            applicantId: applicantId || undefined,
-            accountCurrencyId: state.accountCurrencyId || '6e589eb2dd9f11e8b5a69590a14a4e34',
-            dimensionMappingQueryVOList: [],
-            expenseRecordMessageList: []
-        };
-        const extractAndThrowValidationErrors = (resp) => {
-            if (!resp)
-                return;
-            const msgList = resp.data?.expenseRecordMessageList || resp.expenseRecordMessageList || [];
-            const errList = Array.isArray(msgList) ? msgList.filter((m) => m.messageType === 'ERROR' || m.messageType === 'FAIL') : [];
-            if (errList.length > 0) {
-                const detail = errList.map((e) => e.message || '未知错误').join('; ');
-                throw new Error(`保存校验拦截: ${detail}`);
-            }
-            if (resp.data?.expenseRecordTypeMessageVO?.errorMessages?.length > 0) {
-                throw new Error(`保存校验拦截: ${resp.data.expenseRecordTypeMessageVO.errorMessages.join('; ')}`);
-            }
-        };
-        let res = await callNativeHttp('/expenseClaim/expenseRecord/validateAndSaveExpenseRecord', 'POST', payload, win);
-        if (res) {
-            extractAndThrowValidationErrors(res);
-            if (res.success) {
-                return res.data;
-            }
-            // 原生客户端明确返回失败时，直接抛出真实业务报错，绝对不可降级到无签名的 apiRequest (防止网关将缺少 eicds 签名的请求误报为“登录失效”)
-            throw new Error(res.message || '保存费用明细失败');
-        }
-        // 仅在完全没有原生客户端的环境下进行备用降级
-        res = await apiRequest('/fssc/expenseClaim/expenseRecord/validateAndSaveExpenseRecord', 'POST', payload, state);
-        if (!res || !res.success) {
-            throw new Error(res?.message || '保存费用明细失败');
-        }
-        extractAndThrowValidationErrors(res);
-        return res.data;
-    }
-    async function deleteExpenseRecordListApi(selectedIds, state) {
-        if (!selectedIds || selectedIds.length === 0)
-            return { success: true };
-        return await apiRequest('/fssc/expenseClaim/expenseRecord/deleteExpenseRecordList', 'POST', selectedIds, state);
-    }
-    async function deleteInvoiceBOListApi(invoiceIds, state) {
-        if (!invoiceIds || invoiceIds.length === 0)
-            return { success: true };
-        try {
-            const res = await apiRequest('/fssc/expenseClaim/expenseRecordInvoice/invoiceBOListDelete', 'POST', invoiceIds, state);
-            if (res && res.success) {
-                return res;
-            }
-        }
-        catch (e) {
-            // 若发票处于“已生成费用但下游费用已死”的死锁状态，接口会拦截并提示“该发票已报销，禁止删除”
-            // 此时自动降级至 BO 底座物理删除接口 deleteBoByBoMainId 强制解套
-        }
-        for (const id of invoiceIds) {
-            await apiRequest('/fssc/bo/bodata/deleteBoByBoMainId', 'POST', `boMainId=${encodeURIComponent(id)}`, state, true);
-        }
-        return { data: [], message: '删除成功！', success: true };
-    }
-    /**
-     * 通用单条费用记录保存入库（支持全部 15 种费用类型，支持一笔费用多张发票）
-     */
-    async function saveSingleExpenseItemApi(row, state) {
-        // 1. 确定 targetExpenseType
-        let targetTypeConfig = ALL_EXPENSE_TYPE_LIST.find(t => t.id === row.expenseTypeId || t.code === row.expenseTypeCode);
-        if (!targetTypeConfig) {
-            if (row.type && EXPENSE_TYPES[row.type]) {
-                targetTypeConfig = EXPENSE_TYPES[row.type];
-            }
-            else {
-                targetTypeConfig = EXPENSE_TYPES.TAXI;
-            }
-        }
-        // 2. 检查并实例化草稿（支持一笔费用挂载多张发票草稿初始化）
-        let recordId = row.expenseRecordId;
-        if (!recordId) {
-            recordId = await createDraftExpenseRecordFromInvoiceApi(row.invoiceVO, row.boDataId || row.invoiceVO?.invoiceDataId, state, row.subInvoices);
-            row.expenseRecordId = recordId;
-        }
-        // 3. 获取版本与基础数据 (乐观锁)
-        const ruleData = await getExpenseTypeRuleAndRowDatasApi(recordId, 'UNIDENTIFIED', state);
-        const version = ruleData.version !== undefined ? ruleData.version : 1;
-        const baseRowDatas = ruleData.rowDatas || {};
-        // 4. 切换费用类型初始化 rowDatas
-        const initData = await initExpenseRecordWithTypeApi(recordId, targetTypeConfig.id, baseRowDatas, state);
-        const rowDatas = initData.rowDatas || {};
-        // 5. 回填各类型字段数据
-        // 5. 回填各类型字段数据
-        const isHotel = targetTypeConfig?.code === EXPENSE_TYPES.HOTEL.code || targetTypeConfig?.id === EXPENSE_TYPES.HOTEL.id || row.type === 'HOTEL';
-        const isFlight = targetTypeConfig?.code === EXPENSE_TYPES.FLIGHT.code || targetTypeConfig?.id === EXPENSE_TYPES.FLIGHT.id || row.type === 'FLIGHT';
-        const isTrain = targetTypeConfig?.code === EXPENSE_TYPES.TRAIN.code || targetTypeConfig?.id === EXPENSE_TYPES.TRAIN.id || row.type === 'TRAIN';
-        const isComm = targetTypeConfig?.code === EXPENSE_TYPES.COMMUNICATION.code || targetTypeConfig?.code === EXPENSE_TYPES.COMMUNICATION_FAX.code || row.type === 'COMMUNICATION';
-        const cleanPeriod = (row.period || computePeriod(row.invoiceDate || '', isComm)).replace(/^期间[：:]\s*/, '').trim();
-        if (rowDatas.DESCRIPTION) {
-            rowDatas.DESCRIPTION.value = row.description ? row.description.trim() : '';
-        }
-        if (rowDatas.F_ZY_DEF_001) {
-            rowDatas.F_ZY_DEF_001.value = isComm ? (cleanPeriod.length >= 7 ? cleanPeriod.substring(0, 7) : cleanPeriod) : cleanPeriod;
-        }
-        const normDate = row.invoiceDate ? normalizeDate(row.invoiceDate) : '';
-        if (rowDatas.BUSINESS_DATE && normDate && !rowDatas.BUSINESS_DATE.value) {
-            rowDatas.BUSINESS_DATE.value = `${normDate} 00:00:00`;
-        }
-        if (isComm) {
-            const yyyy_mm = cleanPeriod.length >= 7 ? cleanPeriod.substring(0, 7) : computePeriod(row.invoiceDate || '', true);
-            if (rowDatas.FLIGHT_START_DATE)
-                rowDatas.FLIGHT_START_DATE.value = `${yyyy_mm}-01 00:00:00`;
-            if (row.attachments && row.attachments.length > 0) {
-                rowDatas.expenseRecordAttachmentList = { value: row.attachments };
-                const firstAtt = row.attachments[0];
-                if (rowDatas.ATTACH_NAME)
-                    rowDatas.ATTACH_NAME.value = (firstAtt.fileName || '账单').replace(/\.[^/.]+$/, "");
-                if (rowDatas.ATTACH_COUNT)
-                    rowDatas.ATTACH_COUNT.value = row.attachments.length;
-            }
-        }
-        else if (isHotel) {
-            const checkIn = row.checkInDate ? normalizeDate(row.checkInDate) : normDate;
-            const checkOut = row.checkOutDate ? normalizeDate(row.checkOutDate) : normDate;
-            let stayDays = row.stayDays || 1;
-            if ((!stayDays || stayDays <= 0) && checkIn && checkOut) {
-                const d1 = new Date(checkIn).getTime();
-                const d2 = new Date(checkOut).getTime();
-                const diff = Math.round((d2 - d1) / (1000 * 60 * 60 * 24));
-                stayDays = diff > 0 ? diff : 1;
-            }
-            const roomNum = Math.max(1, Number(row.roomNum) || 1);
-            const totalAmount = (row.amount && row.amount > 0) ? row.amount : (rowDatas.AMOUNT?.value?.amount || 0);
-            const totalRoomNights = Math.max(1, stayDays * roomNum);
-            const unitPriceVal = Math.round((totalAmount / totalRoomNights) * 100) / 100;
-            if (rowDatas.HOTEL_NAME)
-                rowDatas.HOTEL_NAME.value = row.hotelName || row.endAddress || '';
-            if (rowDatas.CHECK_IN_DATE && checkIn)
-                rowDatas.CHECK_IN_DATE.value = `${checkIn} 00:00:00`;
-            if (rowDatas.CHECK_OUT_DATE && checkOut)
-                rowDatas.CHECK_OUT_DATE.value = `${checkOut} 00:00:00`;
-            if (rowDatas.STAY_DAYS)
-                rowDatas.STAY_DAYS.value = stayDays;
-            if (rowDatas.ROOM_NUM)
-                rowDatas.ROOM_NUM.value = roomNum;
-            if (rowDatas.UNIT_PRICE) {
-                rowDatas.UNIT_PRICE.value = {
-                    amount: unitPriceVal,
-                    currencyId: state.accountCurrencyId || '6e589eb2dd9f11e8b5a69590a14a4e34',
-                    currencySymbol: '¥'
-                };
-            }
-            // 动态城市维表匹配与 IV住宿区分 联动
-            let targetCity = (row.city || row.startAddress || '').replace(/省|市|（.*）|\(.*\)/g, '').trim();
-            if ((!targetCity || /亚朵|全季|上引|如家|汉庭|锦江|美悦|出差/.test(targetCity)) && row.hotelName) {
-                const innerMatch = row.hotelName.match(/[（(]([\u4e00-\u9fa5]{2,3}?)(?:市|区|镇|县|店|新区|经开区|[\u4e00-\u9fa5]*?店)/);
-                if (innerMatch && !/金山|中山|国家|滨湖|云谷|金融|台山|白山|会展/.test(innerMatch[1])) {
-                    targetCity = innerMatch[1];
-                }
-                else {
-                    const prefixMatch = row.hotelName.match(/^([\u4e00-\u9fa5]{2,3}?)(?:市|酒店|宾馆|饭店|客栈)/);
-                    if (prefixMatch && !/亚朵|全季|上引|如家|汉庭|锦江|美悦|希尔|万豪|洲际|格林|维也|桔子|宜必|凯悦|喜来|香格/.test(prefixMatch[1])) {
-                        targetCity = prefixMatch[1];
-                    }
-                }
-            }
-            if (targetCity === '金山')
-                targetCity = '上海';
-            if (targetCity) {
-                try {
-                    const cityVO = await fetchCityVO(targetCity, state, '6b8ff0649ebe11e88b72df10cd5db793');
-                    if (cityVO && cityVO.value) {
-                        rowDatas.CITY = {
-                            dataType: 'DROPDOWN',
-                            required: true,
-                            value: {
-                                value: cityVO.value,
-                                title: { zh_CN: (cityVO.title && cityVO.title.zh_CN) || targetCity }
-                            }
-                        };
-                    }
-                }
-                catch (e) { }
-                const isTier1 = /北京|上海|广州|深圳/.test(targetCity);
-                rowDatas.F_ZSC_DEF_001 = {
-                    dataType: 'DROPDOWN',
-                    required: true,
-                    value: {
-                        value: isTier1 ? '035a402fee2345af7f1906ec05cc0000' : '035a403ff62345af7f1906ec05cc0000',
-                        title: { zh_CN: isTier1 ? '境内-北上广深' : '境内-其他' }
-                    }
-                };
-            }
-        }
-        else if (isFlight) {
-            if (rowDatas.START_ADDRESS)
-                rowDatas.START_ADDRESS.value = row.startAddress || '';
-            if (rowDatas.END_ADDRESS)
-                rowDatas.END_ADDRESS.value = row.endAddress || '';
-            if (rowDatas.FLIGHT_START_DATE && normDate)
-                rowDatas.FLIGHT_START_DATE.value = `${normDate} 00:00:00`;
-            if (rowDatas.FLIGHT_END_DATE && normDate && !rowDatas.FLIGHT_END_DATE.value)
-                rowDatas.FLIGHT_END_DATE.value = `${normDate} 00:00:00`;
-            if (rowDatas.FLIGHT_FROM_CITY)
-                rowDatas.FLIGHT_FROM_CITY.value = row.startAddress || '';
-            if (rowDatas.FLIGHT_TO_CITY)
-                rowDatas.FLIGHT_TO_CITY.value = row.endAddress || '';
-        }
-        else if (isTrain) {
-            if (rowDatas.START_ADDRESS)
-                rowDatas.START_ADDRESS.value = row.startAddress || '';
-            if (rowDatas.END_ADDRESS)
-                rowDatas.END_ADDRESS.value = row.endAddress || '';
-            if (rowDatas.TRAIN_START_DATE && normDate)
-                rowDatas.TRAIN_START_DATE.value = `${normDate} 00:00:00`;
-        }
-        else {
-            // TAXI / TRIP_TAXI / OTHER
-            if (rowDatas.START_ADDRESS)
-                rowDatas.START_ADDRESS.value = row.startAddress || 'IVISION';
-            if (rowDatas.END_ADDRESS)
-                rowDatas.END_ADDRESS.value = row.endAddress || 'CMP';
-        }
-        if (rowDatas.AMOUNT && rowDatas.AMOUNT.value) {
-            if (rowDatas.AMOUNT.value.amount === undefined || rowDatas.AMOUNT.value.amount === null || rowDatas.AMOUNT.value.amount === 0) {
-                rowDatas.AMOUNT.value.amount = row.amount;
-            }
-        }
-        // 5.1 处理一笔费用多张发票绑定（例如出租车 + 过路费/通行费发票）
-        if (row.subInvoices && row.subInvoices.length > 0) {
-            // 先清理被合并子发票的冗余独立草稿记录，释放发票占用
-            const redundantDraftIds = row.subInvoices
-                .map(s => s.expenseRecordId)
-                .filter((id) => Boolean(id) && id !== recordId);
-            if (redundantDraftIds.length > 0) {
-                try {
-                    AutopilotLogger.info(`[ExpenseService] 释放被合并子发票原独立草稿: ${JSON.stringify(redundantDraftIds)}`);
-                    await deleteExpenseRecordListApi(redundantDraftIds, state);
-                    row.subInvoices.forEach(s => { s.expenseRecordId = undefined; });
-                }
-                catch (e) {
-                    AutopilotLogger.warn(`[ExpenseService] 释放子发票草稿异常: ${e.message}`);
-                }
-            }
-            if (!rowDatas.expenseRecordInvoiceList) {
-                rowDatas.expenseRecordInvoiceList = { value: [] };
-            }
-            if (!Array.isArray(rowDatas.expenseRecordInvoiceList.value)) {
-                rowDatas.expenseRecordInvoiceList.value = [];
-            }
-            const existingInvIds = new Set();
-            const existingInvNos = new Set();
-            rowDatas.expenseRecordInvoiceList.value.forEach((x) => {
-                if (x.invoiceId)
-                    existingInvIds.add(String(x.invoiceId));
-                if (x.invoiceVO?.invoiceId)
-                    existingInvIds.add(String(x.invoiceVO.invoiceId));
-                if (x.invoiceVO?.invoiceDataId)
-                    existingInvIds.add(String(x.invoiceVO.invoiceDataId));
-                if (x.invoiceVO?.invoiceNo)
-                    existingInvNos.add(String(x.invoiceVO.invoiceNo));
-            });
-            if (rowDatas.expenseRecordInvoiceList.value.length === 0 && row.invoiceVO) {
-                rowDatas.expenseRecordInvoiceList.value.push({
-                    invoiceVO: row.invoiceVO,
-                    invoiceId: row.invoiceVO.invoiceId || row.boDataId || '',
-                    position: 1
-                });
-            }
-            let pos = rowDatas.expenseRecordInvoiceList.value.length + 1;
-            for (const sub of row.subInvoices) {
-                const subVO = sub.invoiceVO || {
-                    amountTax: sub.amount,
-                    fileName: sub.fileName,
-                    salesName: sub.salesName,
-                    invoiceDate: sub.invoiceDate,
-                    invoiceDetails: sub.invoiceDetails || '过路费发票',
-                    invoiceTypeAbbreviation: '通行费'
-                };
-                const subId = sub.boDataId || subVO.invoiceDataId || subVO.invoiceId || '';
-                const subNo = subVO.invoiceNo || '';
-                if ((subId && existingInvIds.has(String(subId))) || (subNo && existingInvNos.has(String(subNo)))) {
-                    continue;
-                }
-                rowDatas.expenseRecordInvoiceList.value.push({
-                    invoiceVO: subVO,
-                    invoiceId: subId,
-                    position: pos++,
-                    createDate: subVO.createDate || new Date().toISOString().replace('T', ' ').substring(0, 19),
-                    version: 1
-                });
-                if (subId)
-                    existingInvIds.add(String(subId));
-                if (subNo)
-                    existingInvNos.add(String(subNo));
-            }
-            const totalInvoiceCount = rowDatas.expenseRecordInvoiceList.value.length;
-            if (rowDatas.INVOICE_COUNT) {
-                rowDatas.INVOICE_COUNT.value = totalInvoiceCount;
-            }
-            else {
-                rowDatas.INVOICE_COUNT = { dataType: 'NUMBER', hidden: true, readOnly: true, value: totalInvoiceCount };
-            }
-            if (rowDatas.NUM_INVOICE) {
-                rowDatas.NUM_INVOICE.value = totalInvoiceCount;
-            }
-            const totalCombinedAmount = row.amount;
-            if (rowDatas.AMOUNT && rowDatas.AMOUNT.value) {
-                rowDatas.AMOUNT.value.amount = totalCombinedAmount;
-                if (rowDatas.AMOUNT.value.accountAmount) {
-                    rowDatas.AMOUNT.value.accountAmount.amount = totalCombinedAmount;
-                }
-            }
-            if (rowDatas.F_FPJ_DEF_001 && rowDatas.F_FPJ_DEF_001.value) {
-                rowDatas.F_FPJ_DEF_001.value.amount = totalCombinedAmount;
-                if (rowDatas.F_FPJ_DEF_001.value.accountAmount) {
-                    rowDatas.F_FPJ_DEF_001.value.accountAmount.amount = totalCombinedAmount;
-                }
-            }
-            if (rowDatas.STANDARD_VALUE && rowDatas.STANDARD_VALUE.value !== undefined) {
-                rowDatas.STANDARD_VALUE.value = totalCombinedAmount;
-            }
-            if (rowDatas.BUDGET_DE_AMOUNT && rowDatas.BUDGET_DE_AMOUNT.value) {
-                rowDatas.BUDGET_DE_AMOUNT.value.amount = totalCombinedAmount;
-            }
-        }
-        // 6. 保存持久化
-        await saveFinalExpenseRecordApi(recordId, targetTypeConfig.id, rowDatas, version, state);
-        return recordId;
-    }
-    /**
-     * 批量持久化保存多条费用明细（带进度回调与容错）
-     */
-    async function batchSaveExpenseItemsApi(items, state, onProgress) {
-        const results = [];
-        const errors = [];
-        let successCount = 0;
-        let failCount = 0;
-        // 0. 前置批量物理清理：若存在已被合并入出租车的过路费独立草稿，提前释放
-        const redundantRecordIds = [];
-        for (const item of items) {
-            if (item.subInvoices && item.subInvoices.length > 0) {
-                for (const sub of item.subInvoices) {
-                    if (sub.expenseRecordId && !redundantRecordIds.includes(sub.expenseRecordId)) {
-                        redundantRecordIds.push(sub.expenseRecordId);
-                    }
-                }
-            }
-        }
-        if (redundantRecordIds.length > 0) {
-            AutopilotLogger.info(`[ExpenseService] 批量保存前释放 ${redundantRecordIds.length} 笔冗余过路费草稿`);
-            try {
-                await deleteExpenseRecordListApi(redundantRecordIds, state);
-                for (const item of items) {
-                    if (item.subInvoices) {
-                        item.subInvoices.forEach(s => { s.expenseRecordId = undefined; });
-                    }
-                }
-            }
-            catch (e) {
-                AutopilotLogger.warn(`[ExpenseService] 批量清理冗余过路费草稿异常: ${e.message}`);
-            }
-        }
-        for (let i = 0; i < items.length; i++) {
-            const item = items[i];
-            try {
-                const recId = await saveSingleExpenseItemApi(item, state);
-                item.status = '成功';
-                item.isModified = false;
-                successCount++;
-                results.push({
-                    recordId: recId,
-                    expenseTypeName: item.expenseTypeName || item.type || '',
-                    amount: item.amount,
-                    description: item.description || ''
-                });
-            }
-            catch (err) {
-                item.status = '失败';
-                failCount++;
-                errors.push({
-                    index: i,
-                    description: item.description || `第 ${i + 1} 笔`,
-                    error: err.message || '保存失败'
-                });
-            }
-            await new Promise(r => setTimeout(r, 200));
-        }
-        return {
-            total: items.length,
-            successCount,
-            failCount,
-            results,
-            errors
-        };
-    }
-    /**
-     * Agentic 全量主动审计费用记录（检测 getExpenseRecordListBySearchVO 返回的 errorMessages）
-     */
-    async function auditExpenseRecordsApi(state) {
-        // 强制穿透查询最新的宿主费用记录
-        state.lastInterceptedExpenseRecords = null;
-        const rawList = await queryExpenseRecordListApi(state);
-        const errorRecords = [];
-        const errorSummary = {};
-        for (const item of rawList) {
-            const msgs = item.expenseRecordTypeMessageVO?.errorMessages;
-            if (msgs && msgs.length > 0) {
-                errorRecords.push({
-                    recordId: item.expenseRecordId,
-                    expenseTypeName: item.expenseType?.title?.zh_CN || item.expenseTypeName || '未分类',
-                    amount: item.amountObj?.amount || 0,
-                    description: item.description || '',
-                    errorMessages: msgs
-                });
-                msgs.forEach((m) => {
-                    errorSummary[m] = (errorSummary[m] || 0) + 1;
-                });
-            }
-        }
-        return {
-            total: rawList.length,
-            errorCount: errorRecords.length,
-            validCount: rawList.length - errorRecords.length,
-            errorSummary,
-            errorRecords
-        };
-    }
-    /**
-     * Agentic 智能自愈修复费用记录错误（如补全出差城市维表、联动北上广深住宿区分）
-     */
-    async function autoFixExpenseRecordsApi(state) {
-        const audit = await auditExpenseRecordsApi(state);
-        const details = [];
-        let fixedCount = 0;
-        let failCount = 0;
-        if (audit.errorCount === 0) {
-            return {
-                fixedCount: 0,
-                failCount: 0,
-                details: [],
-                remainingAudit: audit
-            };
-        }
-        // 动态提取差旅波次中的目的城市集合
-        const dynamicTripCities = Array.from(new Set([
-            ...(state.tripApp?.configs || []).map(c => c.destination),
-            ...(state.expensePlan?.matchedTrips || []).map(t => t.destination || t.destCity),
-            ...(state.invoices || []).map(i => i.city)
-        ])).filter(Boolean);
-        for (const errRec of audit.errorRecords) {
-            const recId = errRec.recordId;
-            try {
-                // 获取最新 rowDatas 与版本号
-                const ruleData = await getExpenseTypeRuleAndRowDatasApi(recId, '0356c4e2b72de1653e55bb00bc610001', state);
-                const rowDatas = ruleData.rowDatas || {};
-                const version = ruleData.version || 1;
-                let fixApplied = '';
-                // 1. 修复【出差城市必填】
-                if (errRec.errorMessages.includes('出差城市必填')) {
-                    let targetCity = '';
-                    const desc = errRec.description || '';
-                    // 优先从已对齐行程波次或发票池中匹配
-                    if (state.expensePlan?.records) {
-                        const matchedInv = state.expensePlan.records.find(r => r.expenseRecordId === recId);
-                        if (matchedInv && matchedInv.city)
-                            targetCity = matchedInv.city;
-                    }
-                    if (!targetCity && state.invoices) {
-                        const matchedInv = state.invoices.find(r => r.expenseRecordId === recId);
-                        if (matchedInv && matchedInv.city)
-                            targetCity = matchedInv.city;
-                    }
-                    // 其次从当前已规划行程目的城市动态匹配
-                    if (!targetCity && dynamicTripCities.length > 0) {
-                        for (const c of dynamicTripCities) {
-                            const cleanC = c.replace(/市|区|县/g, '').trim();
-                            if (cleanC && desc.includes(cleanC)) {
-                                targetCity = cleanC;
-                                break;
-                            }
-                        }
-                    }
-                    // 再次从费用描述格式 [出差:姓名] YYYY-MM-DD~YYYY-MM-DD 城市客户 中抽取
-                    if (!targetCity) {
-                        const descMatch = desc.match(/\[(?:出差|外驻):[^\]]+\]\s*\d{4}-\d{2}-\d{2}~\d{4}-\d{2}-\d{2}\s*([\u4e00-\u9fa5]{2,4}?)(?:[A-Z0-9_\-]+|模具|工厂|据点|项目|\s)/);
-                        if (descMatch && descMatch[1]) {
-                            targetCity = descMatch[1];
-                        }
-                    }
-                    // 再次从酒店名称括号中智能抽取
-                    if (!targetCity && rowDatas.HOTEL_NAME && rowDatas.HOTEL_NAME.value) {
-                        const innerMatch = String(rowDatas.HOTEL_NAME.value).match(/[（(]([\u4e00-\u9fa5]{2,3}?)(?:市|区|镇|县|店|新区|经开区|[\u4e00-\u9fa5]*?店)/);
-                        if (innerMatch && !/金山|中山|国家|滨湖|云谷|金融|台山|白山|会展/.test(innerMatch[1])) {
-                            targetCity = innerMatch[1];
-                        }
-                    }
-                    // 兜底从行程波次的首个目的地推导
-                    if (!targetCity && dynamicTripCities.length > 0) {
-                        targetCity = dynamicTripCities[0].replace(/市|区|县/g, '').trim();
-                    }
-                    // 动态获取 DIM_CITY 城市维表对象
-                    const cityVO = targetCity ? await fetchCityVO(targetCity, state, '6b8ff0649ebe11e88b72df10cd5db793') : null;
-                    if (cityVO && cityVO.value) {
-                        rowDatas.CITY = {
-                            dataType: 'DROPDOWN',
-                            required: true,
-                            value: {
-                                value: cityVO.value,
-                                title: { zh_CN: (cityVO.title && cityVO.title.zh_CN) || targetCity }
-                            }
-                        };
-                        const isTier1 = /北京|上海|广州|深圳/.test(targetCity);
-                        rowDatas.F_ZSC_DEF_001 = {
-                            dataType: 'DROPDOWN',
-                            required: true,
-                            value: {
-                                value: isTier1 ? '035a402fee2345af7f1906ec05cc0000' : '035a403ff62345af7f1906ec05cc0000',
-                                title: { zh_CN: isTier1 ? '境内-北上广深' : '境内-其他' }
-                            }
-                        };
-                        fixApplied += `自动补齐出差城市【${targetCity}】(${cityVO.value})及住宿区分; `;
-                    }
-                }
-                if (fixApplied) {
-                    await saveFinalExpenseRecordApi(recId, '0356c4e2b72de1653e55bb00bc610001', rowDatas, version, state);
-                    fixedCount++;
-                    details.push({ recordId: recId, fixApplied, success: true });
-                }
-                else {
-                    details.push({ recordId: recId, fixApplied: '未匹配到可自动修复的规则', success: false });
-                }
-            }
-            catch (e) {
-                failCount++;
-                details.push({ recordId: recId, fixApplied: '自愈保存异常', success: false, error: e.message });
-            }
-            await new Promise(r => setTimeout(r, 150));
-        }
-        state.lastInterceptedExpenseRecords = null;
-        const remainingAudit = await auditExpenseRecordsApi(state);
-        return {
-            fixedCount,
-            failCount,
-            details,
-            remainingAudit
-        };
-    }
-    function extractDropdownText(val) {
-        if (!val)
-            return '';
-        if (typeof val === 'string')
-            return val.trim();
-        if (typeof val === 'number')
-            return String(val);
-        if (typeof val === 'object') {
-            if (val.title) {
-                if (typeof val.title === 'string' && val.title.trim())
-                    return val.title.trim();
-                if (val.title.zh_CN && String(val.title.zh_CN).trim())
-                    return String(val.title.zh_CN).trim();
-                if (val.title.zh_TW && String(val.title.zh_TW).trim())
-                    return String(val.title.zh_TW).trim();
-                if (val.title.en_US && String(val.title.en_US).trim())
-                    return String(val.title.en_US).trim();
-            }
-            if (val.label && typeof val.label === 'string' && val.label.trim())
-                return val.label.trim();
-            if (val.name && typeof val.name === 'string' && val.name.trim())
-                return val.name.trim();
-            if (val.value !== undefined && val.value !== null) {
-                const vStr = String(val.value).trim();
-                if (!/^[0-9a-fA-F]{32}$/.test(vStr) || (!val.title?.zh_CN && !val.label)) {
-                    return vStr;
-                }
-            }
-        }
-        return '';
-    }
-    function extractDateOnly(val) {
-        if (!val)
-            return '';
-        const str = String(val).trim();
-        return normalizeDate(str) || '';
-    }
-    /**
-     * 全方位探测并提取超标说明 (兼容 rowDatas、rec 列表项及详情 fullData 中的所有变体字段与数据包装)
-     */
-    function extractOverStandardDescription(rowDatas, rec, fullData) {
-        const isMeaningful = (s) => {
-            if (!s || typeof s !== 'string')
-                return false;
-            const clean = s.trim();
-            return clean.length > 0 && clean !== 'true' && clean !== 'false' && clean !== '是' && clean !== '否' && clean !== '[object Object]';
-        };
-        const tryExtract = (cand) => {
-            if (!cand)
-                return '';
-            if (typeof cand === 'string' && isMeaningful(cand))
-                return cand.trim();
-            if (typeof cand === 'object') {
-                if (cand.value !== undefined && cand.value !== null) {
-                    if (typeof cand.value === 'string' && isMeaningful(cand.value))
-                        return cand.value.trim();
-                    const dt = extractDropdownText(cand.value);
-                    if (isMeaningful(dt))
-                        return dt;
-                }
-                if (cand.showValue && typeof cand.showValue === 'string' && isMeaningful(cand.showValue))
-                    return cand.showValue.trim();
-                if (cand.text && typeof cand.text === 'string' && isMeaningful(cand.text))
-                    return cand.text.trim();
-                const dt = extractDropdownText(cand);
-                if (isMeaningful(dt))
-                    return dt;
-            }
-            return '';
-        };
-        // 1. rowDatas 常见别名
-        const rowCandidates = [
-            rowDatas?.OVER_STANDARD_DESCRIPTION,
-            rowDatas?.OVER_STANDARD_REASON,
-            rowDatas?.OVER_STANDARD_DESC,
-            rowDatas?.OVER_STAND_DESC,
-            rowDatas?.EXCEED_STANDARD_DESCRIPTION,
-            rowDatas?.EXCEED_STANDARD_REASON,
-            rowDatas?.OVER_REASON,
-            rowDatas?.REASON_OVER_STANDARD,
-            rowDatas?.OVER_STANDARD_MEMO,
-            rowDatas?.F_OVER_STANDARD_DESC,
-            rowDatas?.F_OVER_STANDARD_REASON,
-            rowDatas?.F_ZSC_DEF_002
-        ];
-        for (const c of rowCandidates) {
-            const val = tryExtract(c);
-            if (val)
-                return val;
-        }
-        // 2. rowDatas 正则模糊扫描 (防止租户自定义别名)
-        if (rowDatas && typeof rowDatas === 'object') {
-            for (const [key, field] of Object.entries(rowDatas)) {
-                if (/OVER.*STAND|EXCEED.*STAND|超标/i.test(key)) {
-                    const val = tryExtract(field);
-                    if (val)
-                        return val;
-                }
-            }
-        }
-        // 3. rec (宿主列表项) 探测
-        const recCandidates = [
-            rec?.overStandardDescription,
-            rec?.overStandardReason,
-            rec?.overStandardDesc,
-            rec?.overStandardRemark,
-            rec?.OVER_STANDARD_DESCRIPTION,
-            rec?.OVER_STANDARD_REASON,
-            rec?.exceedStandardDescription,
-            rec?.exceedStandardReason,
-            rec?.rowDatas?.OVER_STANDARD_DESCRIPTION
-        ];
-        for (const c of recCandidates) {
-            const val = tryExtract(c);
-            if (val)
-                return val;
-        }
-        // 4. fullData (详情接口完整响应) 探测
-        const fullCandidates = [
-            fullData?.expenseRecord?.overStandardDescription,
-            fullData?.expenseRecord?.overStandardReason,
-            fullData?.expenseRecord?.OVER_STANDARD_DESCRIPTION,
-            fullData?.expenseRecord?.OVER_STANDARD_REASON,
-            fullData?.overStandardDescription,
-            fullData?.overStandardReason,
-            fullData?.mainData?.overStandardDescription,
-            fullData?.mainData?.OVER_STANDARD_DESCRIPTION
-        ];
-        for (const c of fullCandidates) {
-            const val = tryExtract(c);
-            if (val)
-                return val;
-        }
-        return '';
-    }
-    /**
-     * 从 YuanNian 费用记录行数据 (rowDatas) 中精准提取已持久化保存的动态必填字段
-     */
-    function extractSavedDynamicFields(rowDatas, rec, fullData) {
-        if (!rowDatas || typeof rowDatas !== 'object')
-            return {};
-        const dyn = {};
-        // 1. 住宿费
-        if (rowDatas.CHECK_IN_DATE?.value) {
-            dyn.checkInDate = extractDateOnly(rowDatas.CHECK_IN_DATE.value);
-        }
-        if (rowDatas.CHECK_OUT_DATE?.value) {
-            dyn.checkOutDate = extractDateOnly(rowDatas.CHECK_OUT_DATE.value);
-        }
-        if (rowDatas.CITY?.value) {
-            dyn.city = extractDropdownText(rowDatas.CITY.value);
-        }
-        if (rowDatas.F_ZSC_DEF_001?.value) {
-            dyn.cityType = extractDropdownText(rowDatas.F_ZSC_DEF_001.value);
-        }
-        if (dyn.city && !dyn.cityType) {
-            const c = dyn.city.replace(/市|区|县/g, '').trim();
-            const isTier1 = /北京|上海|广州|深圳/.test(c);
-            dyn.cityType = isTier1 ? '境内-北上广深' : '境内-其他';
-        }
-        if (rowDatas.HOTEL_NAME?.value) {
-            dyn.hotelName = String(rowDatas.HOTEL_NAME.value).trim();
-        }
-        if (rowDatas.ROOM_NUM?.value !== undefined && rowDatas.ROOM_NUM?.value !== null) {
-            dyn.roomNum = Number(rowDatas.ROOM_NUM.value) || 1;
-        }
-        // 超标说明 (全方位探测提取)
-        const overDesc = extractOverStandardDescription(rowDatas, rec, fullData);
-        if (overDesc) {
-            dyn.overStandardDescription = overDesc;
-        }
-        // 2. 飞机票
-        if (rowDatas.FLIGHT_START_DATE?.value) {
-            dyn.flightStartDate = extractDateOnly(rowDatas.FLIGHT_START_DATE.value);
-        }
-        if (rowDatas.FLIGHT_END_DATE?.value) {
-            dyn.flightEndDate = extractDateOnly(rowDatas.FLIGHT_END_DATE.value);
-        }
-        if (rowDatas.FLIGHT_FROM_CITY?.value) {
-            dyn.flightFromCity = extractDropdownText(rowDatas.FLIGHT_FROM_CITY.value);
-        }
-        if (rowDatas.FLIGHT_TO_CITY?.value) {
-            dyn.flightToCity = extractDropdownText(rowDatas.FLIGHT_TO_CITY.value);
-        }
-        if (rowDatas.FLIGHT_NUM?.value) {
-            dyn.flightNum = String(rowDatas.FLIGHT_NUM.value).trim();
-        }
-        // 3. 火车票
-        if (rowDatas.TRAIN_START_DATE?.value) {
-            dyn.trainStartDate = extractDateOnly(rowDatas.TRAIN_START_DATE.value);
-        }
-        if (rowDatas.TRAIN_END_DATE?.value) {
-            dyn.trainEndDate = extractDateOnly(rowDatas.TRAIN_END_DATE.value);
-        }
-        if (rowDatas.TRAIN_FROM_CITY?.value) {
-            dyn.trainFromStation = extractDropdownText(rowDatas.TRAIN_FROM_CITY.value);
-        }
-        else if (rowDatas.START_ADDRESS?.value) {
-            dyn.trainFromStation = String(rowDatas.START_ADDRESS.value).trim();
-        }
-        if (rowDatas.TRAIN_TO_CITY?.value) {
-            dyn.trainToStation = extractDropdownText(rowDatas.TRAIN_TO_CITY.value);
-        }
-        else if (rowDatas.END_ADDRESS?.value) {
-            dyn.trainToStation = String(rowDatas.END_ADDRESS.value).trim();
-        }
-        if (rowDatas.TRAIN_NUM?.value) {
-            dyn.trainNum = String(rowDatas.TRAIN_NUM.value).trim();
-        }
-        // 4. 出租车/交通
-        if (rowDatas.START_ADDRESS?.value) {
-            dyn.startAddress = String(rowDatas.START_ADDRESS.value).trim();
-        }
-        if (rowDatas.END_ADDRESS?.value) {
-            dyn.endAddress = String(rowDatas.END_ADDRESS.value).trim();
-        }
-        // 5. 通信费
-        if (rowDatas.BILL_MONTH?.value) {
-            dyn.billMonth = String(rowDatas.BILL_MONTH.value).trim();
-        }
-        else if (rowDatas.F_ZY_DEF_001?.value) {
-            const p = String(rowDatas.F_ZY_DEF_001.value).replace(/^期间[：:]\s*/, '').trim();
-            if (/^\d{4}-\d{2}$/.test(p)) {
-                dyn.billMonth = p;
-            }
-        }
-        return dyn;
-    }
-    /**
-     * 标准化费用记录状态为中文显示
-     * 彻底解决系统底层 REIMBURSE / ALREADY_REIMBURSE / NO_REIMBURSE 显示为英文的问题
-     */
-    function normalizeExpenseStatus(status) {
-        if (!status)
-            return '未报销';
-        const s = String(status).trim().toUpperCase();
-        if (s === 'NO_REIMBURSE' || s === 'UNREIMBURSED' || s === 'DRAFT' || s === '未报销') {
-            return '未报销';
-        }
-        if (s === 'REIMBURSING' || s === 'IN_REIMBURSE' || s === '报销中') {
-            return '报销中';
-        }
-        if (s === 'REIMBURSE' || s === 'ALREADY_REIMBURSE' || s === 'ALREADY_REIMBURSED' || s === 'REIMBURSED' || s === '已报销') {
-            return '已报销';
-        }
-        return status;
-    }
-    /**
-     * 智能生成开票日期与行程日期的差异核验预警
-     */
-    function generateReconciliationNote(rec, inv) {
-        if (!inv || (!inv.invoiceDate && !inv.departureDate && !inv.amountTax)) {
-            return '无挂载发票';
-        }
-        const invDate = (inv.invoiceDate || '').trim();
-        const depDate = (inv.departureDate || '').trim();
-        const timeOn = (inv.timeGetOn || inv.departureTime || '').trim();
-        const timeOff = (inv.timeGetOff || '').trim();
-        const stOn = (inv.stationGetOn || inv.from || '').trim();
-        const stOff = (inv.stationGetOff || inv.to || '').trim();
-        const train = (inv.trainNo || inv.trainNumber || '').trim();
-        const type = (inv.invoiceTypeAbbreviation || inv.invoiceType || '').trim();
-        const sales = (inv.salesName || '').trim();
-        const details = (inv.invoiceDetails || inv.commodityNames || '').trim();
-        const fileName = (inv.fileName || '').trim();
-        const bizDate = (rec.businessDate ? rec.businessDate.split(' ')[0] : '').trim();
-        const notes = [];
-        // 1. 若发票中自带明确的行程出发日期 (departureDate)
-        if (depDate) {
-            if (invDate && depDate !== invDate) {
-                let diffDaysStr = '';
-                try {
-                    const d1 = new Date(depDate).getTime();
-                    const d2 = new Date(invDate).getTime();
-                    const diffDays = Math.round((d2 - d1) / (1000 * 60 * 60 * 24));
-                    diffDaysStr = ` (相差 ${Math.abs(diffDays)} 天，${diffDays > 0 ? '开票晚于行程' : '开票早于行程'})`;
-                }
-                catch (e) { }
-                notes.push(`⚠️ 开票日期(${invDate})与行程日期(${depDate})不一致${diffDaysStr}`);
-            }
-            else {
-                notes.push(`✅ 行程日期与开票日期一致(${depDate})`);
-            }
-        }
-        // 2. 针对火车票 / 铁路客票
-        if (type.includes('火车') || details.includes('铁路') || details.includes('客票') || stOn || stOff) {
-            const trainRoute = (stOn || stOff) ? ` [${stOn || '未知'} ➔ ${stOff || '未知'}]` : '';
-            const trainInfo = train ? ` 车次:${train}` : '';
-            const timeInfo = timeOn ? ` 出发:${timeOn}` : '';
-            notes.push(`🚄 火车客票${trainRoute}${trainInfo}${timeInfo} (开票:${invDate})`);
-        }
-        // 3. 针对机票 / 航空客票
-        else if (type.includes('飞机') || type.includes('航空') || details.includes('航空') || details.includes('机票')) {
-            const flightRoute = (stOn || stOff) ? ` [${stOn || '未知'} ➔ ${stOff || '未知'}]` : '';
-            const flightNo = train ? ` 航班:${train}` : '';
-            const timeInfo = timeOn ? ` 起飞:${timeOn}` : '';
-            notes.push(`✈️ 航空行程单${flightRoute}${flightNo}${timeInfo} (开票:${invDate})`);
-        }
-        // 4. 针对酒店 / 住宿发票
-        else if (sales.includes('酒店') || sales.includes('客房') || sales.includes('宾馆') || sales.includes('饭店') ||
-            sales.includes('商旅') || details.includes('住宿') || details.includes('客房') || fileName.includes('酒店') || fileName.includes('住宿')) {
-            notes.push(`🏨 住宿酒店发票 (开票:${invDate})，请人工核对实际入住/离店日期`);
-        }
-        // 5. 针对出租车发票
-        else if (type.includes('出租车') || details.includes('出租车')) {
-            const taxiTime = (timeOn || timeOff) ? ` [上车:${timeOn || '未知'} 下车:${timeOff || '未知'}]` : '';
-            notes.push(`🚕 出租车行程${taxiTime} (开票:${invDate})`);
-        }
-        // 6. 针对过路费 / 通行费
-        else if (type.includes('过路') || type.includes('通行') || details.includes('通行') || details.includes('通行费')) {
-            notes.push(`🛣️ 高速通行费/过路费 (开票:${invDate})`);
-        }
-        // 7. 兜底普通/专用发票
-        else {
-            notes.push(`📄 发票开票日期: ${invDate || '未知'}`);
-        }
-        // 补充：比对费用业务日期与开票日期
-        if (bizDate && invDate && bizDate !== invDate && !depDate) {
-            notes.push(`ℹ️ 费用日期(${bizDate})与开票日期(${invDate})不同`);
-        }
-        return notes.join('； ');
-    }
-    /**
-     * RFC 4180 CSV 单元格转义，防止长数字在 Excel 中变成科学计数法
-     */
-    function escapeCsvCell(val, isLongCode = false) {
-        if (val === null || val === undefined)
-            return '';
-        let str = String(val).trim();
-        if (!str)
-            return '';
-        // 如果是长数字（发票号码/代码/身份证等超过 10 位的连续数字），加制表符防止 Excel 科学计数法变形
-        if (isLongCode && /^\d{10,}$/.test(str)) {
-            return `"\t${str}"`;
-        }
-        if (str.includes('"') || str.includes(',') || str.includes('\n') || str.includes('\r')) {
-            return `"${str.replace(/"/g, '""')}"`;
-        }
-        return str;
-    }
-    /**
-     * 将结构化费用记录和发票数据序列化为 Excel 友好的 CSV 格式
-     */
-    function convertExpenseRecordsToCsv(rows) {
-        const headers = [
-            '费用记录ID',
-            '报销状态',
-            '费用类型',
-            '费用金额(元)',
-            '费用业务日期',
-            '费用说明',
-            '发票张数',
-            '发票序号',
-            '发票类型',
-            '发票代码',
-            '发票号码',
-            '开票日期',
-            '价税合计(元)',
-            '不含税金额(元)',
-            '税额(元)',
-            '行程出发日期',
-            '行程出发/上车时间',
-            '行程到达/下车时间',
-            '始发地/出发站',
-            '目的地/到达站',
-            '车次/航班/车牌号',
-            '销售方/酒店/服务商',
-            '购买方名称',
-            '货物或应税劳务名称',
-            '附件文件名',
-            '发票备注',
-            '申请人',
-            '创建时间',
-            '行程与开票核对预警'
-        ];
-        const csvLines = [headers.map(h => escapeCsvCell(h)).join(',')];
-        for (const r of rows) {
-            const line = [
-                escapeCsvCell(r.expenseRecordId, true),
-                escapeCsvCell(r.status),
-                escapeCsvCell(r.expenseTypeName),
-                escapeCsvCell(r.expenseAmount),
-                escapeCsvCell(r.businessDate),
-                escapeCsvCell(r.description),
-                escapeCsvCell(r.invoiceCount),
-                escapeCsvCell(r.invoiceIndex > 0 ? `${r.invoiceIndex}/${r.invoiceCount || 1}` : '-'),
-                escapeCsvCell(r.invoiceType),
-                escapeCsvCell(r.invoiceCode, true),
-                escapeCsvCell(r.invoiceNo, true),
-                escapeCsvCell(r.invoiceDate),
-                escapeCsvCell(r.amountTax),
-                escapeCsvCell(r.totalAmount),
-                escapeCsvCell(r.totalTax),
-                escapeCsvCell(r.departureDate),
-                escapeCsvCell(r.departureTime),
-                escapeCsvCell(r.timeGetOff),
-                escapeCsvCell(r.stationGetOn),
-                escapeCsvCell(r.stationGetOff),
-                escapeCsvCell(r.trainNo),
-                escapeCsvCell(r.salesName),
-                escapeCsvCell(r.purchaserName),
-                escapeCsvCell(r.commodityNames),
-                escapeCsvCell(r.fileName),
-                escapeCsvCell(r.remarks),
-                escapeCsvCell(r.applicantName),
-                escapeCsvCell(r.createDate),
-                escapeCsvCell(r.reconciliationNote)
-            ];
-            csvLines.push(line.join(','));
-        }
-        return csvLines.join('\r\n');
-    }
-    /**
-     * 触发浏览器本地下载带 UTF-8 BOM 的 CSV 文件
-     */
-    function downloadCsvFile(csvContent, filename, targetWin) {
-        if (typeof window === 'undefined')
-            return;
-        const win = targetWin || (typeof unsafeWindow !== 'undefined' ? unsafeWindow : (typeof window !== 'undefined' ? window : null));
-        const BlobCtor = (typeof Blob !== 'undefined' ? Blob : null) || win?.Blob;
-        const UrlCtor = (typeof URL !== 'undefined' ? URL : null) || win?.URL;
-        // 方式 1: 优先使用 Tampermonkey 原生 GM_download（彻底免疫跨 iframe 与弹窗安全限制）
-        // 注意：Chrome 中 GM_download 若传入 blob: URL 会丢失自定义文件名直接变为 UUID.csv；
-        // 传入 Base64 Data URI 时，Chrome downloads API 会 100% 严格采用传入的 filename！
-        if (typeof GM_download === 'function') {
-            try {
-                const utf8Bytes = new TextEncoder().encode('\uFEFF' + csvContent);
-                let binary = '';
-                const len = utf8Bytes.byteLength;
-                for (let i = 0; i < len; i++) {
-                    binary += String.fromCharCode(utf8Bytes[i]);
-                }
-                const btoaFn = (win && win.btoa) || (typeof btoa !== 'undefined' ? btoa : null);
-                if (btoaFn) {
-                    const base64 = btoaFn(binary);
-                    const dataUrl = `data:text/csv;charset=utf-8;base64,${base64}`;
-                    GM_download({
-                        url: dataUrl,
-                        name: filename,
-                        saveAs: false,
-                        onerror: () => {
-                            if (BlobCtor && UrlCtor) {
-                                const blob = new BlobCtor(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
-                                const blobUrl = UrlCtor.createObjectURL(blob);
-                                triggerAnchorDownload(blobUrl, filename, win);
-                            }
-                        }
-                    });
-                    return;
-                }
-            }
-            catch (e) { }
-        }
-        // 方式 2: 标准 a 标签模拟点击下载 (挂载到顶层 document.body 确保下载触发)
-        if (BlobCtor && UrlCtor) {
-            const blob = new BlobCtor(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
-            const blobUrl = UrlCtor.createObjectURL(blob);
-            triggerAnchorDownload(blobUrl, filename, win);
-        }
-    }
-    function triggerAnchorDownload(url, filename, targetWin) {
-        const doc = (typeof window !== 'undefined' && window.top?.document) || (targetWin && targetWin.document) || (typeof document !== 'undefined' ? document : null);
-        if (!doc || !doc.body)
-            return;
-        const link = doc.createElement('a');
-        link.href = url;
-        link.setAttribute('download', filename);
-        link.download = filename;
-        link.style.display = 'none';
-        doc.body.appendChild(link);
-        link.click();
-        setTimeout(() => {
-            try {
-                doc.body.removeChild(link);
-            }
-            catch (e) { }
-            try {
-                URL.revokeObjectURL(url);
-            }
-            catch (e) { }
-        }, 2500);
-    }
-    /**
-     * 批量抽取费用记录及其底层挂载发票的完整行程时间与开票字段
-     */
-    async function fetchExpenseRecordsWithInvoiceDetails(state, targetRecordIds, onProgress, win, statusList = ['NO_REIMBURSE', 'REIMBURSING']) {
-        // 强制清除旧拦截缓存，保障穿透拉取最新全量数据
-        state.lastInterceptedExpenseRecords = null;
-        // 1. 获取费用记录列表 (Network-First，默认查询未报销与报销中)
-        const allRecords = await queryExpenseRecordListApi(state, win, true, statusList);
-        let targetRecords = allRecords;
-        if (targetRecordIds && targetRecordIds.length > 0) {
-            const idSet = new Set(targetRecordIds);
-            targetRecords = allRecords.filter(r => idSet.has(r.expenseRecordId));
-        }
-        if (!targetRecords || targetRecords.length === 0) {
-            return [];
-        }
-        // 2. 并发读取每条费用的发票明细 (并发度 8)
-        const exportRows = [];
-        let completedCount = 0;
-        const totalCount = targetRecords.length;
-        // 立即通知初始进度 0 / totalCount，消除界面死等假象
-        if (onProgress) {
-            onProgress(0, totalCount);
-        }
-        await mapConcurrent(targetRecords, 8, async (rec) => {
-            try {
-                // 单条明细 7 秒超时保护，防止单张发票卡死全局批处理
-                const ruleData = await Promise.race([
-                    getExpenseTypeRuleAndRowDatasApi(rec.expenseRecordId, rec.expenseTypeId || 'UNIDENTIFIED', state, win),
-                    new Promise((_, reject) => setTimeout(() => reject(new Error('发票明细穿透超时(7s)')), 7000))
-                ]).catch((err) => {
-                    AutopilotLogger.warn(`[fetchExpenseRecordsWithInvoiceDetails] 费用 ${rec.expenseRecordId} 穿透超时或失败: ${err.message}`);
-                    return null;
-                });
-                const rowDatas = ruleData?.rowDatas || {};
-                const invList = rowDatas?.expenseRecordInvoiceList?.value || [];
-                const attachList = rowDatas?.expenseRecordAttachmentList?.value || [];
-                const savedDynamicFields = extractSavedDynamicFields(rowDatas, rec, ruleData?.fullData);
-                const baseRowInfo = {
-                    expenseRecordId: rec.expenseRecordId || '',
-                    expenseTypeId: rec.expenseTypeId || '',
-                    status: normalizeExpenseStatus(rec.status),
-                    expenseTypeName: rec.expenseType?.title?.zh_CN || rec.expenseTypeName || (rec.expenseTypeId === 'UNIDENTIFIED' ? '未知类型' : (rec.expenseTypeId || '')),
-                    expenseAmount: rec.amountObj?.amount !== undefined ? rec.amountObj.amount : (rec.amount || ''),
-                    businessDate: rec.businessDate ? rec.businessDate.split(' ')[0] : '',
-                    description: rec.description || '',
-                    invoiceCount: rec.invoiceCount || invList.length || 0,
-                    applicantName: rec.applicantObj?.title?.zh_CN || rec.applicantName || '',
-                    createDate: rec.createDate || '',
-                    savedDynamicFields,
-                    savedRowDatas: rowDatas
-                };
-                if (invList.length === 0) {
-                    const fallbackAttach = attachList[0]?.filePath || attachList[0]?.attachmentId || attachList[0]?.id || '';
-                    exportRows.push({
-                        ...baseRowInfo,
-                        attachmentId: fallbackAttach,
-                        rawAttachmentId: fallbackAttach,
-                        invoiceDataId: '',
-                        invoiceIndex: 0,
-                        invoiceType: '',
-                        invoiceCode: '',
-                        invoiceNo: '',
-                        invoiceDate: '',
-                        amountTax: '',
-                        totalAmount: '',
-                        totalTax: '',
-                        departureDate: '',
-                        departureTime: '',
-                        timeGetOff: '',
-                        stationGetOn: '',
-                        stationGetOff: '',
-                        trainNo: '',
-                        salesName: '',
-                        purchaserName: '',
-                        commodityNames: '',
-                        fileName: '',
-                        remarks: '',
-                        reconciliationNote: '无挂载发票'
-                    });
-                }
-                else {
-                    invList.forEach((invItem, idx) => {
-                        const inv = invItem.invoiceVO || {};
-                        const depDate = inv.departureDate ? normalizeDate(inv.departureDate) : '';
-                        const invDate = inv.invoiceDate ? normalizeDate(inv.invoiceDate) : '';
-                        const timeOn = inv.timeGetOn || inv.departureTime || '';
-                        const timeOff = inv.timeGetOff || '';
-                        const stOn = inv.stationGetOn || inv.from || '';
-                        const stOff = inv.stationGetOff || inv.to || '';
-                        const train = inv.trainNo || inv.trainNumber || inv.licensePlate || '';
-                        // =========================================================================
-                        // 提取 OCR 裁切特写单票 ID (inv.videoAddress) 与 原始全图上传 ID (inv.filePath)
-                        // 核心逆向机制：
-                        // 1. inv.videoAddress 代表宿主系统 OCR 自动识别并切片裁切后的单张发票特写图像
-                        // 2. inv.filePath 代表用户原始上传的整页/整张大图 (如手机拍摄包含多张票据的桌面照片)
-                        // =========================================================================
-                        const candidateCropIds = [
-                            inv.videoAddress,
-                            invItem.videoAddress,
-                            inv.scanVideoAddress,
-                            inv.imagePath
-                        ];
-                        let attachmentId = '';
-                        for (const cand of candidateCropIds) {
-                            if (typeof cand === 'string' && cand.trim().length > 3) {
-                                const trimmed = cand.trim();
-                                if (/^\d{12,}$/.test(trimmed))
-                                    continue;
-                                if (trimmed === '[object Object]' || trimmed === 'null' || trimmed === 'undefined')
-                                    continue;
-                                attachmentId = trimmed;
-                                break;
-                            }
-                        }
-                        const candidateRawIds = [
-                            inv.filePath,
-                            invItem.filePath,
-                            inv.attachmentPath,
-                            inv.attachmentUrl,
-                            inv.attachmentId,
-                            inv.attachId,
-                            invItem.attachmentId,
-                            invItem.attachmentVO?.attachmentId,
-                            attachList[idx]?.filePath,
-                            attachList[idx]?.attachmentId,
-                            attachList[idx]?.id,
-                            attachList[0]?.filePath,
-                            attachList[0]?.attachmentId,
-                            inv.invoiceAttachmentId,
-                            inv.fileId,
-                            inv.boTemplateAndData?.boData?.area?.rowDatas?.[0]?.datas?.IMAGE_PATH?.value,
-                            inv.boTemplateAndData?.boData?.area?.rowDatas?.[0]?.datas?.FILE_PATH?.value
-                        ];
-                        let rawAttachmentId = '';
-                        for (const cand of candidateRawIds) {
-                            if (typeof cand === 'string' && cand.trim().length > 3) {
-                                const trimmed = cand.trim();
-                                if (/^\d{12,}$/.test(trimmed))
-                                    continue;
-                                if (trimmed === '[object Object]' || trimmed === 'null' || trimmed === 'undefined')
-                                    continue;
-                                rawAttachmentId = trimmed;
-                                break;
-                            }
-                        }
-                        // 互为后备兜底 (如电子发票 PDF 仅有 filePath 无 videoAddress，则裁切特写自动回退为 filePath)
-                        if (!attachmentId) {
-                            attachmentId = rawAttachmentId;
-                        }
-                        if (!rawAttachmentId) {
-                            rawAttachmentId = attachmentId;
-                        }
-                        const invoiceDataId = inv.invoiceDataId || inv.dataId || invItem.invoiceDataId || invItem.dataId || inv.id || '';
-                        exportRows.push({
-                            ...baseRowInfo,
-                            attachmentId,
-                            rawAttachmentId,
-                            invoiceDataId,
-                            invoiceIndex: idx + 1,
-                            invoiceType: inv.invoiceTypeAbbreviation || inv.invoiceType || '',
-                            invoiceCode: inv.invoiceCode || '',
-                            invoiceNo: inv.invoiceNo || '',
-                            invoiceDate: invDate,
-                            amountTax: inv.amountTax !== undefined ? inv.amountTax : (inv.amountTaxObj?.amount || ''),
-                            totalAmount: inv.totalAmount !== undefined ? inv.totalAmount : (inv.totalAmountObj?.amount || ''),
-                            totalTax: inv.totalTax !== undefined ? inv.totalTax : (inv.totalTaxObj?.amount || ''),
-                            departureDate: depDate,
-                            departureTime: timeOn,
-                            timeGetOn: timeOn,
-                            timeGetOff: timeOff,
-                            stationGetOn: stOn,
-                            stationGetOff: stOff,
-                            trainNo: train,
-                            salesName: inv.salesName || '',
-                            purchaserName: inv.purchaserName || '',
-                            commodityNames: inv.invoiceDetails || inv.commodityNames || '',
-                            fileName: inv.fileName || '',
-                            remarks: inv.remarks || '',
-                            reconciliationNote: generateReconciliationNote(rec, inv)
-                        });
-                    });
-                }
-            }
-            catch (err) {
-                exportRows.push({
-                    expenseRecordId: rec.expenseRecordId || '',
-                    status: normalizeExpenseStatus(rec.status),
-                    expenseTypeName: rec.expenseType?.title?.zh_CN || '',
-                    expenseAmount: rec.amountObj?.amount || '',
-                    businessDate: rec.businessDate ? rec.businessDate.split(' ')[0] : '',
-                    description: rec.description || '',
-                    invoiceCount: rec.invoiceCount || 0,
-                    applicantName: rec.applicantObj?.title?.zh_CN || '',
-                    createDate: rec.createDate || '',
-                    savedDynamicFields: {},
-                    savedRowDatas: {},
-                    attachmentId: '',
-                    invoiceDataId: '',
-                    invoiceIndex: 0,
-                    invoiceType: '',
-                    invoiceCode: '',
-                    invoiceNo: '',
-                    invoiceDate: '',
-                    amountTax: '',
-                    totalAmount: '',
-                    totalTax: '',
-                    departureDate: '',
-                    departureTime: '',
-                    timeGetOff: '',
-                    stationGetOn: '',
-                    stationGetOff: '',
-                    trainNo: '',
-                    salesName: '',
-                    purchaserName: '',
-                    commodityNames: '',
-                    fileName: '',
-                    remarks: '',
-                    reconciliationNote: `❌ 提取发票异常: ${err.message}`
-                });
-            }
-            finally {
-                completedCount++;
-                if (onProgress) {
-                    onProgress(completedCount, totalCount);
-                }
-            }
-        });
-        // 按照业务日期倒序排列
-        exportRows.sort((a, b) => (b.businessDate || '').localeCompare(a.businessDate || ''));
-        return exportRows;
-    }
-    /**
-     * 实时拉取当前登录人权限内的费用类型分类树 (包含 4 大分类与 15 种明细类型)
-     * 接口: POST /fssc/controlStandard/expenseTypeDim/getExpenseTypeTreeInAuth
-     */
-    async function fetchExpenseTypeTreeApi(state, win) {
-        const applicantId = state.currentUser?.userId ||
-            state.applicantId ||
-            (typeof sessionStorage !== 'undefined' ? (sessionStorage.getItem('userId') || sessionStorage.getItem('loginUserId')) : '') ||
-            '11eee047a80566bca18367ceb209b2e1';
-        const payload = {
-            applicantId,
-            invoiceRequired: true
-        };
-        try {
-            let res = await callNativeHttp('/controlStandard/expenseTypeDim/getExpenseTypeTreeInAuth', 'POST', payload, win);
-            if (!res || !res.success) {
-                res = await apiRequest('/fssc/controlStandard/expenseTypeDim/getExpenseTypeTreeInAuth', 'POST', payload, state);
-            }
-            if (res && res.success && Array.isArray(res.data) && res.data.length > 0) {
-                const mapNodes = (nodes) => {
-                    return nodes.map(n => {
-                        const d = n.data || {};
-                        const isLeaf = d.isLeaf !== undefined ? Boolean(d.isLeaf) : (!n.children || n.children.length === 0);
-                        return {
-                            id: d.expenseTypeId || n.key || n.id || '',
-                            code: d.expenseTypeCode || n.code || '',
-                            name: d.expenseTypeName || n.title || n.name || '',
-                            icon: d.icon || n.icon || '',
-                            iconColor: d.iconColor || n.iconColor || '',
-                            isLeaf,
-                            depth: d.depth || 0,
-                            children: n.children && n.children.length > 0 ? mapNodes(n.children) : [],
-                            raw: d
-                        };
-                    });
-                };
-                const tree = mapNodes(res.data);
-                AutopilotLogger.info(`[fetchExpenseTypeTreeApi] 成功拉取权限内费用类型分类树，共 ${tree.length} 个根分类`);
-                return tree;
-            }
-        }
-        catch (e) {
-            AutopilotLogger.warn(`[fetchExpenseTypeTreeApi] 拉取费用类型树失败: ${e.message}`);
-        }
-        return [];
-    }
-    /**
-     * 批量更新费用记录（类型切换、必填字段注入、说明、业务日期）并安全持久化保存为草稿
-     */
-    async function batchUpdateExpenseRecordsApi(updates, state, onProgress, win) {
-        const result = {
-            total: updates.length,
-            successCount: 0,
-            failCount: 0,
-            errors: []
-        };
-        if (!updates || updates.length === 0)
-            return result;
-        // 0. 批量持久化前动态嗅探最新 Token 并执行会话保活，彻底重置服务端空闲倒计时
-        extractLatestTokens(state);
-        await touchSessionKeepalive(state, win);
-        let completed = 0;
-        // 使用并发度 3 保证极速处理且避免高频限流与数据库行锁冲突
-        await mapConcurrent(updates, 3, async (item) => {
-            let retryCount = 0;
-            const maxRetries = 1;
-            try {
-                while (true) {
-                    try {
-                        const originalTypeId = item.originalExpenseTypeId || item.expenseTypeId || 'UNIDENTIFIED';
-                        const targetTypeId = item.targetExpenseTypeId;
-                        const isTypeChanged = Boolean(targetTypeId && targetTypeId !== originalTypeId);
-                        // 1. 获取现有完整 ruleData（包含发票列表、金额、乐观锁版本号与申请人）
-                        const ruleData = await getExpenseTypeRuleAndRowDatasApi(item.expenseRecordId, originalTypeId, state, win);
-                        const existingRowDatas = ruleData.rowDatas || {};
-                        let version = ruleData.version !== undefined ? ruleData.version : 1;
-                        let applicantId = ruleData.fullData?.applicantId || existingRowDatas?.APPLICANT_ID?.value?.value || state.applicantId || '';
-                        let rowDatas = {};
-                        if (isTypeChanged) {
-                            // 2. 类型变更：调用 initExpenseRecordData，将原有完整 existingRowDatas（含发票和金额）透传，重置槽位元数据
-                            AutopilotLogger.info(`[batchUpdate] 费用记录 ${item.expenseRecordId} 变更类型: ${originalTypeId} ➔ ${targetTypeId}`);
-                            const initRes = await initExpenseRecordWithTypeApi(item.expenseRecordId, targetTypeId, existingRowDatas, state, win);
-                            rowDatas = initRes.rowDatas || {};
-                            // 防御性安全守卫：如果切换后缺失发票列表或金额，无条件从原 existingRowDatas 继承，杜绝任何发票丢失
-                            if ((!rowDatas.expenseRecordInvoiceList || !rowDatas.expenseRecordInvoiceList.value) && existingRowDatas.expenseRecordInvoiceList) {
-                                rowDatas.expenseRecordInvoiceList = existingRowDatas.expenseRecordInvoiceList;
-                            }
-                            if ((!rowDatas.AMOUNT || !rowDatas.AMOUNT.value) && existingRowDatas.AMOUNT) {
-                                rowDatas.AMOUNT = existingRowDatas.AMOUNT;
-                            }
-                            if ((!rowDatas.INVOICE_COUNT || !rowDatas.INVOICE_COUNT.value) && existingRowDatas.INVOICE_COUNT) {
-                                rowDatas.INVOICE_COUNT = existingRowDatas.INVOICE_COUNT;
-                            }
-                            if (initRes.applicantId)
-                                applicantId = initRes.applicantId;
-                            else if (initRes.fullData?.applicantId)
-                                applicantId = initRes.fullData.applicantId;
-                            // 关键修复：initExpenseRecordData 为内存模板初始化，返回的 version 恒为 0，绝对不可覆盖真实的数据库版本号！
-                            if (initRes.version && initRes.version > version)
-                                version = initRes.version;
-                        }
-                        else {
-                            rowDatas = existingRowDatas;
-                        }
-                        let hasChanged = isTypeChanged;
-                        /**
-                         * 安全设置费用记录行数据字段（若字段对象不存在则按元年元数据规范自适应创建，彻底杜绝 undefined 异常）
-                         */
-                        function ensureExpenseRowField(rowDatas, fieldCode, val, dataType = 'STEXT') {
-                            if (val === undefined || val === null || val === '')
-                                return false;
-                            if (!rowDatas[fieldCode]) {
-                                if (dataType === 'DROPDOWN') {
-                                    const dropdownVal = (typeof val === 'object' && val !== null) ? val : {
-                                        title: { zh_CN: String(val) },
-                                        value: String(val)
-                                    };
-                                    rowDatas[fieldCode] = {
-                                        dataType: 'DROPDOWN',
-                                        dataAttribute: 'DEFAULT',
-                                        required: true,
-                                        value: dropdownVal
-                                    };
-                                }
-                                else {
-                                    rowDatas[fieldCode] = {
-                                        dataType,
-                                        dataAttribute: 'DEFAULT',
-                                        required: true,
-                                        value: val
-                                    };
-                                }
-                                return true;
-                            }
-                            const field = rowDatas[fieldCode];
-                            if (dataType === 'DROPDOWN') {
-                                if (typeof field.value === 'object' && field.value !== null && !Array.isArray(field.value)) {
-                                    if (typeof val === 'object' && val !== null) {
-                                        field.value = val;
-                                    }
-                                    else {
-                                        if (!field.value.title)
-                                            field.value.title = {};
-                                        field.value.title.zh_CN = String(val);
-                                        field.value.value = field.value.value || String(val);
-                                    }
-                                }
-                                else {
-                                    field.value = (typeof val === 'object' && val !== null) ? val : {
-                                        title: { zh_CN: String(val) },
-                                        value: String(val)
-                                    };
-                                }
-                            }
-                            else {
-                                field.value = val;
-                            }
-                            return true;
-                        }
-                        // 3. 更新费用说明
-                        if (item.newDescription !== undefined) {
-                            if (ensureExpenseRowField(rowDatas, 'DESCRIPTION', item.newDescription.trim(), 'MTEXT')) {
-                                hasChanged = true;
-                            }
-                        }
-                        // 4. 可选：更新业务日期
-                        if (item.newBusinessDate) {
-                            const normDate = normalizeDate(item.newBusinessDate);
-                            if (normDate) {
-                                if (ensureExpenseRowField(rowDatas, 'BUSINESS_DATE', `${normDate} 00:00:00`, 'DATE')) {
-                                    hasChanged = true;
-                                }
-                            }
-                        }
-                        // 5. 注入必填/动态字段
-                        const dyn = item.dynamicFields || {};
-                        // 5.1 始发地 / 目的地 (交通、出租车、火车)
-                        const startAddr = dyn.startAddress || item.startAddress || dyn.trainFromStation;
-                        if (startAddr) {
-                            if (ensureExpenseRowField(rowDatas, 'START_ADDRESS', startAddr, 'STEXT')) {
-                                hasChanged = true;
-                            }
-                        }
-                        const endAddr = dyn.endAddress || item.endAddress || dyn.trainToStation;
-                        if (endAddr) {
-                            if (ensureExpenseRowField(rowDatas, 'END_ADDRESS', endAddr, 'STEXT')) {
-                                hasChanged = true;
-                            }
-                        }
-                        // 5.2 住宿费专属必填字段
-                        if (dyn.checkInDate) {
-                            const d = normalizeDate(dyn.checkInDate);
-                            if (d && ensureExpenseRowField(rowDatas, 'CHECK_IN_DATE', `${d} 00:00:00`, 'DATE')) {
-                                hasChanged = true;
-                            }
-                        }
-                        if (dyn.checkOutDate) {
-                            const d = normalizeDate(dyn.checkOutDate);
-                            if (d && ensureExpenseRowField(rowDatas, 'CHECK_OUT_DATE', `${d} 00:00:00`, 'DATE')) {
-                                hasChanged = true;
-                            }
-                        }
-                        if (dyn.city) {
-                            const cityVO = await fetchCityVO(dyn.city, state, '6b8ff0649ebe11e88b72df10cd5db793');
-                            const cityFieldVal = cityVO && cityVO.value ? {
-                                value: cityVO.value,
-                                title: { zh_CN: (cityVO.title && cityVO.title.zh_CN) || dyn.city }
-                            } : {
-                                value: dyn.city,
-                                title: { zh_CN: dyn.city }
-                            };
-                            if (ensureExpenseRowField(rowDatas, 'CITY', cityFieldVal, 'DROPDOWN')) {
-                                hasChanged = true;
-                            }
-                            // 尝试提取动态 fieldId (出差城市字段的 expenseTypeFieldId)
-                            let cityFieldId = '0356c803fdbde1653e55bb00bc610006';
-                            if (ruleData.fullData?.expenseTypeFieldRuleListVO?.expenseTypeFieldList) {
-                                const cityDef = ruleData.fullData.expenseTypeFieldRuleListVO.expenseTypeFieldList.find((f) => f.columnCode === 'CITY');
-                                if (cityDef && cityDef.expenseTypeFieldId) {
-                                    cityFieldId = cityDef.expenseTypeFieldId;
-                                }
-                            }
-                            // 核心关键：调用元年云官方 fieldValueChange 规则引擎，自动联动生成 住宿城市类型 (F_ZSC_DEF_001) 与 标准金额 (STANDARD_VALUE)
-                            const ruleRowDatas = await executeExpenseRecordFieldValueChangeApi(cityFieldId, '出差城市', 'CITY', cityFieldVal, targetTypeId || originalTypeId || '0356c4e2b72de1653e55bb00bc610001', rowDatas, state, win);
-                            if (ruleRowDatas && typeof ruleRowDatas === 'object') {
-                                if (ruleRowDatas.F_ZSC_DEF_001) {
-                                    rowDatas.F_ZSC_DEF_001 = ruleRowDatas.F_ZSC_DEF_001;
-                                    hasChanged = true;
-                                }
-                                if (ruleRowDatas.STANDARD_VALUE) {
-                                    rowDatas.STANDARD_VALUE = ruleRowDatas.STANDARD_VALUE;
-                                    hasChanged = true;
-                                }
-                                if (ruleRowDatas.OVER_STANDARD) {
-                                    rowDatas.OVER_STANDARD = ruleRowDatas.OVER_STANDARD;
-                                }
-                            }
-                        }
-                        // 5.2.1 针对住宿费：全面补齐必填项，彻底杜绝单价/房间数/城市类型必填拦截
-                        const isHotel = (targetTypeId || originalTypeId) === '0356c4e2b72de1653e55bb00bc610001' ||
-                            !!rowDatas.HOTEL_NAME || !!rowDatas.CHECK_IN_DATE || !!dyn.hotelName || !!dyn.checkInDate;
-                        if (isHotel) {
-                            if (dyn.hotelName) {
-                                if (ensureExpenseRowField(rowDatas, 'HOTEL_NAME', dyn.hotelName, 'STEXT')) {
-                                    hasChanged = true;
-                                }
-                            }
-                            const roomNum = Number(dyn.roomNum) || Number(rowDatas.ROOM_NUM?.value) || 1;
-                            if (ensureExpenseRowField(rowDatas, 'ROOM_NUM', roomNum, 'NUMBER')) {
-                                hasChanged = true;
-                            }
-                            const checkIn = dyn.checkInDate || rowDatas.CHECK_IN_DATE?.value;
-                            const checkOut = dyn.checkOutDate || rowDatas.CHECK_OUT_DATE?.value;
-                            let stayDays = 1;
-                            if (checkIn && checkOut) {
-                                const inD = new Date(checkIn);
-                                const outD = new Date(checkOut);
-                                const diff = Math.round((outD.getTime() - inD.getTime()) / (1000 * 3600 * 24));
-                                stayDays = diff > 0 ? diff : 1;
-                            }
-                            ensureExpenseRowField(rowDatas, 'STAY_DAYS', stayDays, 'NUMBER');
-                            const totalAmount = Number(rowDatas.AMOUNT?.value?.amount) || 0;
-                            const totalRoomNights = Math.max(1, stayDays * roomNum);
-                            const unitPriceVal = Math.round((totalAmount / totalRoomNights) * 100) / 100;
-                            rowDatas.UNIT_PRICE = {
-                                dataType: 'MONEY',
-                                required: true,
-                                value: {
-                                    accountAmount: {
-                                        amount: unitPriceVal,
-                                        capital: '',
-                                        currencyId: state.accountCurrencyId || '6e589eb2dd9f11e8b5a69590a14a4e34',
-                                        currencySymbol: '',
-                                        description: '',
-                                        exchangeRate: 1,
-                                        factor: 0
-                                    },
-                                    amount: unitPriceVal,
-                                    capital: '',
-                                    currencyId: state.accountCurrencyId || '6e589eb2dd9f11e8b5a69590a14a4e34',
-                                    currencySymbol: '¥',
-                                    description: '',
-                                    exchangeRate: 1,
-                                    factor: 0
-                                }
-                            };
-                            hasChanged = true;
-                            if (!item.newBusinessDate && checkIn) {
-                                const d = normalizeDate(checkIn);
-                                if (d) {
-                                    ensureExpenseRowField(rowDatas, 'BUSINESS_DATE', `${d} 00:00:00`, 'DATE');
-                                }
-                            }
-                            // 住宿城市类型 (F_ZSC_DEF_001) 与 标准金额 (STANDARD_VALUE) 确定性公式兜底
-                            const currentHotelCity = dyn.city || rowDatas.CITY?.value?.title?.zh_CN || rowDatas.CITY?.value?.value;
-                            const cityName = currentHotelCity ? String(currentHotelCity).replace(/市|区|县/g, '').trim() : '';
-                            const isTier1 = /北京|上海|广州|深圳/.test(cityName);
-                            const tier1Id = '035a402fee2345af7f1906ec05cc0000';
-                            const otherId = '035a403ff62345af7f1906ec05cc0000';
-                            const targetZscId = isTier1 ? tier1Id : otherId;
-                            const targetZscTitle = isTier1 ? '境内-北上广深' : '境内-其他';
-                            const stdAmt = isTier1 ? 800 : 700;
-                            if (!rowDatas.F_ZSC_DEF_001 || !rowDatas.F_ZSC_DEF_001.value || !rowDatas.F_ZSC_DEF_001.value.value) {
-                                rowDatas.F_ZSC_DEF_001 = {
-                                    dataSourceScope: [{ title: { zh_CN: targetZscTitle }, value: targetZscId }],
-                                    dataType: 'DROPDOWN',
-                                    readOnly: true,
-                                    required: true,
-                                    value: {
-                                        icon: '',
-                                        iconColor: '',
-                                        title: { zh_CN: targetZscTitle },
-                                        value: targetZscId
-                                    }
-                                };
-                                hasChanged = true;
-                            }
-                            if (!rowDatas.STANDARD_VALUE || !rowDatas.STANDARD_VALUE.value || !rowDatas.STANDARD_VALUE.value.amount) {
-                                rowDatas.STANDARD_VALUE = {
-                                    dataType: 'MONEY',
-                                    hidden: true,
-                                    readOnly: true,
-                                    required: true,
-                                    value: {
-                                        accountAmount: {
-                                            amount: stdAmt,
-                                            capital: '',
-                                            currencyId: state.accountCurrencyId || '6e589eb2dd9f11e8b5a69590a14a4e34',
-                                            currencySymbol: '',
-                                            description: '',
-                                            exchangeRate: 1,
-                                            factor: 0
-                                        },
-                                        amount: stdAmt,
-                                        capital: '',
-                                        currencyId: state.accountCurrencyId || '6e589eb2dd9f11e8b5a69590a14a4e34',
-                                        currencySymbol: '¥',
-                                        description: '',
-                                        exchangeRate: 1,
-                                        factor: 0
-                                    }
-                                };
-                                hasChanged = true;
-                            }
-                            // 5.2.1 住宿费超标说明自动自愈与必填守卫 (彻底解决“保存校验拦截: 超标说明必填”)
-                            const isOverStandard = rowDatas.OVER_STANDARD?.value?.title?.zh_CN === '是' ||
-                                rowDatas.OVER_STANDARD?.value === true ||
-                                rowDatas.OVER_STANDARD_DESCRIPTION?.required === true ||
-                                (rowDatas.UNIT_PRICE?.value?.amount && rowDatas.STANDARD_VALUE?.value?.amount &&
-                                    rowDatas.UNIT_PRICE.value.amount > rowDatas.STANDARD_VALUE.value.amount);
-                            if (isOverStandard) {
-                                result.hasOverStandard = true;
-                                result.overStandardCount = (result.overStandardCount || 0) + 1;
-                            }
-                            if (isOverStandard || (rowDatas.OVER_STANDARD_DESCRIPTION && !rowDatas.OVER_STANDARD_DESCRIPTION.value)) {
-                                const overReason = (dyn.overStandardDescription && dyn.overStandardDescription.trim()) ||
-                                    (rowDatas.OVER_STANDARD_DESCRIPTION?.value ? String(rowDatas.OVER_STANDARD_DESCRIPTION.value).trim() : '');
-                                if (overReason) {
-                                    if (ensureExpenseRowField(rowDatas, 'OVER_STANDARD_DESCRIPTION', overReason, 'MTEXT')) {
-                                        hasChanged = true;
-                                    }
-                                }
-                                else if (isOverStandard) {
-                                    const itemDate = dyn.checkInDate || (rowDatas.CHECK_IN_DATE?.value ? String(rowDatas.CHECK_IN_DATE.value).slice(0, 10) : '') || '';
-                                    const hotelOrCity = dyn.hotelName || dyn.city || (rowDatas.HOTEL_NAME?.value ? String(rowDatas.HOTEL_NAME.value) : '') || '';
-                                    const itemAmount = totalAmount ? `¥${totalAmount}` : '';
-                                    const itemLabel = [itemDate, hotelOrCity, itemAmount].filter(Boolean).join(' ');
-                                    throw new Error(`[${itemLabel || item.expenseRecordId}] 住宿费单价已超标，超标说明为必填项，请填写理由或点击 📋 拷贝“费用说明”后再保存！`);
-                                }
-                            }
-                        }
-                        // 5.3 飞机票专属必填字段
-                        if (dyn.flightStartDate) {
-                            const d = normalizeDate(dyn.flightStartDate);
-                            if (d && ensureExpenseRowField(rowDatas, 'FLIGHT_START_DATE', `${d} 00:00:00`, 'DATE')) {
-                                hasChanged = true;
-                            }
-                        }
-                        if (dyn.flightEndDate) {
-                            const d = normalizeDate(dyn.flightEndDate);
-                            if (d && ensureExpenseRowField(rowDatas, 'FLIGHT_END_DATE', `${d} 00:00:00`, 'DATE')) {
-                                hasChanged = true;
-                            }
-                        }
-                        if (dyn.flightFromCity) {
-                            const cityVO = await fetchCityVO(dyn.flightFromCity, state, '6b8ff0649ebe11e88b72df10cd5db793');
-                            if (ensureExpenseRowField(rowDatas, 'FLIGHT_FROM_CITY', cityVO || dyn.flightFromCity, 'DROPDOWN')) {
-                                hasChanged = true;
-                            }
-                        }
-                        if (dyn.flightToCity) {
-                            const cityVO = await fetchCityVO(dyn.flightToCity, state, '6b8ff0649ebe11e88b72df10cd5db793');
-                            if (ensureExpenseRowField(rowDatas, 'FLIGHT_TO_CITY', cityVO || dyn.flightToCity, 'DROPDOWN')) {
-                                hasChanged = true;
-                            }
-                        }
-                        if (dyn.flightNum) {
-                            if (ensureExpenseRowField(rowDatas, 'FLIGHT_NUM', dyn.flightNum, 'STEXT')) {
-                                hasChanged = true;
-                            }
-                        }
-                        // 5.4 火车票专属必填字段
-                        if (dyn.trainStartDate) {
-                            const d = normalizeDate(dyn.trainStartDate);
-                            if (d && ensureExpenseRowField(rowDatas, 'TRAIN_START_DATE', `${d} 00:00:00`, 'DATE')) {
-                                hasChanged = true;
-                            }
-                        }
-                        if (dyn.trainEndDate) {
-                            const d = normalizeDate(dyn.trainEndDate);
-                            if (d && ensureExpenseRowField(rowDatas, 'TRAIN_END_DATE', `${d} 00:00:00`, 'DATE')) {
-                                hasChanged = true;
-                            }
-                        }
-                        if (dyn.trainFromStation) {
-                            const cityVO = await fetchCityVO(dyn.trainFromStation, state, '6b8ff0649ebe11e88b72df10cd5db793');
-                            if (ensureExpenseRowField(rowDatas, 'TRAIN_FROM_CITY', cityVO || dyn.trainFromStation, 'DROPDOWN')) {
-                                hasChanged = true;
-                            }
-                            ensureExpenseRowField(rowDatas, 'START_ADDRESS', dyn.trainFromStation, 'STEXT');
-                        }
-                        if (dyn.trainToStation) {
-                            const cityVO = await fetchCityVO(dyn.trainToStation, state, '6b8ff0649ebe11e88b72df10cd5db793');
-                            if (ensureExpenseRowField(rowDatas, 'TRAIN_TO_CITY', cityVO || dyn.trainToStation, 'DROPDOWN')) {
-                                hasChanged = true;
-                            }
-                            ensureExpenseRowField(rowDatas, 'END_ADDRESS', dyn.trainToStation, 'STEXT');
-                        }
-                        // 5.5 通信费所属账期月份 (系统在部分模版中使用 FLIGHT_START_DATE 映射手机费年月)
-                        if (dyn.billMonth) {
-                            const m = dyn.billMonth.trim();
-                            const dateStr = m.length === 7 ? `${m}-01` : m;
-                            const norm = normalizeDate(dateStr);
-                            if (norm && ensureExpenseRowField(rowDatas, 'FLIGHT_START_DATE', `${norm} 00:00:00`, 'DATE')) {
-                                hasChanged = true;
-                            }
-                        }
-                        if (!hasChanged) {
-                            result.successCount++;
-                            break;
-                        }
-                        // 6. 持久化保存草稿接口 (validateAndSaveExpenseRecord)
-                        const finalTypeId = targetTypeId || (originalTypeId && originalTypeId !== 'UNIDENTIFIED' ? originalTypeId : '') ||
-                            ruleData.fullData?.expenseTypeId ||
-                            ruleData.rowDatas?.EXPENSE_TYPE_ID?.value?.value || '';
-                        AutopilotLogger.info(`[batchUpdate] 保存费用记录 ${item.expenseRecordId}, 类型: ${finalTypeId}, 字段数: ${Object.keys(rowDatas).length}`);
-                        await saveFinalExpenseRecordApi(item.expenseRecordId, finalTypeId, rowDatas, version, state, applicantId, win);
-                        result.successCount++;
-                        break;
-                    }
-                    catch (err) {
-                        const isRetryable = retryCount < maxRetries && (err.message?.includes('版本') ||
-                            err.message?.includes('version') ||
-                            err.message?.includes('修改') ||
-                            err.message?.includes('已被其他人修改') ||
-                            err.message?.includes('超时'));
-                        if (isRetryable) {
-                            retryCount++;
-                            AutopilotLogger.warn(`[batchUpdate] 费用记录 ${item.expenseRecordId} 遇瞬态或版本冲突 (${err.message})，重新拉取最新版本重试第 ${retryCount} 次...`);
-                            await new Promise(r => setTimeout(r, 400));
-                            continue;
-                        }
-                        const isAuthError = err.message?.includes('登录失效') || err.message?.includes('Time-Out') || err.message?.includes('401');
-                        if (isAuthError) {
-                            AutopilotLogger.warn(`[batchUpdate] 检测到会话异常 (${err.message})，正在紧急重嗅探 Token 并保活...`);
-                            extractLatestTokens(state);
-                            touchSessionKeepalive(state, win);
-                        }
-                        result.failCount++;
-                        result.errors.push({
-                            expenseRecordId: item.expenseRecordId,
-                            error: err.message || '保存费用记录失败'
-                        });
-                        break;
-                    }
-                }
-            }
-            finally {
-                completed++;
-                if (onProgress) {
-                    onProgress(completed, updates.length);
-                }
-            }
-        });
-        state.lastInterceptedExpenseRecords = null;
-        return result;
     }
 
     function getDefaultExportFromCjs (x) {
@@ -55378,6 +61448,62 @@ td.has-save-error {
   display: inline-block;
 }
 
+/* 字段属性归属微徽章 [共通 | 申请 | 报销] */
+.yn-bm-badge-common {
+  display: inline-block;
+  padding: 1px 4px;
+  font-size: 10px;
+  line-height: 12px;
+  font-weight: 700;
+  border-radius: 3px;
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+  margin-right: 3px;
+  vertical-align: middle;
+}
+
+.yn-bm-badge-apply {
+  display: inline-block;
+  padding: 1px 4px;
+  font-size: 10px;
+  line-height: 12px;
+  font-weight: 700;
+  border-radius: 3px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+  margin-right: 3px;
+  vertical-align: middle;
+}
+
+.yn-bm-badge-claim {
+  display: inline-block;
+  padding: 1px 4px;
+  font-size: 10px;
+  line-height: 12px;
+  font-weight: 700;
+  border-radius: 3px;
+  background: #f0fdf4;
+  color: #15803d;
+  border: 1px solid #bbf7d0;
+  margin-right: 3px;
+  vertical-align: middle;
+}
+
+.yn-bm-header-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: #64748b;
+  margin-left: 10px;
+}
+.yn-bm-header-legend span {
+  display: inline-flex;
+  align-items: center;
+}
+
 .yn-bm-spread-table td {
   padding: 4px 6px;
   border-bottom: 1px solid var(--bm-border);
@@ -59205,2816 +65331,6 @@ td.has-save-error {
         });
     }
 
-    /**
-     * 现代浮动 Toast 消息通知组件 (替代阻塞式 alert 弹窗)
-     */
-    function showToast(type, message, duration = 3500) {
-        // 1. 先尝试利用宿主 Vue Element-UI $message (如果存在)
-        try {
-            const appVue = document.querySelector('#app')?.__vue__;
-            if (appVue && typeof appVue.$message === 'function') {
-                appVue.$message({
-                    type: type,
-                    message: message,
-                    duration: duration,
-                    showClose: true
-                });
-                return;
-            }
-        }
-        catch (e) { }
-        // 2. 独立高优先级 Floating Toast 容器
-        let container = document.getElementById('yn-toast-container');
-        if (!container) {
-            container = document.createElement('div');
-            container.id = 'yn-toast-container';
-            container.style.cssText = `
-            position: fixed;
-            top: 24px;
-            left: 50%;
-            transform: translateX(-50%);
-            z-index: 99999999;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 10px;
-            pointer-events: none;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif;
-        `;
-            document.body.appendChild(container);
-        }
-        const toast = document.createElement('div');
-        const colorMap = {
-            success: { bg: '#f6ffed', border: '#b7eb8f', text: '#389e0d', icon: '✅', shadow: 'rgba(82, 196, 26, 0.2)' },
-            warning: { bg: '#fffbe6', border: '#ffe58f', text: '#d46b08', icon: '⚠️', shadow: 'rgba(250, 140, 22, 0.2)' },
-            error: { bg: '#fff1f0', border: '#ffa39e', text: '#cf1322', icon: '❌', shadow: 'rgba(245, 34, 45, 0.2)' },
-            info: { bg: '#e6f7ff', border: '#91d5ff', text: '#096dd9', icon: 'ℹ️', shadow: 'rgba(24, 144, 255, 0.2)' }
-        };
-        const cfg = colorMap[type] || colorMap.info;
-        toast.style.cssText = `
-        background: ${cfg.bg};
-        border: 1px solid ${cfg.border};
-        color: ${cfg.text};
-        box-shadow: 0 4px 16px ${cfg.shadow};
-        padding: 10px 18px;
-        border-radius: 8px;
-        font-size: 13.5px;
-        font-weight: 600;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        max-width: 600px;
-        word-break: break-word;
-        pointer-events: auto;
-        opacity: 0;
-        transform: translateY(-12px);
-        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    `;
-        toast.innerHTML = `
-        <span style="font-size: 16px;">${cfg.icon}</span>
-        <span style="white-space: pre-wrap; line-height: 1.4;">${message}</span>
-    `;
-        container.appendChild(toast);
-        // 触发动画
-        requestAnimationFrame(() => {
-            toast.style.opacity = '1';
-            toast.style.transform = 'translateY(0)';
-        });
-        // 自动消失
-        setTimeout(() => {
-            toast.style.opacity = '0';
-            toast.style.transform = 'translateY(-12px)';
-            setTimeout(() => {
-                if (toast.parentElement)
-                    toast.parentElement.removeChild(toast);
-            }, 300);
-        }, duration);
-    }
-
-    /******************************************************************************
-    Copyright (c) Microsoft Corporation.
-
-    Permission to use, copy, modify, and/or distribute this software for any
-    purpose with or without fee is hereby granted.
-
-    THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
-    REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
-    AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
-    INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
-    LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
-    OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
-    PERFORMANCE OF THIS SOFTWARE.
-    ***************************************************************************** */
-    /* global Reflect, Promise, SuppressedError, Symbol, Iterator */
-
-
-    function __classPrivateFieldGet(receiver, state, kind, f) {
-        if (kind === "a" && !f) throw new TypeError("Private accessor was defined without a getter");
-        if (typeof state === "function" ? receiver !== state || !f : !state.has(receiver)) throw new TypeError("Cannot read private member from an object whose class did not declare it");
-        return kind === "m" ? f : kind === "a" ? f.call(receiver) : f ? f.value : state.get(receiver);
-    }
-
-    function __classPrivateFieldSet(receiver, state, value, kind, f) {
-        if (kind === "m") throw new TypeError("Private method is not writable");
-        if (kind === "a" && !f) throw new TypeError("Private accessor was defined without a setter");
-        if (typeof state === "function" ? receiver !== state || !f : !state.has(receiver)) throw new TypeError("Cannot write private member to an object whose class did not declare it");
-        return (kind === "a" ? f.call(receiver, value) : f ? f.value = value : state.set(receiver, value)), value;
-    }
-
-    typeof SuppressedError === "function" ? SuppressedError : function (error, suppressed, message) {
-        var e = new Error(message);
-        return e.name = "SuppressedError", e.error = error, e.suppressed = suppressed, e;
-    };
-
-    /**
-     * High-Performance W3C WebMCP (Web Model Context Protocol) Runtime Polyfill
-     *
-     * Optimized for high-throughput enterprise single-page applications (Yuanian FSSC):
-     * 1. WeakMap-based memoized Shadow DOM root caching (O(1) lookup, eliminating 866ms traversal bottleneck)
-     * 2. Task decomposition with window.requestIdleCallback / requestAnimationFrame (preventing UI stutter and INP presentation delays)
-     * 3. Event-driven targeted queries rather than full-document querySelectorAll('*')
-     * 4. Spec-compliant document.modelContext with registerTool, getTools, executeTool, and toolchange events
-     */
-    var _StrictWebMCPContext_instances, _StrictWebMCPContext_tools, _StrictWebMCPContext_testingShim, _StrictWebMCPContext_ontoolchangeHandler, _StrictWebMCPContext_ownerDocument, _StrictWebMCPContext_removeTool, _StrictWebMCPContext_notifyToolsChanged;
-    const POLYFILL_MARKER_PROPERTY = '__isWebMCPPolyfill';
-    const REGISTRATION_SIGNAL_SYMBOL = Symbol('registrationSignal');
-    const REGISTRATION_ABORT_SYMBOL = Symbol('registrationAbort');
-    const REGISTERED_INPUT_SCHEMA_SYMBOL = Symbol('registeredInputSchema');
-    // 1. WeakMap 缓存已探查过的 ShadowRoot (O(1) 秒级查表，彻底消除 866ms 深度递归开销)
-    const shadowRootCache = new WeakMap();
-    /**
-     * 高性能带缓存的 ShadowRoot 查找 (支持针对非自定义元素直接短路)
-     */
-    function getOpenShadowRoot(element) {
-        if (!element || !(element instanceof Element))
-            return null;
-        if (shadowRootCache.has(element)) {
-            return shadowRootCache.get(element) || null;
-        }
-        // 针对常见标准 HTML 元素（无连字符且非自定义元素）进行首道安全过滤
-        const tagName = element.tagName ? element.tagName.toLowerCase() : '';
-        const isCustomElement = tagName.includes('-');
-        let root = null;
-        try {
-            root = Reflect.get(Element.prototype, 'shadowRoot', element) || element.shadowRoot || null;
-        }
-        catch {
-            root = null;
-        }
-        // 仅当是 open 模式才可被遍历
-        if (root && (root.mode === 'open' || !root.mode)) {
-            shadowRootCache.set(element, root);
-            return root;
-        }
-        // 若非自定义标签且无 shadowRoot，永久缓存 null
-        if (!isCustomElement) {
-            shadowRootCache.set(element, null);
-        }
-        return null;
-    }
-    /**
-     * 任务分解调度器：优先利用 requestIdleCallback，降级为 requestAnimationFrame / setTimeout
-     */
-    function scheduleIdleTask(callback, timeoutMs = 300) {
-        if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
-            const handle = window.requestIdleCallback(callback, { timeout: timeoutMs });
-            return () => window.cancelIdleCallback(handle);
-        }
-        if (typeof requestAnimationFrame === 'function') {
-            const handle = requestAnimationFrame(() => callback());
-            return () => cancelAnimationFrame(handle);
-        }
-        const timer = setTimeout(callback, 50);
-        return () => clearTimeout(timer);
-    }
-    function currentOrigin() {
-        return typeof globalThis.origin === 'string'
-            ? globalThis.origin
-            : globalThis.location?.origin ?? '';
-    }
-    function parseInputArguments(input) {
-        if (input === undefined || input === null)
-            return {};
-        if (typeof input === 'object')
-            return input;
-        if (typeof input === 'string') {
-            try {
-                return JSON.parse(input);
-            }
-            catch {
-                return input;
-            }
-        }
-        return input;
-    }
-    function serializeOutputResult(value) {
-        if (typeof value === 'string')
-            return value;
-        if (typeof value === 'object' && value !== null) {
-            try {
-                return JSON.stringify(value);
-            }
-            catch {
-                return String(value);
-            }
-        }
-        return String(value ?? '');
-    }
-    /**
-     * 严格 W3C 规范级 WebMCP Context 实现
-     */
-    class StrictWebMCPContext extends EventTarget {
-        constructor(ownerDocument) {
-            super();
-            _StrictWebMCPContext_instances.add(this);
-            _StrictWebMCPContext_tools.set(this, new Map());
-            _StrictWebMCPContext_testingShim.set(this, null);
-            _StrictWebMCPContext_ontoolchangeHandler.set(this, null);
-            _StrictWebMCPContext_ownerDocument.set(this, void 0);
-            __classPrivateFieldSet(this, _StrictWebMCPContext_ownerDocument, ownerDocument, "f");
-            Object.defineProperty(this, POLYFILL_MARKER_PROPERTY, {
-                value: true,
-                enumerable: false,
-                writable: false,
-                configurable: false
-            });
-        }
-        get ontoolchange() {
-            return __classPrivateFieldGet(this, _StrictWebMCPContext_ontoolchangeHandler, "f");
-        }
-        set ontoolchange(handler) {
-            if (__classPrivateFieldGet(this, _StrictWebMCPContext_ontoolchangeHandler, "f")) {
-                super.removeEventListener('toolchange', __classPrivateFieldGet(this, _StrictWebMCPContext_ontoolchangeHandler, "f"));
-            }
-            __classPrivateFieldSet(this, _StrictWebMCPContext_ontoolchangeHandler, typeof handler === 'function' ? handler : null, "f");
-            if (__classPrivateFieldGet(this, _StrictWebMCPContext_ontoolchangeHandler, "f")) {
-                super.addEventListener('toolchange', __classPrivateFieldGet(this, _StrictWebMCPContext_ontoolchangeHandler, "f"));
-            }
-        }
-        async registerTool(tool, options) {
-            if (!tool || typeof tool !== 'object') {
-                throw new TypeError('Tool descriptor must be an object');
-            }
-            if (!tool.name || typeof tool.name !== 'string') {
-                throw new TypeError('Tool "name" must be a non-empty string');
-            }
-            if (typeof tool.execute !== 'function') {
-                throw new TypeError('Tool "execute" must be a function');
-            }
-            const signal = options?.signal;
-            signal?.throwIfAborted?.();
-            const toolEntry = {
-                name: String(tool.name).trim(),
-                title: tool.title ? String(tool.title) : undefined,
-                description: String(tool.description || ''),
-                inputSchema: tool.inputSchema,
-                outputSchema: tool.outputSchema,
-                annotations: tool.annotations,
-                execute: tool.execute,
-                [REGISTERED_INPUT_SCHEMA_SYMBOL]: tool.inputSchema ? JSON.stringify(tool.inputSchema) : undefined
-            };
-            __classPrivateFieldGet(this, _StrictWebMCPContext_tools, "f").set(toolEntry.name, toolEntry);
-            if (signal) {
-                const onAbort = () => {
-                    __classPrivateFieldGet(this, _StrictWebMCPContext_instances, "m", _StrictWebMCPContext_removeTool).call(this, toolEntry.name);
-                    __classPrivateFieldGet(this, _StrictWebMCPContext_instances, "m", _StrictWebMCPContext_notifyToolsChanged).call(this);
-                };
-                toolEntry[REGISTRATION_SIGNAL_SYMBOL] = signal;
-                toolEntry[REGISTRATION_ABORT_SYMBOL] = onAbort;
-                signal.addEventListener('abort', onAbort, { once: true });
-            }
-            await __classPrivateFieldGet(this, _StrictWebMCPContext_instances, "m", _StrictWebMCPContext_notifyToolsChanged).call(this);
-        }
-        async unregisterTool(name) {
-            const removed = __classPrivateFieldGet(this, _StrictWebMCPContext_instances, "m", _StrictWebMCPContext_removeTool).call(this, name);
-            if (removed) {
-                await __classPrivateFieldGet(this, _StrictWebMCPContext_instances, "m", _StrictWebMCPContext_notifyToolsChanged).call(this);
-            }
-            return removed;
-        }
-        async getTools(options) {
-            const tools = [];
-            for (const tool of __classPrivateFieldGet(this, _StrictWebMCPContext_tools, "f").values()) {
-                const schema = tool[REGISTERED_INPUT_SCHEMA_SYMBOL]
-                    ? JSON.parse(tool[REGISTERED_INPUT_SCHEMA_SYMBOL])
-                    : tool.inputSchema;
-                tools.push({
-                    name: tool.name,
-                    title: tool.title ?? '',
-                    description: tool.description,
-                    inputSchema: schema,
-                    origin: currentOrigin(),
-                    window: globalThis.window,
-                    ...(tool.annotations ? { annotations: tool.annotations } : {})
-                });
-            }
-            tools.sort((a, b) => a.name.localeCompare(b.name));
-            return tools;
-        }
-        async executeTool(toolOrName, inputArgsJson, options) {
-            options?.signal?.throwIfAborted?.();
-            const toolName = typeof toolOrName === 'string' ? toolOrName : toolOrName?.name;
-            if (!toolName) {
-                throw new TypeError('executeTool requires tool name');
-            }
-            const tool = __classPrivateFieldGet(this, _StrictWebMCPContext_tools, "f").get(toolName);
-            if (!tool) {
-                throw new Error(`WebMCP Tool not found: ${toolName}`);
-            }
-            const args = parseInputArguments(inputArgsJson);
-            const result = await Promise.resolve(tool.execute(args));
-            return serializeOutputResult(result);
-        }
-        static dispose(context) {
-            for (const name of Array.from(__classPrivateFieldGet(context, _StrictWebMCPContext_tools, "f").keys())) {
-                __classPrivateFieldGet(context, _StrictWebMCPContext_instances, "m", _StrictWebMCPContext_removeTool).call(context, name);
-            }
-            context.ontoolchange = null;
-        }
-    }
-    _StrictWebMCPContext_tools = new WeakMap(), _StrictWebMCPContext_testingShim = new WeakMap(), _StrictWebMCPContext_ontoolchangeHandler = new WeakMap(), _StrictWebMCPContext_ownerDocument = new WeakMap(), _StrictWebMCPContext_instances = new WeakSet(), _StrictWebMCPContext_removeTool = function _StrictWebMCPContext_removeTool(name) {
-        const tool = __classPrivateFieldGet(this, _StrictWebMCPContext_tools, "f").get(name);
-        if (!tool)
-            return false;
-        const signal = tool[REGISTRATION_SIGNAL_SYMBOL];
-        const onAbort = tool[REGISTRATION_ABORT_SYMBOL];
-        if (signal && onAbort) {
-            signal.removeEventListener('abort', onAbort);
-        }
-        return __classPrivateFieldGet(this, _StrictWebMCPContext_tools, "f").delete(name);
-    }, _StrictWebMCPContext_notifyToolsChanged = async function _StrictWebMCPContext_notifyToolsChanged() {
-        this.dispatchEvent(new Event('toolchange'));
-        if (__classPrivateFieldGet(this, _StrictWebMCPContext_testingShim, "f") && typeof __classPrivateFieldGet(this, _StrictWebMCPContext_testingShim, "f").dispatchToolChange === 'function') {
-            __classPrivateFieldGet(this, _StrictWebMCPContext_testingShim, "f").dispatchToolChange();
-        }
-    };
-    // 全局单例与安装状态
-    const installedProperties = [];
-    let installedContext = null;
-    let declarativeFormsCleanup = null;
-    function installProperty(target, key, descriptor) {
-        const previous = Object.getOwnPropertyDescriptor(target, key);
-        try {
-            Object.defineProperty(target, key, descriptor);
-        }
-        catch (e) {
-            cleanupWebMCPPolyfill();
-            throw e;
-        }
-        installedProperties.push({ target, key, previous });
-    }
-    /**
-     * 现代轻量化声明式表单监听器 (仅对 form[toolname] 执行目标感知，彻底避免全文档 querySelectorAll('*') 遍历)
-     */
-    function installOptimizedDeclarativeForms(document, context) {
-        let active = true;
-        let cancelIdleSync = null;
-        const runSync = () => {
-            if (!active)
-                return;
-            try {
-                // 采用精确定位选择器代替全量 document.querySelectorAll('*')
-                const forms = Array.from(document.querySelectorAll('form[toolname]'));
-                // 探查潜在的自定义元素 Open ShadowRoot (利用 WeakMap memoized lookup 极速命中，零递归)
-                const potentialHosts = document.querySelectorAll(':not(:defined), [data-has-shadow]');
-                potentialHosts.forEach(host => {
-                    const root = getOpenShadowRoot(host);
-                    if (root) {
-                        const shadowForms = Array.from(root.querySelectorAll('form[toolname]'));
-                        forms.push(...shadowForms);
-                    }
-                });
-                forms.forEach(form => {
-                    const toolName = form.getAttribute('toolname');
-                    const toolDescription = form.getAttribute('tooldescription') || '';
-                    if (!toolName)
-                        return;
-                    // 注册表单工具
-                    context.registerTool({
-                        name: toolName,
-                        description: toolDescription,
-                        execute: async (input) => {
-                            // 触发原生表单提交
-                            form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-                            return { success: true, toolName };
-                        }
-                    }).catch(() => { });
-                });
-            }
-            catch { }
-        };
-        const debouncedSync = () => {
-            if (cancelIdleSync)
-                cancelIdleSync();
-            cancelIdleSync = scheduleIdleTask(runSync, 200);
-        };
-        // 仅监听 DOM 添加子树中是否存在表单，避免监听全文档 attributes 和 characterData 造成每秒千次触发
-        let observer = null;
-        try {
-            observer = new MutationObserver((mutations) => {
-                let hasFormMutation = false;
-                for (const m of mutations) {
-                    if (m.type === 'childList') {
-                        for (let i = 0; i < m.addedNodes.length; i++) {
-                            const node = m.addedNodes[i];
-                            if (node.nodeType === Node.ELEMENT_NODE) {
-                                const el = node;
-                                if (el.tagName === 'FORM' || (el.querySelector && el.querySelector('form[toolname]'))) {
-                                    hasFormMutation = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    if (hasFormMutation)
-                        break;
-                }
-                if (hasFormMutation)
-                    debouncedSync();
-            });
-            if (document.body) {
-                observer.observe(document.body, { childList: true, subtree: true });
-            }
-        }
-        catch { }
-        // 初始执行一次空闲扫描
-        debouncedSync();
-        return () => {
-            active = false;
-            if (cancelIdleSync)
-                cancelIdleSync();
-            if (observer)
-                observer.disconnect();
-        };
-    }
-    /**
-     * 激活 WebMCP Polyfill 环境 (支持可选 options)
-     */
-    function initializeWebMCPPolyfill(options = {}) {
-        if (typeof window === 'undefined' || typeof document === 'undefined')
-            return;
-        const doc = document;
-        if (doc.modelContext) {
-            return;
-        }
-        if (installedProperties.length > 0) {
-            cleanupWebMCPPolyfill();
-        }
-        const context = new StrictWebMCPContext(doc);
-        installedContext = context;
-        window.getOpenShadowRoot = getOpenShadowRoot;
-        context.getOpenShadowRoot = getOpenShadowRoot;
-        // 1. 安装 ModelContext 全局类
-        const modelContextConstructor = function ModelContext() {
-            throw new TypeError('Illegal constructor');
-        };
-        Object.defineProperty(modelContextConstructor, 'name', { value: 'ModelContext' });
-        Object.defineProperty(modelContextConstructor, 'prototype', {
-            value: StrictWebMCPContext.prototype,
-            writable: false
-        });
-        installProperty(window, 'ModelContext', {
-            configurable: true,
-            enumerable: false,
-            writable: true,
-            value: modelContextConstructor
-        });
-        // 2. 安装 document.modelContext
-        installProperty(Document.prototype, 'modelContext', {
-            configurable: true,
-            enumerable: true,
-            get() {
-                return context;
-            }
-        });
-        // 3. 安装兼容性 navigator.modelContext
-        if (typeof navigator !== 'undefined') {
-            installProperty(navigator, 'modelContext', {
-                configurable: true,
-                enumerable: true,
-                get() {
-                    return context;
-                }
-            });
-        }
-        // 4. 仅在显式声明或需要时挂载声明式表单监听，默认避免全文档属性轰炸
-        if (options.declarativeForms !== false) {
-            declarativeFormsCleanup = installOptimizedDeclarativeForms(doc, context);
-        }
-    }
-    /**
-     * 卸载清理 WebMCP Polyfill
-     */
-    function cleanupWebMCPPolyfill() {
-        if (declarativeFormsCleanup) {
-            declarativeFormsCleanup();
-            declarativeFormsCleanup = null;
-        }
-        if (installedContext) {
-            StrictWebMCPContext.dispose(installedContext);
-            installedContext = null;
-        }
-        for (const { target, key, previous } of [...installedProperties].reverse()) {
-            if (previous) {
-                Object.defineProperty(target, key, previous);
-            }
-            else {
-                Reflect.deleteProperty(target, key);
-            }
-        }
-        installedProperties.length = 0;
-    }
-
-    /**
-     * 通用声明式 A2UI (Agent-to-User Interface) AST 渲染引擎
-     *
-     * 核心设计范式：
-     * 1. 彻底解耦业务逻辑与 UI 渲染，所有表单与交互均由 AST 抽象语法树驱动；
-     * 2. 响应式双向数据绑定 (Model 2-Way Binding)，字段修改自动同步至 ast.model；
-     * 3. 动态适配多种业务场景：多波次出差矩阵、常规通勤、项目归属决策等，零硬编码！
-     */
-    function renderA2UiFromAST(ast, options = {}) {
-        const card = document.createElement('div');
-        card.className = 'webmcp-a2ui-card';
-        card.id = ast.id || `a2ui-${Math.random().toString(36).slice(2, 8)}`;
-        const renderNode = (node) => {
-            switch (node.type) {
-                case 'header': {
-                    const header = document.createElement('div');
-                    header.className = 'webmcp-a2ui-header';
-                    const badge = node.props?.badge || ast.badge;
-                    const title = node.props?.title || ast.title;
-                    const desc = node.props?.desc || node.props?.description || ast.description;
-                    header.innerHTML = `
-                    ${badge ? `<div class="webmcp-a2ui-badge">${badge}</div>` : ''}
-                    <div class="webmcp-a2ui-title">
-                        <span>⚡</span>
-                        <span>${title}</span>
-                    </div>
-                    ${desc ? `<div class="webmcp-a2ui-desc">${desc}</div>` : ''}
-                `;
-                    return header;
-                }
-                case 'alert': {
-                    const alert = document.createElement('div');
-                    const variant = node.props?.variant || 'info';
-                    alert.className = `webmcp-a2ui-alert ${variant}`;
-                    const icon = variant === 'success' ? '✅' : variant === 'warn' ? '⚠️' : variant === 'error' ? '❌' : 'ℹ️';
-                    alert.innerHTML = `
-                    <span style="font-size: 14px; flex-shrink: 0;">${icon}</span>
-                    <div style="flex: 1;">
-                        ${node.props?.title ? `<div style="font-weight: 600; margin-bottom: 2px;">${node.props.title}</div>` : ''}
-                        <div style="line-height: 1.4;">${node.props?.message || ''}</div>
-                    </div>
-                `;
-                    return alert;
-                }
-                case 'trip-timeline': {
-                    const timeline = document.createElement('div');
-                    timeline.className = 'webmcp-a2ui-timeline';
-                    const rawTrips = node.props?.trips || [];
-                    const trips = rawTrips.map((t, i) => normalizeTripSegment(t, i + 1));
-                    timeline.innerHTML = `
-                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
-                        <span style="font-weight: 700; font-size: 12px; color: #334155;">✈️ 识别到的独立出差波次 (${trips.length} 轮):</span>
-                        <span style="font-size: 11px; color: #059669; font-weight: 600;">✓ 酒店与客户工厂已精准绑定</span>
-                    </div>
-                    ${trips.map((t, idx) => {
-                    let dateDisplay = '日期待定';
-                    if (t.startDate && t.endDate) {
-                        dateDisplay = (t.startDate === t.endDate) ? t.startDate : `${t.startDate} ~ ${t.endDate}`;
-                    }
-                    else if (t.startDate) {
-                        dateDisplay = t.startDate;
-                    }
-                    else if (t.endDate) {
-                        dateDisplay = t.endDate;
-                    }
-                    const destDisplay = t.destination ? `📍 ${t.destination}` : '📍 目的地待定';
-                    const hubDisplay = (t.arrivalStation || t.stationOrAirport) ? `🚆/✈️ ${t.arrivalStation || t.stationOrAirport}` : '';
-                    const hotelDisplay = t.hotelName ? `🏨 ${t.hotelName}` : '🏨 自理/未定';
-                    const custDisplay = (t.targetFactories || t.customerName) ? `🏭 ${t.targetFactories || t.customerName}` : '🏭 客户据点待定';
-                    return `
-                        <div class="webmcp-a2ui-timeline-item">
-                            <span class="webmcp-a2ui-wave-badge">第 ${t.tripNo || idx + 1} 波</span>
-                            <span class="webmcp-a2ui-wave-date">${dateDisplay}</span>
-                            <span class="webmcp-a2ui-wave-dest">${destDisplay}</span>
-                            ${hubDisplay ? `<span class="webmcp-a2ui-wave-hub" style="font-size: 11px; background: #e0f2fe; color: #0369a1; padding: 2px 6px; border-radius: 4px; font-weight: 500;">${hubDisplay}</span>` : ''}
-                            <span class="webmcp-a2ui-wave-hotel">${hotelDisplay}</span>
-                            <span class="webmcp-a2ui-wave-customer" title="${t.targetFactories || t.customerName || ''}">${custDisplay}</span>
-                        </div>
-                        `;
-                }).join('')}
-                `;
-                    return timeline;
-                }
-                case 'grid': {
-                    const grid = document.createElement('div');
-                    grid.className = 'webmcp-a2ui-grid';
-                    const cols = node.props?.columns || 2;
-                    grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
-                    if (node.props?.gap)
-                        grid.style.gap = node.props.gap;
-                    if (node.children) {
-                        node.children.forEach(c => grid.appendChild(renderNode(c)));
-                    }
-                    return grid;
-                }
-                case 'group': {
-                    const grp = document.createElement('div');
-                    grp.className = 'webmcp-a2ui-group';
-                    if (node.props?.title) {
-                        const t = document.createElement('div');
-                        t.style.fontWeight = '600';
-                        t.style.fontSize = '12px';
-                        t.style.marginBottom = '6px';
-                        t.textContent = node.props.title;
-                        grp.appendChild(t);
-                    }
-                    if (node.children) {
-                        node.children.forEach(c => grp.appendChild(renderNode(c)));
-                    }
-                    return grp;
-                }
-                case 'input': {
-                    const wrap = document.createElement('div');
-                    wrap.className = 'webmcp-a2ui-field';
-                    wrap.style.position = 'relative';
-                    const bindKey = node.bind || '';
-                    const curVal = (bindKey && ast.model[bindKey] !== undefined) ? ast.model[bindKey] : (node.props?.defaultValue || '');
-                    if (node.props?.label) {
-                        const lbl = document.createElement('label');
-                        lbl.className = 'webmcp-a2ui-label';
-                        lbl.textContent = node.props.label;
-                        wrap.appendChild(lbl);
-                    }
-                    const inp = document.createElement('input');
-                    inp.type = node.props?.inputType || 'text';
-                    inp.className = 'webmcp-a2ui-input';
-                    inp.value = curVal;
-                    if (node.props?.placeholder)
-                        inp.placeholder = node.props.placeholder;
-                    if (node.props?.disabled)
-                        inp.disabled = true;
-                    inp.addEventListener('input', () => {
-                        if (bindKey) {
-                            ast.model[bindKey] = inp.value;
-                            options.onChange?.(bindKey, inp.value, ast.model);
-                        }
-                    });
-                    wrap.appendChild(inp);
-                    // ==========================================
-                    // 宿主系统项目维表实时检索与下拉候选 (0 硬编码，动态模糊匹配)
-                    // ==========================================
-                    if (bindKey === 'projectName' || node.props?.isProjectSearch) {
-                        const dropdown = document.createElement('div');
-                        dropdown.className = 'webmcp-a2ui-dropdown';
-                        dropdown.style.display = 'none';
-                        dropdown.style.position = 'absolute';
-                        dropdown.style.zIndex = '1050';
-                        dropdown.style.left = '0';
-                        dropdown.style.right = '0';
-                        dropdown.style.top = '100%';
-                        dropdown.style.maxHeight = '200px';
-                        dropdown.style.overflowY = 'auto';
-                        dropdown.style.background = '#ffffff';
-                        dropdown.style.border = '1px solid #cbd5e1';
-                        dropdown.style.borderRadius = '6px';
-                        dropdown.style.boxShadow = '0 6px 16px rgba(0,0,0,0.12)';
-                        dropdown.style.marginTop = '2px';
-                        wrap.appendChild(dropdown);
-                        let debounceTimer = null;
-                        const doSearch = (query) => {
-                            if (debounceTimer)
-                                clearTimeout(debounceTimer);
-                            debounceTimer = setTimeout(async () => {
-                                const effectiveState = options.state || window.__fssc_state;
-                                if (!effectiveState)
-                                    return;
-                                dropdown.style.display = 'block';
-                                dropdown.innerHTML = `
-                                <div style="padding: 8px 12px; color: #64748b; font-size: 11px; display: flex; align-items: center; gap: 6px;">
-                                    <span class="webmcp-spinner" style="width: 12px; height: 12px;"></span>
-                                    <span>正在检索系统项目维表...</span>
-                                </div>
-                            `;
-                                try {
-                                    const results = await searchProjectList(query, effectiveState);
-                                    if (!results || results.length === 0) {
-                                        dropdown.innerHTML = `
-                                        <div style="padding: 8px 12px; color: #94a3b8; font-size: 11px;">
-                                            未匹配到项目，请核对项目名称或编号
-                                        </div>
-                                    `;
-                                        return;
-                                    }
-                                    dropdown.innerHTML = results.map(item => `
-                                    <div class="webmcp-a2ui-proj-option" data-name="${item.name}" data-code="${item.code}" style="padding: 7px 10px; cursor: pointer; border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
-                                        <span style="font-weight: 500; color: #1e293b;">${item.name}</span>
-                                        <span style="font-size: 10.5px; color: #3b82f6; background: #eff6ff; padding: 2px 6px; border-radius: 4px;">${item.code || 'PRJ'}</span>
-                                    </div>
-                                `).join('');
-                                    dropdown.querySelectorAll('.webmcp-a2ui-proj-option').forEach(optEl => {
-                                        optEl.addEventListener('mouseenter', () => {
-                                            optEl.style.background = '#f8fafc';
-                                        });
-                                        optEl.addEventListener('mouseleave', () => {
-                                            optEl.style.background = '';
-                                        });
-                                        optEl.addEventListener('mousedown', (e) => {
-                                            e.preventDefault();
-                                            const name = optEl.getAttribute('data-name') || '';
-                                            inp.value = name;
-                                            ast.model[bindKey] = name;
-                                            const matched = results.find(r => r.name === name);
-                                            if (matched) {
-                                                effectiveState.selectedProject = {
-                                                    value: matched.id,
-                                                    title: matched.name,
-                                                    code: matched.code,
-                                                    vo: matched.vo
-                                                };
-                                            }
-                                            options.onChange?.(bindKey, name, ast.model);
-                                            dropdown.style.display = 'none';
-                                        });
-                                    });
-                                }
-                                catch (e) {
-                                    dropdown.innerHTML = `<div style="padding: 8px 12px; color: #ef4444; font-size: 11px;">项目查询失败: ${e.message}</div>`;
-                                }
-                            }, 250);
-                        };
-                        inp.addEventListener('focus', () => {
-                            if (inp.value.trim().length > 0) {
-                                doSearch(inp.value.trim());
-                            }
-                        });
-                        inp.addEventListener('input', () => {
-                            doSearch(inp.value.trim());
-                        });
-                        inp.addEventListener('blur', () => {
-                            setTimeout(() => {
-                                dropdown.style.display = 'none';
-                            }, 250);
-                        });
-                    }
-                    return wrap;
-                }
-                case 'select': {
-                    const wrap = document.createElement('div');
-                    wrap.className = 'webmcp-a2ui-field';
-                    const bindKey = node.bind || '';
-                    const curVal = (bindKey && ast.model[bindKey] !== undefined) ? ast.model[bindKey] : (node.props?.defaultValue || '');
-                    if (node.props?.label) {
-                        const lbl = document.createElement('label');
-                        lbl.className = 'webmcp-a2ui-label';
-                        lbl.textContent = node.props.label;
-                        wrap.appendChild(lbl);
-                    }
-                    const sel = document.createElement('select');
-                    sel.className = 'webmcp-a2ui-input';
-                    (node.props?.options || []).forEach((opt) => {
-                        const o = document.createElement('option');
-                        o.value = opt.value;
-                        o.textContent = opt.label;
-                        if (opt.value === curVal)
-                            o.selected = true;
-                        sel.appendChild(o);
-                    });
-                    sel.addEventListener('change', () => {
-                        if (bindKey) {
-                            ast.model[bindKey] = sel.value;
-                            options.onChange?.(bindKey, sel.value, ast.model);
-                        }
-                    });
-                    wrap.appendChild(sel);
-                    return wrap;
-                }
-                case 'toggle': {
-                    const wrap = document.createElement('div');
-                    wrap.className = 'webmcp-a2ui-mode-toggle';
-                    const bindKey = node.bind || '';
-                    const curVal = bindKey ? ast.model[bindKey] : '';
-                    const opts = node.props?.options || [];
-                    opts.forEach((opt) => {
-                        const btn = document.createElement('button');
-                        btn.type = 'button';
-                        btn.className = `webmcp-a2ui-mode-btn ${curVal === opt.value ? 'active' : ''}`;
-                        btn.innerHTML = `
-                        ${opt.icon ? `<span style="font-size: 14px;">${opt.icon}</span>` : ''}
-                        <div style="text-align: left;">
-                            <div style="font-weight: 600; font-size: 12px;">${opt.label}</div>
-                            ${opt.subLabel ? `<div style="font-size: 10.5px; opacity: 0.85;">${opt.subLabel}</div>` : ''}
-                        </div>
-                    `;
-                        btn.addEventListener('click', () => {
-                            if (bindKey) {
-                                ast.model[bindKey] = opt.value;
-                                wrap.querySelectorAll('.webmcp-a2ui-mode-btn').forEach(b => b.classList.remove('active'));
-                                btn.classList.add('active');
-                                options.onChange?.(bindKey, opt.value, ast.model);
-                            }
-                        });
-                        wrap.appendChild(btn);
-                    });
-                    return wrap;
-                }
-                case 'button-group': {
-                    const btnGroup = document.createElement('div');
-                    btnGroup.style.display = 'flex';
-                    btnGroup.style.gap = '8px';
-                    btnGroup.style.margin = '4px 0';
-                    if (node.children) {
-                        node.children.forEach(c => btnGroup.appendChild(renderNode(c)));
-                    }
-                    return btnGroup;
-                }
-                case 'button': {
-                    const btn = document.createElement('button');
-                    btn.type = 'button';
-                    if (node.id)
-                        btn.id = node.id;
-                    const styleType = node.props?.style || 'secondary';
-                    btn.className = `webmcp-btn ${styleType === 'primary' ? 'webmcp-btn-primary' : 'webmcp-btn-secondary'}`;
-                    if (styleType === 'success') {
-                        btn.style.background = 'linear-gradient(135deg, #10b981 0%, #059669 100%)';
-                        btn.style.color = '#ffffff';
-                        btn.style.border = 'none';
-                        btn.style.flex = '1.3';
-                    }
-                    else {
-                        btn.style.flex = '1';
-                    }
-                    btn.style.fontSize = '12px';
-                    btn.style.padding = '7px 12px';
-                    btn.innerHTML = `${node.props?.icon ? `<span>${node.props.icon}</span> ` : ''}${node.props?.label || '确定'}`;
-                    btn.addEventListener('click', () => {
-                        const actionKey = node.props?.actionKey || node.id;
-                        options.onAction?.(actionKey, ast.model, ast);
-                    });
-                    return btn;
-                }
-                case 'table': {
-                    const wrap = document.createElement('div');
-                    wrap.style.maxHeight = '220px';
-                    wrap.style.overflowY = 'auto';
-                    wrap.style.border = '1px solid #e2e8f0';
-                    wrap.style.borderRadius = '8px';
-                    wrap.style.fontSize = '11.5px';
-                    wrap.style.marginTop = '4px';
-                    const records = node.props?.records || [];
-                    const totalCount = node.props?.totalCount || records.length;
-                    wrap.innerHTML = `
-                    <table style="width: 100%; border-collapse: collapse; text-align: left;">
-                        <thead>
-                            <tr style="background: #f8fafc; border-bottom: 1px solid #e2e8f0; color: #64748b;">
-                                <th style="padding: 6px 8px;">#</th>
-                                <th style="padding: 6px 8px;">日期</th>
-                                <th style="padding: 6px 8px;">类别</th>
-                                <th style="padding: 6px 8px;">金额</th>
-                                <th style="padding: 6px 8px;">行程 (起 ➔ 止)</th>
-                                <th style="padding: 6px 8px;">费用说明</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${records.map((r, i) => `
-                                <tr style="border-bottom: 1px solid #f1f5f9; ${r.isModified ? 'background: #f0fdf4;' : ''}">
-                                    <td style="padding: 5px 8px; color: #94a3b8;">${i + 1}</td>
-                                    <td style="padding: 5px 8px; white-space: nowrap;">${r.invoiceDate || '-'}</td>
-                                    <td style="padding: 5px 8px;">
-                                        <span class="webmcp-tag" style="font-size: 10.5px;">${r.expenseTypeName || r.type || '出租车'}</span>
-                                        ${r.subInvoices && r.subInvoices.length > 0 ? `<span style="display:inline-block; font-size:10px; background:#e0e7ff; color:#4338ca; border-radius:3px; padding:1px 4px; margin-left:4px;" title="已绑定 ${r.subInvoices.length} 张过路费发票(¥${r.tollAmount || 0})">+${r.subInvoices.length}过路费</span>` : ''}
-                                        ${r.errorMessages && r.errorMessages.length > 0 ? `<span style="display:inline-block; font-size:9.5px; background:#fef2f2; color:#ef4444; border:1px solid #fecaca; border-radius:3px; padding:1px 4px; margin-left:4px;" title="${r.errorMessages.join(', ')}">⚠️ ${r.errorMessages[0]}</span>` : ''}
-                                    </td>
-                                    <td style="padding: 5px 8px; font-weight: 600;">¥${r.amount || 0}</td>
-                                    <td style="padding: 5px 8px; color: #334155;">${r.startAddress || '-'} ➔ ${r.endAddress || '-'}</td>
-                                    <td style="padding: 5px 8px; color: #64748b; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${r.description || ''}">${r.description || '-'}</td>
-                                </tr>
-                            `).join('')}
-                        </tbody>
-                    </table>
-                    ${totalCount > records.length ? `<div style="text-align: center; padding: 6px; color: #94a3b8; font-size: 11px;">还有 ${totalCount - records.length} 笔记录，可在报销批量助手中查看完整明细</div>` : ''}
-                `;
-                    return wrap;
-                }
-                case 'divider': {
-                    const hr = document.createElement('hr');
-                    hr.style.border = '0';
-                    hr.style.borderTop = '1px solid #e2e8f0';
-                    hr.style.margin = '8px 0';
-                    return hr;
-                }
-                default: {
-                    const div = document.createElement('div');
-                    div.id = node.id;
-                    if (node.children) {
-                        node.children.forEach(c => div.appendChild(renderNode(c)));
-                    }
-                    return div;
-                }
-            }
-        };
-        if (ast.layout) {
-            ast.layout.forEach(node => {
-                card.appendChild(renderNode(node));
-            });
-        }
-        return card;
-    }
-    /**
-     * 依据费用推断结果动态生成对应的声明式 A2UI AST
-     */
-    function generateExpenseBatchA2UiAST(planResult, state) {
-        const hasMatchedTrips = Boolean(planResult.matchedTrips && planResult.matchedTrips.length > 0);
-        const trips = planResult.matchedTrips || [];
-        const records = planResult.records || state.invoices || [];
-        const model = {
-            tripType: planResult.tripType,
-            companyName: planResult.companyName || 'IVISION',
-            customerName: planResult.customerName || '',
-            hotelName: planResult.hotelName || '',
-            stationOrAirport: planResult.stationOrAirport || '机场/高铁站',
-            projectName: planResult.projectName || '',
-            proxyPersonName: planResult.proxyPersonName || '',
-            customDescription: ''
-        };
-        const layout = [];
-        if (hasMatchedTrips) {
-            // ==========================================
-            // 场景 A: 已提供出差行程表或发票池自动聚类波次 (多波次精准对齐)
-            // ==========================================
-            layout.push({
-                id: 'header-wave',
-                type: 'header',
-                props: {
-                    title: '多波次出差行程与费用智能匹配',
-                    badge: 'A2UI 智能规划 (多波次对齐)',
-                    desc: `副驾已识别 <strong>${trips.length}</strong> 个独立出差波次，自动对齐 <strong>${records.length}</strong> 笔费用记录的酒店、交通枢纽及往返行程。`
-                }
-            });
-            if (planResult.missingFields && planResult.missingFields.length > 0) {
-                layout.push({
-                    id: 'alert-wave-missing',
-                    type: 'alert',
-                    props: {
-                        variant: 'warn',
-                        title: '建议确认或补充信息',
-                        message: `多波次已自动匹配。请在下方表单确认: ${planResult.missingFields.join('、')}`
-                    }
-                });
-            }
-            else {
-                layout.push({
-                    id: 'alert-wave-success',
-                    type: 'alert',
-                    props: {
-                        variant: 'success',
-                        title: '✅ 多波次行程自动匹配成功',
-                        message: '各波次的目的地、酒店与往返交通枢纽已精准匹配！请确认关联项目及代外驻同事姓名即可。'
-                    }
-                });
-            }
-            // 渲染独立卡片矩阵
-            layout.push({
-                id: 'timeline-trips',
-                type: 'trip-timeline',
-                props: {
-                    trips: trips
-                }
-            });
-            // 呈现需要用户决策的字段 (客户名称、项目号、外驻同事姓名、公司基准据点)
-            layout.push({
-                id: 'grid-wave-inputs',
-                type: 'grid',
-                props: { columns: 2 },
-                children: [
-                    {
-                        id: 'input-customer',
-                        type: 'input',
-                        bind: 'customerName',
-                        props: { label: '拜访客户名称 (可选)', placeholder: '例如: 某某科技、客户公司简称' }
-                    },
-                    {
-                        id: 'input-proj',
-                        type: 'input',
-                        bind: 'projectName',
-                        props: { label: '关联项目 (可选)', placeholder: '例如: PRJ-2026-001' }
-                    },
-                    {
-                        id: 'input-proxy',
-                        type: 'input',
-                        bind: 'proxyPersonName',
-                        props: { label: '代外驻同事报销 (可选)', placeholder: '外驻同事姓名，如: 张三' }
-                    },
-                    {
-                        id: 'input-company',
-                        type: 'input',
-                        bind: 'companyName',
-                        props: { label: '公司基准据点', placeholder: '默认 IVISION' }
-                    },
-                    {
-                        id: 'input-desc',
-                        type: 'input',
-                        bind: 'customDescription',
-                        props: { label: '统一费用说明 (可选)', placeholder: '留空则按 [外驻:姓名] 项目号 客户 自动组装' }
-                    }
-                ]
-            });
-        }
-        else {
-            // ==========================================
-            // 场景 B: 未提供行程表 (常规单程或市内拜访)
-            // ==========================================
-            layout.push({
-                id: 'header-normal',
-                type: 'header',
-                props: {
-                    title: '智能费用分类与行程推断',
-                    badge: 'A2UI 费用批量规划',
-                    desc: `已检测到 <strong>${records.length}</strong> 笔费用记录，已智能规划 <strong>${planResult.modifiedCount}</strong> 笔行程/类别。`
-                }
-            });
-            if (planResult.missingFields && planResult.missingFields.length > 0) {
-                layout.push({
-                    id: 'alert-missing',
-                    type: 'alert',
-                    props: {
-                        variant: 'warn',
-                        title: '建议补充关键出行信息',
-                        message: planResult.missingFields.join('、')
-                    }
-                });
-            }
-            layout.push({
-                id: 'toggle-mode',
-                type: 'toggle',
-                bind: 'tripType',
-                props: {
-                    options: [
-                        { value: 'BUSINESS_TRIP', label: '异地出差模式', subLabel: '机场/高铁 + 酒店早出晚归', icon: '✈️' },
-                        { value: 'LOCAL_COMMUTE', label: '市内日常拜访', subLabel: '公司 ⇄ 客户 日常往返', icon: '🏢' }
-                    ]
-                }
-            });
-            layout.push({
-                id: 'grid-normal-inputs',
-                type: 'grid',
-                props: { columns: 2 },
-                children: [
-                    {
-                        id: 'input-company',
-                        type: 'input',
-                        bind: 'companyName',
-                        props: { label: '公司基准地', placeholder: '默认 IVISION' }
-                    },
-                    {
-                        id: 'input-customer',
-                        type: 'input',
-                        bind: 'customerName',
-                        props: { label: '拜访客户名称', placeholder: '例如: 客户公司全称或简称' }
-                    },
-                    {
-                        id: 'input-hotel',
-                        type: 'input',
-                        bind: 'hotelName',
-                        props: { label: '入住酒店', placeholder: '例如: 某某酒店' }
-                    },
-                    {
-                        id: 'input-station',
-                        type: 'input',
-                        bind: 'stationOrAirport',
-                        props: { label: '机场/车站', placeholder: '例如: 机场 / 高铁站' }
-                    },
-                    {
-                        id: 'input-project',
-                        type: 'input',
-                        bind: 'projectName',
-                        props: { label: '关联项目 (可选)', placeholder: '例如: PRJ-2026-001' }
-                    },
-                    {
-                        id: 'input-proxy',
-                        type: 'input',
-                        bind: 'proxyPersonName',
-                        props: { label: '代外驻同事报销 (可选)', placeholder: '外驻同事姓名，如: 张三' }
-                    }
-                ]
-            });
-        }
-        if (planResult.hasConcurrentTolls && planResult.mergeTollsWithTaxi === undefined) {
-            layout.push({
-                id: 'alert-toll-inquiry',
-                type: 'alert',
-                props: {
-                    variant: 'warn',
-                    title: '❓ 发现有出租车发票同期的过路费是否合并生成？',
-                    message: `检测到发票清单中包含 <strong>${planResult.concurrentTollsCount || 1}</strong> 笔与出租车行程同期的过路费/通行费发票。您可以选择将过路费与出租车合并（1笔费用挂载2张发票），或独立逐条生成单笔费用。`
-                }
-            });
-            layout.push({
-                id: 'btn-group-toll-decision',
-                type: 'button-group',
-                children: [
-                    {
-                        id: 'btn-merge-tolls',
-                        type: 'button',
-                        props: { label: '🛣️ 合并生成 (1笔费用含多张发票)', style: 'primary', actionKey: 'applyMergeTolls' }
-                    },
-                    {
-                        id: 'btn-separate-tolls',
-                        type: 'button',
-                        props: { label: '📄 独立逐条生成 (每张独立单笔)', style: 'secondary', actionKey: 'applySeparateTolls' }
-                    }
-                ]
-            });
-        }
-        else if (planResult.boundTollsCount && planResult.boundTollsCount > 0) {
-            layout.push({
-                id: 'alert-toll-binding',
-                type: 'alert',
-                props: {
-                    variant: 'info',
-                    title: '🛣️ 过路费已智能合并绑定',
-                    message: `已自动将 <strong>${planResult.boundTollsCount}</strong> 张过路费/通行费发票按时间窗口合并至对应的出租车记录中（一笔费用合并多张发票）。如需改为独立生成，可随时切换。`
-                }
-            });
-            layout.push({
-                id: 'btn-group-toll-switch-sep',
-                type: 'button-group',
-                children: [
-                    {
-                        id: 'btn-switch-to-separate',
-                        type: 'button',
-                        props: { label: '📄 切换为独立逐条生成', style: 'secondary', actionKey: 'applySeparateTolls' }
-                    }
-                ]
-            });
-        }
-        else if (planResult.mergeTollsWithTaxi === false && (planResult.concurrentTollsCount || 0) > 0) {
-            layout.push({
-                id: 'alert-toll-separate',
-                type: 'alert',
-                props: {
-                    variant: 'info',
-                    title: '📄 过路费已独立逐条生成',
-                    message: `已将 <strong>${planResult.concurrentTollsCount}</strong> 张过路费/通行费发票保持为独立单笔费用记录（每张发票独立单笔）。如需改为与出租车合并，可随时切换。`
-                }
-            });
-            layout.push({
-                id: 'btn-group-toll-switch-merge',
-                type: 'button-group',
-                children: [
-                    {
-                        id: 'btn-switch-to-merge',
-                        type: 'button',
-                        props: { label: '🛣️ 切换为合并生成 (1笔多张发票)', style: 'secondary', actionKey: 'applyMergeTolls' }
-                    }
-                ]
-            });
-        }
-        // 底部操作按钮组
-        layout.push({
-            id: 'btn-group-actions',
-            type: 'button-group',
-            children: [
-                {
-                    id: 'btn-reinfer',
-                    type: 'button',
-                    props: { label: '重新推断', icon: '✨', style: 'secondary', actionKey: 'reinfer' }
-                },
-                {
-                    id: 'btn-open-modal',
-                    type: 'button',
-                    props: { label: '打开批量助手', icon: '📋', style: 'secondary', actionKey: 'openModal' }
-                },
-                {
-                    id: 'btn-batch-save',
-                    type: 'button',
-                    props: { label: '一键批量保存', icon: '🚀', style: 'success', actionKey: 'batchSave' }
-                }
-            ]
-        });
-        // 表格预览
-        layout.push({
-            id: 'table-preview',
-            type: 'table',
-            props: {
-                records: records.slice(0, 15),
-                totalCount: records.length
-            }
-        });
-        return {
-            version: '1.0',
-            id: `a2ui-exp-${Math.random().toString(36).slice(2, 8)}`,
-            title: hasMatchedTrips ? '多波次出差行程与费用智能匹配' : '智能费用分类与行程推断',
-            badge: hasMatchedTrips ? 'A2UI 智能规划 (多波次)' : 'A2UI 费用批量规划',
-            description: hasMatchedTrips ? `共匹配 ${trips.length} 轮独立行程` : `共检测 ${records.length} 笔费用`,
-            model,
-            layout
-        };
-    }
-    /**
-     * WebMCP A2UI 费用批量规划与行程推断交互组件 (由声明式 AST 驱动)
-     */
-    function renderA2UiExpenseBatchWidget(options) {
-        const { container, state, initialPlan, onReinfer, onOpenModal, onBatchSave } = options;
-        let currentPlan = initialPlan || state.expensePlan;
-        if (!currentPlan && state.invoices && state.invoices.length > 0) {
-            currentPlan = inferSmartExpensePlan(state.invoices, { tripType: 'AUTO' });
-            state.expensePlan = currentPlan;
-        }
-        const wrapper = document.createElement('div');
-        wrapper.className = 'webmcp-a2ui-widget-wrapper';
-        const render = () => {
-            wrapper.innerHTML = '';
-            if (!currentPlan)
-                return;
-            const ast = generateExpenseBatchA2UiAST(currentPlan, state);
-            currentPlan.a2uiAST = ast;
-            const cardEl = renderA2UiFromAST(ast, {
-                state,
-                onAction: async (actionKey, model) => {
-                    if (actionKey === 'reinfer') {
-                        const newOpts = {
-                            tripType: model.tripType,
-                            companyName: model.companyName,
-                            customerName: model.customerName,
-                            hotelName: model.hotelName,
-                            stationOrAirport: model.stationOrAirport,
-                            projectName: model.projectName,
-                            proxyPersonName: model.proxyPersonName,
-                            customDescription: model.customDescription,
-                            trips: currentPlan?.matchedTrips
-                        };
-                        currentPlan = inferSmartExpensePlan(state.invoices || [], newOpts);
-                        state.expensePlan = currentPlan;
-                        if (onReinfer)
-                            onReinfer(newOpts);
-                        render();
-                        showToast('success', `已根据最新输入重新推断 (规划 ${currentPlan.modifiedCount} 笔)`);
-                    }
-                    else if (actionKey === 'applyMergeTolls') {
-                        const newOpts = {
-                            ...model,
-                            mergeTollsWithTaxi: true,
-                            trips: currentPlan?.matchedTrips
-                        };
-                        currentPlan = inferSmartExpensePlan(state.invoices || [], newOpts);
-                        state.expensePlan = currentPlan;
-                        render();
-                        showToast('success', '已合并同期过路费与出租车发票（1笔费用挂载多张发票）');
-                    }
-                    else if (actionKey === 'applySeparateTolls') {
-                        const newOpts = {
-                            ...model,
-                            mergeTollsWithTaxi: false,
-                            trips: currentPlan?.matchedTrips
-                        };
-                        currentPlan = inferSmartExpensePlan(state.invoices || [], newOpts);
-                        state.expensePlan = currentPlan;
-                        render();
-                        showToast('info', '已按独立单笔费用生成过路费发票（每张发票独立单笔）');
-                    }
-                    else if (actionKey === 'openModal') {
-                        if (onOpenModal)
-                            onOpenModal();
-                        else {
-                            const topDoc = (typeof window !== 'undefined' && window.top?.document) ? window.top.document : document;
-                            Promise.resolve().then(function () { return batchEditExpenseModal; }).then(m => m.openBatchEditExpenseModal(topDoc));
-                        }
-                    }
-                    else if (actionKey === 'batchSave') {
-                        try {
-                            if (onBatchSave) {
-                                await onBatchSave();
-                            }
-                            else {
-                                const sourceInvoices = state.expensePlan?.records || state.invoices || [];
-                                const targets = sourceInvoices.filter(i => i.isModified || i.status === '就绪' || i.status === '待流转');
-                                const fallbackTargets = targets.length > 0 ? targets : sourceInvoices;
-                                if (fallbackTargets.length === 0) {
-                                    showToast('error', '批量保存失败: 没有找到可保存的费用记录，请先加载发票数据');
-                                    render();
-                                    return;
-                                }
-                                const res = await batchSaveExpenseItemsApi(fallbackTargets, state);
-                                showToast('success', `批量保存完成！成功 ${res.successCount} 笔，失败 ${res.failCount} 笔`);
-                            }
-                            render();
-                        }
-                        catch (err) {
-                            showToast('error', `批量保存异常: ${err.message}`);
-                        }
-                    }
-                },
-                onChange: (bindKey, value, model) => {
-                    // 如果用户切换了 tripType 模式，自动触发重新推断
-                    if (bindKey === 'tripType') {
-                        const newOpts = {
-                            ...model,
-                            tripType: value,
-                            trips: currentPlan?.matchedTrips
-                        };
-                        currentPlan = inferSmartExpensePlan(state.invoices || [], newOpts);
-                        state.expensePlan = currentPlan;
-                        if (onReinfer)
-                            onReinfer(newOpts);
-                        render();
-                    }
-                }
-            });
-            wrapper.appendChild(cardEl);
-        };
-        render();
-        container.appendChild(wrapper);
-        return wrapper;
-    }
-
-    const TRAJECTORY_STATE = {
-        currentRunId: generateRunId(),
-        events: [],
-        listeners: [],
-        sequenceCounter: 0
-    };
-    function generateRunId() {
-        const d = new Date();
-        const pad = (n) => String(n).padStart(2, '0');
-        const timeStr = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
-        const rand = Math.random().toString(36).substring(2, 6);
-        return `run-${timeStr}-${rand}`;
-    }
-    function formatTimestamp(d) {
-        const pad = (n) => String(n).padStart(2, '0');
-        const padMs = (n) => String(n).padStart(3, '0');
-        return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${padMs(d.getMilliseconds())}`;
-    }
-    /**
-     * 追加单条运行事件 (Append-Only Event Stream)
-     * 符合 DeepSeek Harness 规范：模型看到的以及做出的每一个动作均记录在此
-     */
-    function recordTrajectoryEvent(params) {
-        const now = new Date();
-        TRAJECTORY_STATE.sequenceCounter++;
-        const event = {
-            id: `evt-${now.getTime()}-${Math.random().toString(36).substring(2, 7)}`,
-            runId: params.runId || TRAJECTORY_STATE.currentRunId,
-            sequenceNo: TRAJECTORY_STATE.sequenceCounter,
-            timestamp: formatTimestamp(now),
-            epochMs: now.getTime(),
-            source: params.source,
-            title: params.title,
-            summary: params.summary,
-            durationMs: params.durationMs,
-            data: params.data ?? null,
-            meta: params.meta
-        };
-        // 内存不可变追加
-        TRAJECTORY_STATE.events.push(event);
-        // 限制最大缓存事件数，防止超长会话内存泄漏 (保留最近 2000 个事件)
-        if (TRAJECTORY_STATE.events.length > 2000) {
-            TRAJECTORY_STATE.events.shift();
-        }
-        // 触发订阅者更新
-        TRAJECTORY_STATE.listeners.forEach(cb => {
-            try {
-                cb(event);
-            }
-            catch (e) {
-                console.error('[Trajectory] 触发监听回调异常', e);
-            }
-        });
-        return event;
-    }
-
-    const WEBMCP_STATE = {
-        initialized: false,
-        registeredTools: [],
-        toolDefs: [],
-        toolMap: new Map(),
-        logs: [],
-        listeners: []
-    };
-    function recordLog(log) {
-        WEBMCP_STATE.logs.unshift(log);
-        if (WEBMCP_STATE.logs.length > 50)
-            WEBMCP_STATE.logs.pop();
-        WEBMCP_STATE.listeners.forEach(cb => {
-            try {
-                cb(log);
-            }
-            catch (e) { }
-        });
-        // 同时录入 DeepSeek Harness 风格的全局 Trajectory 事件流
-        recordTrajectoryEvent({
-            source: log.error ? 'ERROR' : (log.toolName === 'fssc_get_applicant_context' ? 'CONTEXT' : 'TOOL_RESULT'),
-            title: `WebMCP Tool: ${log.toolName}`,
-            summary: log.error ? `Error: ${log.error}` : `Success (${log.durationMs}ms)`,
-            durationMs: log.durationMs,
-            data: {
-                toolName: log.toolName,
-                parameters: log.parameters,
-                result: log.result,
-                error: log.error
-            }
-        });
-    }
-    /**
-     * 初始化 WebMCP Polyfill 并向 document.modelContext 注册出差申请全套工具集 (通用动态架构)
-     */
-    function initWebMcpSystem(state) {
-        if (WEBMCP_STATE.initialized)
-            return;
-        try {
-            // 1. 激活高性能 W3C WebMCP 标准 Polyfill (纯编程式注册，免除声明式表单的全文档 DOM 监听)
-            initializeWebMCPPolyfill({ declarativeForms: false });
-            AutopilotLogger.info('[WebMCP] document.modelContext polyfill 已就绪');
-        }
-        catch (e) {
-            AutopilotLogger.warn(`[WebMCP] 初始化 Polyfill 异常: ${e.message}`);
-        }
-        const doc = document;
-        const hasModelContext = Boolean(doc.modelContext && typeof doc.modelContext.registerTool === 'function');
-        if (!hasModelContext) {
-            AutopilotLogger.warn('[WebMCP] 当前环境未检测到 document.modelContext.registerTool，使用内部注册模式');
-        }
-        // 2. 注册通用 WebMCP 工具集
-        const tools = [
-            {
-                name: 'fssc_get_applicant_context',
-                description: '动态获取当前登录用户主数据（姓名/工号/邮箱）、出差单据模板定义与公司差旅报销规程标准',
-                inputSchema: {
-                    type: 'object',
-                    properties: {}
-                },
-                execute: async () => {
-                    const startTime = Date.now();
-                    const userInfo = await fetchLoginUserInfo(state);
-                    const res = {
-                        currentUser: {
-                            userId: userInfo.userId || state.applicantId,
-                            name: userInfo.userName,
-                            userCode: userInfo.userCode || '',
-                            email: userInfo.email || ''
-                        },
-                        billDefine: {
-                            billDefineId: TRIP_CONSTANTS.billDefineId,
-                            billDefineName: '出張伺書',
-                            billTypeCode: TRIP_CONSTANTS.billTypeCode
-                        },
-                        regulations: {
-                            hotelAllowance: {
-                                tier1Cities: ['上海', '广州', '北京', '深圳'],
-                                tier1Limit: 800,
-                                tier2Limit: 700
-                            },
-                            mealAllowance: {
-                                standardDaily: 300,
-                                travelHalfDay: 150
-                            }
-                        }
-                    };
-                    recordLog({
-                        id: Math.random().toString(36).substring(2, 9),
-                        timestamp: new Date().toLocaleTimeString(),
-                        toolName: 'fssc_get_applicant_context',
-                        parameters: {},
-                        result: res,
-                        durationMs: Date.now() - startTime
-                    });
-                    return res;
-                }
-            },
-            {
-                name: 'fssc_query_employee',
-                description: '在元年云人员维表中检索任意员工账号（用于驻场同事、项目组成员的出差代办申请）',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        name: { type: 'string', description: '员工姓名，例如：张三、李四等' }
-                    },
-                    required: ['name']
-                },
-                execute: async (params) => {
-                    const startTime = Date.now();
-                    try {
-                        const vo = await fetchPersonnelVO(params.name, state);
-                        const res = { success: true, person: vo };
-                        recordLog({
-                            id: Math.random().toString(36).substring(2, 9),
-                            timestamp: new Date().toLocaleTimeString(),
-                            toolName: 'fssc_query_employee',
-                            parameters: params,
-                            result: res,
-                            durationMs: Date.now() - startTime
-                        });
-                        return res;
-                    }
-                    catch (err) {
-                        recordLog({
-                            id: Math.random().toString(36).substring(2, 9),
-                            timestamp: new Date().toLocaleTimeString(),
-                            toolName: 'fssc_query_employee',
-                            parameters: params,
-                            error: err.message,
-                            durationMs: Date.now() - startTime
-                        });
-                        throw err;
-                    }
-                }
-            },
-            {
-                name: 'fssc_query_city',
-                description: '在城市维表中检索城市代码与维表对象（用于旅程明细 F_FROM / F_TO）',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        cityName: { type: 'string', description: '城市名称，如 北京、上海、广州、深圳、天津、合肥等' }
-                    },
-                    required: ['cityName']
-                },
-                execute: async (params) => {
-                    const startTime = Date.now();
-                    const vo = await fetchCityVO(params.cityName, state);
-                    const res = { success: true, city: vo };
-                    recordLog({
-                        id: Math.random().toString(36).substring(2, 9),
-                        timestamp: new Date().toLocaleTimeString(),
-                        toolName: 'fssc_query_city',
-                        parameters: params,
-                        result: res,
-                        durationMs: Date.now() - startTime
-                    });
-                    return res;
-                }
-            },
-            {
-                name: 'fssc_query_project',
-                description: '在项目维表中检索任意项目对象（用于预算区 DIM_PROJECT 联动归属）',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        projectNameOrCode: { type: 'string', description: '项目名称或项目编号（如 P2026-001 等）' }
-                    },
-                    required: ['projectNameOrCode']
-                },
-                execute: async (params) => {
-                    const startTime = Date.now();
-                    const vo = await fetchProjectVO(params.projectNameOrCode, state);
-                    if (vo) {
-                        state.selectedProject = {
-                            value: vo.value,
-                            title: vo.title?.zh_CN || vo.title
-                        };
-                    }
-                    const res = { success: Boolean(vo), project: vo };
-                    recordLog({
-                        id: Math.random().toString(36).substring(2, 9),
-                        timestamp: new Date().toLocaleTimeString(),
-                        toolName: 'fssc_query_project',
-                        parameters: params,
-                        result: res,
-                        durationMs: Date.now() - startTime
-                    });
-                    return res;
-                }
-            },
-            {
-                name: 'fssc_query_historical_applications',
-                description: '查询元年云系统中当前用户已保存（未提交草稿）或已提交的历史出差申请单据，用于规划时交叉对比排重',
-                inputSchema: {
-                    type: 'object',
-                    properties: {}
-                },
-                execute: async () => {
-                    const startTime = Date.now();
-                    const bills = await fetchHistoricalTripApplications(state);
-                    const res = { total: bills.length, list: bills };
-                    recordLog({
-                        id: Math.random().toString(36).substring(2, 9),
-                        timestamp: new Date().toLocaleTimeString(),
-                        toolName: 'fssc_query_historical_applications',
-                        parameters: {},
-                        result: { total: bills.length, sample: bills.slice(0, 3) },
-                        durationMs: Date.now() - startTime
-                    });
-                    return res;
-                }
-            },
-            {
-                name: 'fssc_plan_trip_applications',
-                description: '通用智能差旅规划算力：基于动态行程列表（或表格文本解析），测算住宿、误餐、交通票价及市内弹性Buffer，生成可入库的出差申请单清单。注意：同一目的城市多次往返视为多轮独立出差，必须作为独立项传入，严禁合并！',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        trips: {
-                            type: 'array',
-                            description: '动态差旅行程列表。每一项代表一轮独立的往返出差（完整闭环）。同一目的地城市在不同时间段多次往返必须作为多项分别传入，绝不能合并！',
-                            items: {
-                                type: 'object',
-                                properties: {
-                                    tripNo: { type: 'number', description: '出差轮次编号 (如第1轮为1，第2轮为2... 同一目的城市多次往返必须赋予不同的tripNo，绝不能合并)' },
-                                    applicantName: { type: 'string', description: '出行人姓名或主申请人' },
-                                    isProxy: { type: 'boolean', description: '是否为代办' },
-                                    destination: { type: 'string', description: '目的地城市' },
-                                    startDate: { type: 'string', description: '出差开始日期 (YYYY-MM-DD)' },
-                                    endDate: { type: 'string', description: '出差结束日期 (YYYY-MM-DD)' },
-                                    purpose: { type: 'string', description: '出差事由' },
-                                    targetFactories: { type: 'string', description: '调研公司/工厂/据点名称 (例如 某某据点、客户工厂、科技园区)' },
-                                    hotelName: { type: 'string', description: '入住酒店名称 (例如 亚朵酒店、美悦酒店)' },
-                                    travelers: { type: 'array', items: { type: 'string' }, description: '本轮同行出差人员名单(含正社员与外驻)' },
-                                    legs: {
-                                        type: 'array',
-                                        description: '往返大交通明细(飞机/高铁)',
-                                        items: {
-                                            type: 'object',
-                                            properties: {
-                                                date: { type: 'string' },
-                                                fromCity: { type: 'string' },
-                                                toCity: { type: 'string' },
-                                                transport: { type: 'string' },
-                                                flightOrTrain: { type: 'string' },
-                                                travelerName: { type: 'string' }
-                                            }
-                                        }
-                                    },
-                                    baseTrafficFee: { type: 'number', description: '预估往返交通费' },
-                                    hotelPricePerNight: { type: 'number', description: '每晚住宿限额标准(可选)' },
-                                    projectName: { type: 'string', description: '归属项目名称或代码(可选)' }
-                                },
-                                required: ['applicantName', 'destination', 'startDate', 'endDate']
-                            }
-                        },
-                        itineraryText: {
-                            type: 'string',
-                            description: '如果用户上传或粘贴了表格文本或 CSV，可传入直接解析'
-                        },
-                        combineApplications: {
-                            type: 'boolean',
-                            description: '是否由正社员统一提单，合并同行外驻人员预算与多行旅程为单张申请单 (依据用户最新规约，默认 true)'
-                        },
-                        mainApplicantName: {
-                            type: 'string',
-                            description: '正社员(主申请人)姓名，若未提供则自动匹配当前登录用户'
-                        },
-                        cityBufferPerDay: { type: 'number', description: '市内交通Buffer(元/天)，默认100' },
-                        trafficBufferPercent: { type: 'number', description: '交通改签弹性Buffer比例(0~0.5)，默认0.15' },
-                        defaultProject: { type: 'string', description: '默认归属项目' }
-                    }
-                },
-                execute: async (params) => {
-                    const startTime = Date.now();
-                    const cityBuf = params.cityBufferPerDay ?? 100;
-                    const trafBuf = params.trafficBufferPercent ?? 0.15;
-                    const shouldCombine = params.combineApplications !== false; // 默认按新规约合并
-                    const userInfo = await fetchLoginUserInfo(state);
-                    const mainApplicant = params.mainApplicantName || userInfo.userName || state.currentUser?.userName || '';
-                    let inputs = [];
-                    if (params.itineraryText) {
-                        inputs.push(...parseItineraryTable(params.itineraryText));
-                    }
-                    if (params.trips && Array.isArray(params.trips)) {
-                        inputs.push(...params.trips);
-                    }
-                    // 如果未传入 trips，但之前已解析过状态，则对现有行程重新应用 Buffer
-                    if (inputs.length === 0 && state.tripApp && state.tripApp.rawInputs && state.tripApp.rawInputs.length > 0) {
-                        inputs = state.tripApp.rawInputs;
-                    }
-                    else if (inputs.length === 0 && state.tripApp && state.tripApp.configs.length > 0) {
-                        inputs = state.tripApp.configs.map(c => ({
-                            tripNo: c.tripNo,
-                            applicantName: c.applicantName,
-                            isProxy: c.isProxy,
-                            destination: c.destination,
-                            startDate: c.startDate,
-                            endDate: c.endDate,
-                            purpose: c.purpose,
-                            targetFactories: c.targetFactories,
-                            hotelName: c.hotelName,
-                            travelers: c.travelers,
-                            baseTrafficFee: c.trafficFee - c.trafficBuffer,
-                            projectName: c.projectName,
-                            legs: c.legs
-                        }));
-                    }
-                    // 如果传入了默认项目，赋给未指定项目的行
-                    if (params.defaultProject) {
-                        inputs.forEach(inp => {
-                            if (!inp.projectName)
-                                inp.projectName = params.defaultProject;
-                        });
-                    }
-                    let configs = [];
-                    if (shouldCombine) {
-                        configs = combineTripsForMainApplicant(inputs, mainApplicant, cityBuf, trafBuf);
-                    }
-                    else {
-                        configs = inputs.map((inp, idx) => createDynamicTripConfig(inp, cityBuf, trafBuf, idx + 1));
-                    }
-                    // 核心特性：自动拉取元年历史出差申请单并与本次规划进行交叉对比排重
-                    let historyBills = [];
-                    try {
-                        historyBills = await fetchHistoricalTripApplications(state);
-                        crossCheckWithHistoricalApplications(configs, historyBills);
-                    }
-                    catch (e) {
-                        AutopilotLogger.warn(`[WebMCP] 历史单据交叉比对失败: ${e.message}`);
-                    }
-                    if (!state.tripApp) {
-                        state.tripApp = {
-                            configs: [],
-                            rawInputs: inputs,
-                            mode: shouldCombine ? 'COMBINED' : 'SEPARATE',
-                            selectedTripIds: new Set(),
-                            isProcessing: false,
-                            progressText: '',
-                            cityBufferPerDay: cityBuf,
-                            trafficBufferPercent: trafBuf,
-                            cityCache: {},
-                            personCache: {},
-                            projectCache: {}
-                        };
-                    }
-                    state.tripApp.rawInputs = inputs;
-                    state.tripApp.mode = shouldCombine ? 'COMBINED' : 'SEPARATE';
-                    state.tripApp.configs = configs;
-                    state.tripApp.selectedTripIds = new Set(configs.map(c => c.id));
-                    state.tripApp.cityBufferPerDay = cityBuf;
-                    state.tripApp.trafficBufferPercent = trafBuf;
-                    const totalAmount = configs.reduce((s, c) => s + c.totalAmount, 0);
-                    const res = {
-                        totalBills: configs.length,
-                        mode: state.tripApp.mode,
-                        combined: shouldCombine,
-                        totalBudgetWithBuffer: totalAmount,
-                        bufferSettings: { cityBufferPerDay: cityBuf, trafficBufferPercent: trafBuf },
-                        historicalBillsCount: historyBills.length,
-                        configs: configs
-                    };
-                    recordLog({
-                        id: Math.random().toString(36).substring(2, 9),
-                        timestamp: new Date().toLocaleTimeString(),
-                        toolName: 'fssc_plan_trip_applications',
-                        parameters: { count: configs.length, combined: shouldCombine, cityBuf, trafBuf },
-                        result: { totalBills: configs.length, mode: state.tripApp.mode, totalBudgetWithBuffer: totalAmount },
-                        durationMs: Date.now() - startTime
-                    });
-                    return res;
-                }
-            },
-            {
-                name: 'fssc_create_trip_draft',
-                description: '向元年云系统保存创建单张出差申请单草稿（commit: false，仅保存草稿入库，绝不提交审批）',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        tripConfig: { type: 'object', description: '单张出差申请的配置对象' }
-                    },
-                    required: ['tripConfig']
-                },
-                execute: async (params) => {
-                    const startTime = Date.now();
-                    try {
-                        const res = await createSingleTripApplicationApi(params.tripConfig, state);
-                        recordLog({
-                            id: Math.random().toString(36).substring(2, 9),
-                            timestamp: new Date().toLocaleTimeString(),
-                            toolName: 'fssc_create_trip_draft',
-                            parameters: { applicant: params.tripConfig.applicantName, destination: params.tripConfig.destination },
-                            result: res,
-                            durationMs: Date.now() - startTime
-                        });
-                        return res;
-                    }
-                    catch (err) {
-                        recordLog({
-                            id: Math.random().toString(36).substring(2, 9),
-                            timestamp: new Date().toLocaleTimeString(),
-                            toolName: 'fssc_create_trip_draft',
-                            parameters: { applicant: params.tripConfig.applicantName, destination: params.tripConfig.destination },
-                            error: err.message,
-                            durationMs: Date.now() - startTime
-                        });
-                        throw err;
-                    }
-                }
-            },
-            {
-                name: 'fssc_batch_create_trip_drafts',
-                description: '批量向元年云写入出差申请单草稿（需审批门禁，执行批量入库）',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        tripConfigs: { type: 'array', description: '已规划的出差申请单列表' }
-                    },
-                    required: ['tripConfigs']
-                },
-                execute: async (params) => {
-                    const startTime = Date.now();
-                    const results = [];
-                    const errors = [];
-                    let successCount = 0;
-                    let failCount = 0;
-                    for (const config of params.tripConfigs) {
-                        const r = await createSingleTripApplicationApi(config, state);
-                        if (r.success) {
-                            successCount++;
-                            results.push({ billCode: r.billCode, applicant: config.applicantName, destination: config.destination });
-                        }
-                        else {
-                            failCount++;
-                            errors.push({
-                                tripNo: config.tripNo,
-                                applicant: config.applicantName,
-                                destination: config.destination,
-                                error: r.message || '保存单据时出错'
-                            });
-                        }
-                        await new Promise(res => setTimeout(res, 400));
-                    }
-                    const res = {
-                        total: params.tripConfigs.length,
-                        successCount,
-                        failCount,
-                        createdBills: results,
-                        errors: errors
-                    };
-                    if (errors.length > 0) {
-                        recordTrajectoryEvent({
-                            source: 'ERROR',
-                            title: `Batch Draft Creation (${errors.length}/${params.tripConfigs.length} failed)`,
-                            summary: `批量创建出差申请草稿异常: ${errors.map(e => `Trip ${e.tripNo || '?'}[${e.destination}]: ${e.error}`).join('; ')}`,
-                            data: { errors, total: params.tripConfigs.length, successCount, failCount }
-                        });
-                    }
-                    recordLog({
-                        id: Math.random().toString(36).substring(2, 9),
-                        timestamp: new Date().toLocaleTimeString(),
-                        toolName: 'fssc_batch_create_trip_drafts',
-                        parameters: { count: params.tripConfigs.length },
-                        result: res,
-                        durationMs: Date.now() - startTime
-                    });
-                    return res;
-                }
-            },
-            {
-                name: 'fssc_query_pending_expenses',
-                description: '查询发票夹待处理发票及未报销费用记录列表（包含金额、日期、OCR上下车时间、里程、出发到达地及当前费用类型）',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        forceRefresh: { type: 'boolean', description: '是否强制从后端API重新拉取' }
-                    }
-                },
-                execute: async (params) => {
-                    const startTime = Date.now();
-                    try {
-                        // 若当前内存中无发票数据或要求强制刷新，自动穿透后端 API 拉取发票夹池与费用记录
-                        if (!state.invoices || state.invoices.length === 0 || params.forceRefresh) {
-                            await loadAllInvoicesAndExpenses(state);
-                        }
-                        // 容灾与场景适配：若发票夹与费用记录列表返回0条，检测是否在报销单编辑页 (#billWrite)
-                        if (!state.invoices || state.invoices.length === 0) {
-                            let billMainId = state.currentBillMainId;
-                            if (!billMainId) {
-                                const hash = window.location.hash || '';
-                                const match = hash.match(/billMainId=([a-zA-Z0-9_\-]+)/) || hash.match(/id=([a-zA-Z0-9_\-]+)/);
-                                if (match)
-                                    billMainId = match[1];
-                            }
-                            if (!billMainId) {
-                                const search = window.location.search || '';
-                                const match = search.match(/billMainId=([a-zA-Z0-9_\-]+)/) || search.match(/id=([a-zA-Z0-9_\-]+)/);
-                                if (match)
-                                    billMainId = match[1];
-                            }
-                            if (billMainId && (!state.billRows || state.billRows.length === 0)) {
-                                try {
-                                    const { billData } = await fetchBillDataAndTemplateApi(billMainId, state);
-                                    state.currentBillData = billData;
-                                    const parsed = parseBillDataStructure(billData);
-                                    state.billRows = parsed.billRows;
-                                    state.billTags = parsed.billTags;
-                                }
-                                catch (e) {
-                                    AutopilotLogger.warn(`[WebMCP] 自动拉取报销单明细行失败: ${e.message}`);
-                                }
-                            }
-                            if (state.billRows && state.billRows.length > 0) {
-                                state.invoices = state.billRows.map((row, idx) => ({
-                                    id: row.claimRowId || `bill-row-${idx}`,
-                                    expenseRecordId: row.claimRowId,
-                                    invoiceDate: '',
-                                    amount: row.amount,
-                                    type: detectInvoiceCategory({}, {}, row.expTypeName),
-                                    expenseTypeName: row.expTypeName || '市内交通费',
-                                    startAddress: '',
-                                    endAddress: '',
-                                    description: row.recDesc || '',
-                                    status: '就绪',
-                                    isModified: false
-                                }));
-                            }
-                        }
-                        const errorItems = (state.invoices || []).filter(inv => inv.errorMessages && inv.errorMessages.length > 0);
-                        const list = (state.invoices || []).map((inv, idx) => ({
-                            index: idx,
-                            recordId: inv.expenseRecordId || '',
-                            date: inv.invoiceDate,
-                            amount: inv.amount,
-                            type: inv.type,
-                            typeName: inv.expenseTypeName || inv.type,
-                            startAddress: inv.startAddress || '',
-                            endAddress: inv.endAddress || '',
-                            description: inv.description || '',
-                            timeGetOn: inv.timeGetOn || '',
-                            timeGetOff: inv.timeGetOff || '',
-                            mileage: inv.mileage || '',
-                            status: inv.status,
-                            errorMessages: inv.errorMessages || []
-                        }));
-                        const res = {
-                            total: list.length,
-                            hasErrors: errorItems.length > 0,
-                            errorCount: errorItems.length,
-                            errorSummary: errorItems.map(e => ({ recordId: e.expenseRecordId, type: e.type, errors: e.errorMessages })),
-                            invoices: list
-                        };
-                        recordLog({
-                            id: Math.random().toString(36).substring(2, 9),
-                            timestamp: new Date().toLocaleTimeString(),
-                            toolName: 'fssc_query_pending_expenses',
-                            parameters: params,
-                            result: { total: list.length, errorCount: errorItems.length, sample: list.slice(0, 3) },
-                            durationMs: Date.now() - startTime
-                        });
-                        return res;
-                    }
-                    catch (err) {
-                        recordLog({
-                            id: Math.random().toString(36).substring(2, 9),
-                            timestamp: new Date().toLocaleTimeString(),
-                            toolName: 'fssc_query_pending_expenses',
-                            parameters: params,
-                            error: err.message,
-                            durationMs: Date.now() - startTime
-                        });
-                        throw err;
-                    }
-                }
-            },
-            {
-                name: 'fssc_validate_invoice_pool',
-                description: '全量体检发票夹未使用发票列表，严格校验发票金额、开票日期、发票号码及销方品名等必要字段，识别OCR识别残缺发票并输出诊断结果与修改建议',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        forceRefresh: { type: 'boolean', description: '是否强制穿透后端API重新拉取发票夹全量数据' },
-                        onlyInvalid: { type: 'boolean', description: '是否仅返回缺少必要字段的残缺发票' }
-                    }
-                },
-                execute: async (params) => {
-                    const startTime = Date.now();
-                    try {
-                        if (!state.invoices || state.invoices.length === 0 || params.forceRefresh) {
-                            await loadAllInvoicesAndExpenses(state);
-                        }
-                        const summary = validateInvoiceList(state.invoices || []);
-                        const targetList = params.onlyInvalid ? summary.invalidList : summary.results;
-                        const res = {
-                            totalCount: summary.totalCount,
-                            validCount: summary.validCount,
-                            invalidCount: summary.invalidCount,
-                            warningCount: summary.warningCount,
-                            missingAmountCount: summary.missingAmountCount,
-                            missingDateCount: summary.missingDateCount,
-                            missingInvoiceNoCount: summary.missingInvoiceNoCount,
-                            missingTypeCount: summary.missingTypeCount,
-                            isAllValid: summary.invalidCount === 0,
-                            diagnostics: summary.invalidCount === 0
-                                ? `✅ 恭喜！当前发票夹中全部 ${summary.totalCount} 张发票关键信息（金额、日期、发票号）100% 完备。`
-                                : `⚠️ 警告：共发现 ${summary.invalidCount} 张发票缺少必要字段！其中：缺少金额 ${summary.missingAmountCount} 张，缺少开票日期 ${summary.missingDateCount} 张，缺少发票号码 ${summary.missingInvoiceNoCount} 张。已在发票夹宿主表格标红并强化【修改】链接，请及时修改补齐！`,
-                            invoices: targetList
-                        };
-                        recordTrajectoryEvent({
-                            source: 'TOOL_RESULT',
-                            title: `Invoice Pool Validation (${summary.invalidCount}/${summary.totalCount} issues)`,
-                            summary: res.diagnostics,
-                            data: {
-                                total: summary.totalCount,
-                                valid: summary.validCount,
-                                invalid: summary.invalidCount,
-                                missingAmount: summary.missingAmountCount,
-                                missingDate: summary.missingDateCount,
-                                missingInvoiceNo: summary.missingInvoiceNoCount
-                            }
-                        });
-                        recordLog({
-                            id: Math.random().toString(36).substring(2, 9),
-                            timestamp: new Date().toLocaleTimeString(),
-                            toolName: 'fssc_validate_invoice_pool',
-                            parameters: params,
-                            result: { invalidCount: summary.invalidCount, total: summary.totalCount },
-                            durationMs: Date.now() - startTime
-                        });
-                        return res;
-                    }
-                    catch (err) {
-                        recordLog({
-                            id: Math.random().toString(36).substring(2, 9),
-                            timestamp: new Date().toLocaleTimeString(),
-                            toolName: 'fssc_validate_invoice_pool',
-                            parameters: params,
-                            error: err.message,
-                            durationMs: Date.now() - startTime
-                        });
-                        throw err;
-                    }
-                }
-            },
-            {
-                name: 'fssc_generate_expense_from_invoices',
-                description: '从发票夹中将未报销发票智能批量生成费用记录草稿。核心业务特性：智能识别过路费/通行费发票，并自动与同日同行程的出租车发票合并在同一笔费用中（即1笔费用挂载2张发票，金额累加，发票张数标为2，并在费用说明中注明含过路费明细）。支持按日期筛选（例如 2026-07-31）、指定发票ID或全量生成，并在副驾界面提供交互式 A2UI 确认卡片。',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        filterDate: {
-                            type: 'string',
-                            description: '按日期筛选发票（如 2026-07-31），仅将该日期的发票生成费用'
-                        },
-                        invoiceIds: {
-                            type: 'array',
-                            items: { type: 'string' },
-                            description: '指定要生成费用的发票 ID/boDataId 列表'
-                        },
-                        mergeTollsWithTaxi: {
-                            type: 'boolean',
-                            description: '是否将过路费/通行费发票与出租车发票合并在同一笔费用中（默认 true，1笔费用挂载2张发票）'
-                        },
-                        saveImmediately: {
-                            type: 'boolean',
-                            description: '是否立即持久化写入系统草稿（若为 false 则仅生成规划与 A2UI 预览，由用户确认后保存；若为 true 则直接写入草稿库）'
-                        },
-                        projectName: { type: 'string', description: '归属项目名称或编号（可选）' },
-                        customerName: { type: 'string', description: '拜访客户或工厂名称（可选）' },
-                        proxyPersonName: { type: 'string', description: '代外驻报销姓名（可选）' },
-                        customDescription: { type: 'string', description: '自定义统一费用说明（可选）' }
-                    }
-                },
-                execute: async (params) => {
-                    const startTime = Date.now();
-                    try {
-                        // 1. 确保发票已加载
-                        if (!state.invoices || state.invoices.length === 0) {
-                            await loadAllInvoicesAndExpenses(state);
-                        }
-                        let candidateInvoices = [...(state.invoices || [])];
-                        // 2. 按日期过滤
-                        if (params.filterDate) {
-                            const targetNorm = normalizeDate(params.filterDate);
-                            candidateInvoices = candidateInvoices.filter(inv => normalizeDate(inv.invoiceDate || '') === targetNorm);
-                        }
-                        // 3. 按发票 ID 过滤
-                        if (params.invoiceIds && params.invoiceIds.length > 0) {
-                            const idSet = new Set(params.invoiceIds);
-                            candidateInvoices = candidateInvoices.filter(inv => idSet.has(inv.id) || idSet.has(inv.boDataId || '') || idSet.has(inv.expenseRecordId || ''));
-                        }
-                        if (candidateInvoices.length === 0) {
-                            return {
-                                success: false,
-                                message: `未找到符合条件的发票（日期: ${params.filterDate || '全部'}），发票夹中可能暂无该日期发票或已全部生成费用。`,
-                                totalFound: 0
-                            };
-                        }
-                        // 4. 执行智能规划与过路费合并
-                        const planOpts = {
-                            tripType: 'AUTO',
-                            projectName: params.projectName,
-                            customerName: params.customerName,
-                            proxyPersonName: params.proxyPersonName,
-                            customDescription: params.customDescription,
-                            mergeTollsWithTaxi: params.mergeTollsWithTaxi
-                        };
-                        // 使用 inferSmartExpensePlan 对候选发票进行全套业务规划（内部已集成 bindTollsToTaxiExpenses）
-                        const planResult = inferSmartExpensePlan(candidateInvoices, planOpts);
-                        state.expensePlan = planResult;
-                        state.invoices = planResult.records;
-                        // 5. 生成并渲染 A2UI 交互确认卡片（支持合并/独立生成双分支切换与一键批量保存）
-                        const container = document.getElementById('webmcp-messages') || document.querySelector('.webmcp-chat-body');
-                        if (container) {
-                            const widget = renderA2UiExpenseBatchWidget({
-                                container,
-                                state,
-                                initialPlan: planResult
-                            });
-                            widget.scrollIntoView({ behavior: 'smooth' });
-                        }
-                        // 6. 若要求立即保存，调用批量入库
-                        let saveResult = null;
-                        if (params.saveImmediately) {
-                            saveResult = await batchSaveExpenseItemsApi(planResult.records, state);
-                        }
-                        const res = {
-                            success: true,
-                            totalInvoices: candidateInvoices.length,
-                            resultingExpenseCount: planResult.records.length,
-                            boundTollsCount: planResult.boundTollsCount || 0,
-                            bindingLog: planResult.bindingLog || [],
-                            hasConcurrentTolls: planResult.hasConcurrentTolls,
-                            concurrentTollsCount: planResult.concurrentTollsCount,
-                            tollInquiryPrompt: planResult.tollInquiryPrompt,
-                            summaryText: planResult.summaryText,
-                            savedImmediately: Boolean(params.saveImmediately),
-                            saveResult: saveResult,
-                            expenseItems: planResult.records.map((r, i) => ({
-                                index: i,
-                                date: r.invoiceDate,
-                                expenseTypeName: r.expenseTypeName,
-                                totalAmount: r.amount,
-                                invoiceCount: r.invoiceCount || 1,
-                                subInvoicesCount: r.subInvoices?.length || 0,
-                                tollAmount: r.tollAmount || 0,
-                                description: r.description,
-                                startAddress: r.startAddress,
-                                endAddress: r.endAddress,
-                                isMergedWithToll: Boolean(r.subInvoices && r.subInvoices.length > 0)
-                            }))
-                        };
-                        recordLog({
-                            id: Math.random().toString(36).substring(2, 9),
-                            timestamp: new Date().toLocaleTimeString(),
-                            toolName: 'fssc_generate_expense_from_invoices',
-                            parameters: params,
-                            result: {
-                                totalInvoices: candidateInvoices.length,
-                                resultingExpenseCount: planResult.records.length,
-                                boundTollsCount: planResult.boundTollsCount || 0
-                            },
-                            durationMs: Date.now() - startTime
-                        });
-                        return res;
-                    }
-                    catch (err) {
-                        recordLog({
-                            id: Math.random().toString(36).substring(2, 9),
-                            timestamp: new Date().toLocaleTimeString(),
-                            toolName: 'fssc_generate_expense_from_invoices',
-                            parameters: params,
-                            error: err.message,
-                            durationMs: Date.now() - startTime
-                        });
-                        throw err;
-                    }
-                }
-            },
-            {
-                name: 'fssc_plan_expense_batch_update',
-                description: '智能批量规划费用记录类型与行程信息（支持全部15类费用、多波次异地出差行程与市内日常拜访推断、外驻代报销备注规约）。根据传入的出行参数测算，更新内存状态并返回规划预览，不会直接持久化写库。注意：LLM 应基于用户上下文、对话历史、附件图片或地理世界常识，直接推断并传入结构化出差波次 trips（含目的地、机场/火车站、酒店、客户与起止日期），系统全面遵循 Anti-Hardcoding 铁律！',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        tripType: {
-                            type: 'string',
-                            enum: ['AUTO', 'BUSINESS_TRIP', 'LOCAL_COMMUTE', 'COMMUNICATION_ONLY'],
-                            description: '规划模式：AUTO自动识别、BUSINESS_TRIP异地出差模式、LOCAL_COMMUTE市内日常拜访、COMMUNICATION_ONLY纯话费'
-                        },
-                        itineraryText: {
-                            type: 'string',
-                            description: '出差行程计划表文本/表格/CSV内容（包含波次、起止日期、目的地、酒店、客户工厂据点），若提供将自动多波次分段对齐，精准推断每个波次的酒店与客户工厂，无需用户手动补充'
-                        },
-                        trips: {
-                            type: 'array',
-                            description: '结构化的多波次出差行程列表。LLM 应充分运用世界常识与用户上下文直接推理出每一波的城市、机场/高铁站、酒店与客户（每项包含 tripNo, startDate, endDate, destination, hotelName, customerName, stationOrAirport, departureStation, arrivalStation, purpose 等），彻底消除任何写死预设',
-                            items: {
-                                type: 'object',
-                                properties: {
-                                    tripNo: { type: 'number', description: '波次编号 (1, 2, ...)' },
-                                    startDate: { type: 'string', description: '波次开始日期 (YYYY-MM-DD)' },
-                                    endDate: { type: 'string', description: '波次结束日期 (YYYY-MM-DD)' },
-                                    destination: { type: 'string', description: '目的城市或地区 (如 天津、广州、合肥、大连)' },
-                                    hotelName: { type: 'string', description: '入住酒店名称 (如 美悦酒店、广州黄埔瑾程酒店)' },
-                                    customerName: { type: 'string', description: '拜访客户或工厂名称' },
-                                    stationOrAirport: { type: 'string', description: '往返交通枢纽 (如 天津滨海国际机场、合肥南站)' },
-                                    purpose: { type: 'string', description: '出差事由或工作目标' }
-                                }
-                            }
-                        },
-                        companyName: { type: 'string', description: '公司基准据点（默认 IVISION）' },
-                        customerName: { type: 'string', description: '拜访客户名称（从用户输入或行程中提取，若用户未提及且无法推断则留空由用户在界面动态确认，严禁随意捏造客户）' },
-                        hotelName: { type: 'string', description: '异地出差入住酒店名称（例如 美悦酒店、亚朵酒店，若已有行程表或由LLM推断则无需单独传）' },
-                        stationOrAirport: { type: 'string', description: '机场或高铁站名称（例如 天津滨海国际机场、合肥南站，LLM可运用常识提供）' },
-                        homeName: { type: 'string', description: '出发地/返程地家庭据点（默认 家）' },
-                        departureDate: { type: 'string', description: '出差出发日期 (YYYY-MM-DD)' },
-                        returnDate: { type: 'string', description: '出差返程日期 (YYYY-MM-DD)' },
-                        projectName: { type: 'string', description: '归属项目名称或项目号（例如 PRJ-2026-001）' },
-                        proxyPersonName: { type: 'string', description: '代外驻人员报销时的外驻同事姓名（例如 张三、李四），将自动在费用说明前生成 [外驻:姓名]' },
-                        customDescription: { type: 'string', description: '统一自定义费用说明（若填写将优先覆盖自动生成的说明）' },
-                        recordIndices: {
-                            type: 'array',
-                            items: { type: 'number' },
-                            description: '要规划的特定记录索引列表（若不提供则默认规划全部待处理项）'
-                        }
-                    }
-                },
-                execute: async (params) => {
-                    const startTime = Date.now();
-                    try {
-                        // 若尚未加载发票列表，先自动穿透后端 API 拉取
-                        if (!state.invoices || state.invoices.length === 0) {
-                            await loadAllInvoicesAndExpenses(state);
-                        }
-                        // 若未显式传入行程表，但之前已在 state.tripApp 中解析过，自动继承有效复用
-                        if (!params.trips && !params.itineraryText) {
-                            let candidateTrips = [];
-                            if (state.expensePlan?.matchedTrips && state.expensePlan.matchedTrips.length > 0) {
-                                candidateTrips = state.expensePlan.matchedTrips;
-                            }
-                            else if (state.tripApp?.rawInputs && state.tripApp.rawInputs.length > 0) {
-                                candidateTrips = state.tripApp.rawInputs.map(r => ({
-                                    tripNo: r.tripNo,
-                                    startDate: r.startDate,
-                                    endDate: r.endDate,
-                                    destination: r.destination,
-                                    hotelName: r.hotelName,
-                                    customerName: r.targetFactories || r.purpose || '',
-                                    targetFactories: r.targetFactories,
-                                    purpose: r.purpose
-                                }));
-                            }
-                            else if (state.tripApp?.configs && state.tripApp.configs.length > 0) {
-                                candidateTrips = state.tripApp.configs.map(c => ({
-                                    tripNo: c.tripNo,
-                                    startDate: c.startDate,
-                                    endDate: c.endDate,
-                                    destination: c.destination,
-                                    hotelName: c.hotelName,
-                                    customerName: c.targetFactories || c.purpose || '',
-                                    targetFactories: c.targetFactories,
-                                    purpose: c.purpose
-                                }));
-                            }
-                            // 过滤掉无效/无目的地/无日期的空占位波次，避免污染自动聚类
-                            const validTrips = candidateTrips.filter(t => Boolean((t.destination && !t.destination.includes('待定')) || t.startDate || t.endDate));
-                            if (validTrips.length > 0) {
-                                params.trips = validTrips;
-                            }
-                        }
-                        const planResult = inferSmartExpensePlan(state.invoices || [], params);
-                        const ast = generateExpenseBatchA2UiAST(planResult, state);
-                        state.expensePlan = planResult;
-                        if (planResult.records && planResult.records.length > 0) {
-                            state.invoices = planResult.records;
-                        }
-                        const res = {
-                            totalRecords: planResult.totalRecords,
-                            modifiedCount: planResult.modifiedCount,
-                            boundTollsCount: planResult.boundTollsCount || 0,
-                            bindingLog: planResult.bindingLog || [],
-                            tripType: planResult.tripType,
-                            companyName: planResult.companyName,
-                            customerName: planResult.customerName,
-                            hotelName: planResult.hotelName,
-                            stationOrAirport: planResult.stationOrAirport,
-                            projectName: planResult.projectName,
-                            proxyPersonName: planResult.proxyPersonName,
-                            missingFields: planResult.missingFields,
-                            uncertainDates: planResult.uncertainDates,
-                            summaryText: planResult.summaryText,
-                            matchedTrips: planResult.matchedTrips,
-                            a2uiAST: planResult.a2uiAST,
-                            previewRecords: (planResult.records || []).slice(0, 10).map((r, i) => ({
-                                index: i,
-                                date: r.invoiceDate,
-                                type: r.type,
-                                typeName: r.expenseTypeName,
-                                amount: r.amount,
-                                startAddress: r.startAddress,
-                                endAddress: r.endAddress,
-                                description: r.description,
-                                subInvoicesCount: r.subInvoices?.length || 0,
-                                tollAmount: r.tollAmount || 0,
-                                invoiceCount: r.invoiceCount || 1
-                            }))
-                        };
-                        recordLog({
-                            id: Math.random().toString(36).substring(2, 9),
-                            timestamp: new Date().toLocaleTimeString(),
-                            toolName: 'fssc_plan_expense_batch_update',
-                            parameters: params,
-                            result: {
-                                total: planResult.totalRecords,
-                                modified: planResult.modifiedCount,
-                                tripType: planResult.tripType,
-                                matchedTripsCount: planResult.matchedTrips?.length || 0
-                            },
-                            durationMs: Date.now() - startTime
-                        });
-                        return res;
-                    }
-                    catch (err) {
-                        recordLog({
-                            id: Math.random().toString(36).substring(2, 9),
-                            timestamp: new Date().toLocaleTimeString(),
-                            toolName: 'fssc_plan_expense_batch_update',
-                            parameters: params,
-                            error: err.message,
-                            durationMs: Date.now() - startTime
-                        });
-                        throw err;
-                    }
-                }
-            },
-            {
-                name: 'fssc_render_interactive_form',
-                description: '在副驾对话流或工作区中动态渲染声明式 A2UI 表单 AST（支持时间轴、网格表单、选择器、预览表格与一键操作按钮），用于智能副驾与用户的深度图文交互与决策确认',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        ast: {
-                            type: 'object',
-                            description: '符合 A2UiRootAST 规约的声明式表单定义，包含 id, title, model, layout, actions 等字段'
-                        }
-                    },
-                    required: ['ast']
-                },
-                execute: async (params) => {
-                    const startTime = Date.now();
-                    try {
-                        const container = document.getElementById('webmcp-messages') || document.querySelector('.webmcp-chat-body');
-                        if (container) {
-                            let currentAst = params.ast;
-                            const cardWrapper = document.createElement('div');
-                            cardWrapper.className = 'webmcp-a2ui-standalone-container';
-                            const renderCard = () => {
-                                cardWrapper.innerHTML = '';
-                                const cardEl = renderA2UiFromAST(currentAst, {
-                                    state,
-                                    onAction: async (actionKey, model) => {
-                                        if (actionKey === 'reinfer') {
-                                            const newOpts = {
-                                                tripType: model.tripType,
-                                                companyName: model.companyName,
-                                                customerName: model.customerName,
-                                                hotelName: model.hotelName,
-                                                stationOrAirport: model.stationOrAirport,
-                                                projectName: model.projectName,
-                                                proxyPersonName: model.proxyPersonName,
-                                                customDescription: model.customDescription,
-                                                trips: state.expensePlan?.matchedTrips
-                                            };
-                                            const planResult = inferSmartExpensePlan(state.invoices || [], newOpts);
-                                            state.expensePlan = planResult;
-                                            if (planResult.records && planResult.records.length > 0) {
-                                                state.invoices = planResult.records;
-                                            }
-                                            currentAst = generateExpenseBatchA2UiAST(planResult, state);
-                                            renderCard();
-                                            showToast('success', `已根据最新输入重新推断 (规划 ${planResult.modifiedCount} 笔)`);
-                                        }
-                                        else if (actionKey === 'openModal') {
-                                            const helperBtn = document.getElementById('yn-batch-helper-btn');
-                                            if (helperBtn)
-                                                helperBtn.click();
-                                        }
-                                        else if (actionKey === 'batchSave') {
-                                            try {
-                                                const sourceInvoices = state.expensePlan?.records || state.invoices || [];
-                                                const targets = sourceInvoices.filter(i => i.isModified || i.status === '就绪' || i.status === '待流转');
-                                                const fallbackTargets = targets.length > 0 ? targets : sourceInvoices;
-                                                if (fallbackTargets.length === 0) {
-                                                    showToast('error', '批量保存失败: 没有找到可保存的费用记录，请先加载发票数据');
-                                                    return;
-                                                }
-                                                showToast('info', `正在批量保存 ${fallbackTargets.length} 笔费用记录...`);
-                                                const res = await batchSaveExpenseItemsApi(fallbackTargets, state);
-                                                showToast('success', `批量保存完成！成功 ${res.successCount} 笔，失败 ${res.failCount} 笔`);
-                                            }
-                                            catch (err) {
-                                                showToast('error', `批量保存异常: ${err.message}`);
-                                            }
-                                        }
-                                    }
-                                });
-                                cardWrapper.appendChild(cardEl);
-                            };
-                            renderCard();
-                            container.appendChild(cardWrapper);
-                            cardWrapper.scrollIntoView({ behavior: 'smooth' });
-                        }
-                        recordLog({
-                            id: Math.random().toString(36).substring(2, 9),
-                            timestamp: new Date().toLocaleTimeString(),
-                            toolName: 'fssc_render_interactive_form',
-                            parameters: { formId: params.ast.id, title: params.ast.title },
-                            result: { success: true },
-                            durationMs: Date.now() - startTime
-                        });
-                        return { success: true, message: `A2UI 交互表单【${params.ast.title}】已成功呈现在副驾界面` };
-                    }
-                    catch (err) {
-                        recordLog({
-                            id: Math.random().toString(36).substring(2, 9),
-                            timestamp: new Date().toLocaleTimeString(),
-                            toolName: 'fssc_render_interactive_form',
-                            parameters: { formId: params.ast?.id },
-                            error: err.message,
-                            durationMs: Date.now() - startTime
-                        });
-                        return { success: false, error: err.message };
-                    }
-                }
-            },
-            {
-                name: 'fssc_batch_save_expense_records',
-                description: '批量将已规划的费用记录持久化保存至元年云系统（写入数据库并实例化草稿）。需审批门禁，用户确认后执行。',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        recordIndices: {
-                            type: 'array',
-                            items: { type: 'number' },
-                            description: '要保存的记录索引列表（可选，若不填则保存所有已规划修改的项）'
-                        }
-                    }
-                },
-                execute: async (params) => {
-                    const startTime = Date.now();
-                    try {
-                        let targets = [];
-                        const sourceInvoices = state.expensePlan?.records || state.invoices || [];
-                        if (params.recordIndices && params.recordIndices.length > 0) {
-                            const targetSet = new Set(params.recordIndices);
-                            targets = sourceInvoices.filter((_, idx) => targetSet.has(idx));
-                        }
-                        else {
-                            targets = sourceInvoices.filter(inv => inv.isModified || inv.status === '就绪' || inv.status === '待流转');
-                        }
-                        if (targets.length === 0) {
-                            targets = sourceInvoices;
-                        }
-                        const saveResult = await batchSaveExpenseItemsApi(targets, state);
-                        recordLog({
-                            id: Math.random().toString(36).substring(2, 9),
-                            timestamp: new Date().toLocaleTimeString(),
-                            toolName: 'fssc_batch_save_expense_records',
-                            parameters: { targetCount: targets.length },
-                            result: { successCount: saveResult.successCount, failCount: saveResult.failCount },
-                            durationMs: Date.now() - startTime
-                        });
-                        return saveResult;
-                    }
-                    catch (err) {
-                        recordLog({
-                            id: Math.random().toString(36).substring(2, 9),
-                            timestamp: new Date().toLocaleTimeString(),
-                            toolName: 'fssc_batch_save_expense_records',
-                            parameters: params,
-                            error: err.message,
-                            durationMs: Date.now() - startTime
-                        });
-                        throw err;
-                    }
-                }
-            },
-            {
-                name: 'fssc_delete_expense_records',
-                description: '批量删除指定的费用记录（软删除至回收站）。传入费用记录 ID 数组 recordIds。',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        recordIds: {
-                            type: 'array',
-                            items: { type: 'string' },
-                            description: '待删除的费用记录主键 ID 数组'
-                        }
-                    },
-                    required: ['recordIds']
-                },
-                execute: async (params) => {
-                    const startTime = Date.now();
-                    try {
-                        await deleteExpenseRecordListApi(params.recordIds, state);
-                        if (state.invoices) {
-                            const idSet = new Set(params.recordIds);
-                            state.invoices = state.invoices.filter(inv => !idSet.has(inv.expenseRecordId || ''));
-                        }
-                        const result = { success: true, deletedCount: params.recordIds.length, message: `已成功删除 ${params.recordIds.length} 笔费用记录至回收站` };
-                        recordLog({
-                            id: Math.random().toString(36).substring(2, 9),
-                            timestamp: new Date().toLocaleTimeString(),
-                            toolName: 'fssc_delete_expense_records',
-                            parameters: params,
-                            result,
-                            durationMs: Date.now() - startTime
-                        });
-                        return result;
-                    }
-                    catch (err) {
-                        recordLog({
-                            id: Math.random().toString(36).substring(2, 9),
-                            timestamp: new Date().toLocaleTimeString(),
-                            toolName: 'fssc_delete_expense_records',
-                            parameters: params,
-                            error: err.message,
-                            durationMs: Date.now() - startTime
-                        });
-                        throw err;
-                    }
-                }
-            },
-            {
-                name: 'fssc_audit_expense_record_errors',
-                description: 'Agentic 主动体检当前用户的费用记录列表，检测系统后端接口 (getExpenseRecordListBySearchVO) 校验返回的任何错误信息 (如“出差城市必填”、“费用金额必填”、“发票必须”等)，输出结构化诊断报告。',
-                inputSchema: {
-                    type: 'object',
-                    properties: {}
-                },
-                execute: async () => {
-                    const startTime = Date.now();
-                    try {
-                        const report = await auditExpenseRecordsApi(state);
-                        recordLog({
-                            id: Math.random().toString(36).substring(2, 9),
-                            timestamp: new Date().toLocaleTimeString(),
-                            toolName: 'fssc_audit_expense_record_errors',
-                            parameters: {},
-                            result: report,
-                            durationMs: Date.now() - startTime
-                        });
-                        return report;
-                    }
-                    catch (err) {
-                        recordLog({
-                            id: Math.random().toString(36).substring(2, 9),
-                            timestamp: new Date().toLocaleTimeString(),
-                            toolName: 'fssc_audit_expense_record_errors',
-                            parameters: {},
-                            error: err.message,
-                            durationMs: Date.now() - startTime
-                        });
-                        throw err;
-                    }
-                }
-            },
-            {
-                name: 'fssc_auto_fix_expense_record_errors',
-                description: 'Agentic 针对体检出的费用记录错误（如住宿费出差城市必填）执行智能自愈修复：自动对齐行程与系统城市维表 (DIM_CITY) 补齐城市与住宿区分，并持久化保存写库，确保错误完全清零。',
-                inputSchema: {
-                    type: 'object',
-                    properties: {}
-                },
-                execute: async () => {
-                    const startTime = Date.now();
-                    try {
-                        const fixResult = await autoFixExpenseRecordsApi(state);
-                        recordLog({
-                            id: Math.random().toString(36).substring(2, 9),
-                            timestamp: new Date().toLocaleTimeString(),
-                            toolName: 'fssc_auto_fix_expense_record_errors',
-                            parameters: {},
-                            result: fixResult,
-                            durationMs: Date.now() - startTime
-                        });
-                        return fixResult;
-                    }
-                    catch (err) {
-                        recordLog({
-                            id: Math.random().toString(36).substring(2, 9),
-                            timestamp: new Date().toLocaleTimeString(),
-                            toolName: 'fssc_auto_fix_expense_record_errors',
-                            parameters: {},
-                            error: err.message,
-                            durationMs: Date.now() - startTime
-                        });
-                        throw err;
-                    }
-                }
-            },
-            {
-                name: 'fssc_delete_bill_drafts',
-                description: '批量删除出差申请单或报销单草稿（仅允许删除未提交的单据草稿）。传入单据主键 ID 数组 billMainIds。',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        billMainIds: {
-                            type: 'array',
-                            items: { type: 'string' },
-                            description: '待删除的单据主键 ID (billMainId) 数组'
-                        }
-                    },
-                    required: ['billMainIds']
-                },
-                execute: async (params) => {
-                    const startTime = Date.now();
-                    try {
-                        await deleteBillByBillMainIdsApi(params.billMainIds, state);
-                        const result = { success: true, deletedCount: params.billMainIds.length, message: `已成功删除 ${params.billMainIds.length} 张单据草稿` };
-                        recordLog({
-                            id: Math.random().toString(36).substring(2, 9),
-                            timestamp: new Date().toLocaleTimeString(),
-                            toolName: 'fssc_delete_bill_drafts',
-                            parameters: params,
-                            result,
-                            durationMs: Date.now() - startTime
-                        });
-                        return result;
-                    }
-                    catch (err) {
-                        recordLog({
-                            id: Math.random().toString(36).substring(2, 9),
-                            timestamp: new Date().toLocaleTimeString(),
-                            toolName: 'fssc_delete_bill_drafts',
-                            parameters: params,
-                            error: err.message,
-                            durationMs: Date.now() - startTime
-                        });
-                        throw err;
-                    }
-                }
-            },
-            {
-                name: 'fssc_delete_invoices',
-                description: '从发票池中彻底删除指定的发票记录。传入发票主键 ID (boSourceRowId) 数组 invoiceIds。',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        invoiceIds: {
-                            type: 'array',
-                            items: { type: 'string' },
-                            description: '待删除的发票主键 ID (boSourceRowId) 数组'
-                        }
-                    },
-                    required: ['invoiceIds']
-                },
-                execute: async (params) => {
-                    const startTime = Date.now();
-                    try {
-                        await deleteInvoiceBOListApi(params.invoiceIds, state);
-                        if (state.invoices) {
-                            const idSet = new Set(params.invoiceIds);
-                            state.invoices = state.invoices.filter(inv => !idSet.has(inv.boSourceRowId || inv.boDataId || inv.id || ''));
-                        }
-                        const result = { success: true, deletedCount: params.invoiceIds.length, message: `已成功从发票池彻底删除 ${params.invoiceIds.length} 张发票` };
-                        recordLog({
-                            id: Math.random().toString(36).substring(2, 9),
-                            timestamp: new Date().toLocaleTimeString(),
-                            toolName: 'fssc_delete_invoices',
-                            parameters: params,
-                            result,
-                            durationMs: Date.now() - startTime
-                        });
-                        return result;
-                    }
-                    catch (err) {
-                        recordLog({
-                            id: Math.random().toString(36).substring(2, 9),
-                            timestamp: new Date().toLocaleTimeString(),
-                            toolName: 'fssc_delete_invoices',
-                            parameters: params,
-                            error: err.message,
-                            durationMs: Date.now() - startTime
-                        });
-                        throw err;
-                    }
-                }
-            },
-            {
-                name: 'fssc_create_reimbursement_draft',
-                description: '从未报销费用记录批量生成一张报销单草稿（commit: false，仅保存草稿入库，绝不提交审批）。需传入报销单模板 ID 与费用记录 ID 数组。',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        billDefineId: {
-                            type: 'string',
-                            description: '报销单模板 ID（如出差费用报销单 035a50ee6d3de1653e55bb00bc610001，经费报销单 035cd1b4d46de1653e55bb00bc610000）'
-                        },
-                        expenseRecordIds: {
-                            type: 'array',
-                            items: { type: 'string' },
-                            description: '关联的未报销费用记录 ID 数组'
-                        }
-                    },
-                    required: ['billDefineId', 'expenseRecordIds']
-                },
-                execute: async (params) => {
-                    const startTime = Date.now();
-                    try {
-                        const data = await createBillDataAndTemplateByExpenseIdListApi(params.billDefineId, params.expenseRecordIds, state);
-                        const billMainId = data?.billData?.area?.rowDatas?.[0]?.datas?.BILL_MAIN_ID?.value || data?.billData?.billMainId || '';
-                        const billCode = data?.billData?.area?.rowDatas?.[0]?.datas?.BILL_CODE?.value || '';
-                        const result = {
-                            success: true,
-                            billMainId,
-                            billCode,
-                            expenseCount: params.expenseRecordIds.length,
-                            message: `已成功从未报销费用生成报销单草稿 ${billCode ? '(' + billCode + ')' : ''}，已保存入库，未提交审批`
-                        };
-                        recordLog({
-                            id: Math.random().toString(36).substring(2, 9),
-                            timestamp: new Date().toLocaleTimeString(),
-                            toolName: 'fssc_create_reimbursement_draft',
-                            parameters: params,
-                            result,
-                            durationMs: Date.now() - startTime
-                        });
-                        return result;
-                    }
-                    catch (err) {
-                        recordLog({
-                            id: Math.random().toString(36).substring(2, 9),
-                            timestamp: new Date().toLocaleTimeString(),
-                            toolName: 'fssc_create_reimbursement_draft',
-                            parameters: params,
-                            error: err.message,
-                            durationMs: Date.now() - startTime
-                        });
-                        throw err;
-                    }
-                }
-            },
-            {
-                name: 'fssc_export_expense_records_csv',
-                description: '导出当前用户的费用记录及底层挂载发票清单（Excel CSV 格式）。核心业务特性：穿透每笔费用提取发票代码、发票号码、开票日期、实际行程日期/时间、始发站、目的站、车次/航班、销方名称、附件文件名等；自动进行行程与开票日期的差异对比核验，并在最后一列提供核验预警（如开票日期晚于/早于行程天数、酒店发票核对提示等）。支持按费用记录 ID 筛选，或默认全量导出所有未报销费用。',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        expenseRecordIds: {
-                            type: 'array',
-                            items: { type: 'string' },
-                            description: '指定导出的费用记录 ID 列表（可选，若未指定则导出全部未报销费用）'
-                        },
-                        triggerDownload: {
-                            type: 'boolean',
-                            description: '是否在浏览器端直接触发 CSV 文件下载（默认 true）'
-                        }
-                    }
-                },
-                execute: async (params) => {
-                    const startTime = Date.now();
-                    try {
-                        const rows = await fetchExpenseRecordsWithInvoiceDetails(state, params.expenseRecordIds);
-                        const csvContent = convertExpenseRecordsToCsv(rows);
-                        if (params.triggerDownload !== false && typeof window !== 'undefined') {
-                            const now = new Date();
-                            const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
-                            downloadCsvFile(csvContent, `费用记录与发票行程核对清单_${ts}.csv`);
-                        }
-                        const warnCount = rows.filter(r => r.reconciliationNote && r.reconciliationNote.includes('⚠️')).length;
-                        const result = {
-                            success: true,
-                            totalExpenseRecords: new Set(rows.map(r => r.expenseRecordId)).size,
-                            totalInvoiceRows: rows.length,
-                            warningCount: warnCount,
-                            csvLength: csvContent.length,
-                            sampleRows: rows.slice(0, 5),
-                            message: `成功导出 ${rows.length} 条发票核对记录 (涉及 ${new Set(rows.map(r => r.expenseRecordId)).size} 笔费用，发现 ${warnCount} 处行程与开票日期差异)`
-                        };
-                        recordLog({
-                            id: Math.random().toString(36).substring(2, 9),
-                            timestamp: new Date().toLocaleTimeString(),
-                            toolName: 'fssc_export_expense_records_csv',
-                            parameters: params,
-                            result,
-                            durationMs: Date.now() - startTime
-                        });
-                        return result;
-                    }
-                    catch (err) {
-                        recordLog({
-                            id: Math.random().toString(36).substring(2, 9),
-                            timestamp: new Date().toLocaleTimeString(),
-                            toolName: 'fssc_export_expense_records_csv',
-                            parameters: params,
-                            error: err.message,
-                            durationMs: Date.now() - startTime
-                        });
-                        throw err;
-                    }
-                }
-            }
-        ];
-        WEBMCP_STATE.toolDefs = tools.map(t => ({
-            name: t.name,
-            description: t.description,
-            inputSchema: t.inputSchema,
-            execute: t.execute
-        }));
-        for (const tool of tools) {
-            WEBMCP_STATE.toolMap.set(tool.name, tool.execute);
-            WEBMCP_STATE.registeredTools.push(tool.name);
-            if (hasModelContext) {
-                try {
-                    doc.modelContext.registerTool(tool);
-                }
-                catch (err) {
-                    AutopilotLogger.warn(`[WebMCP] 注册工具 [${tool.name}] 到 document.modelContext 出现警告: ${err.message}`);
-                }
-            }
-        }
-        WEBMCP_STATE.initialized = true;
-        AutopilotLogger.success(`[WebMCP] 通用出差申请原生工具集已就绪 (共 ${tools.length} 个工具，W3C Polyfill: ${hasModelContext ? '激活' : '内部模式'})！`);
-    }
-
     let cachedGlobalState = null;
     function getInvoicePoolGlobalState() {
         if (cachedGlobalState)
@@ -63885,1579 +67201,6 @@ td.has-save-error {
         toString() {
             return this.toFixed(2);
         }
-    }
-
-    const LLM_PRESETS = {
-        gemini: {
-            provider: 'gemini',
-            endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai',
-            model: 'gemini-2.0-flash',
-            temperature: 0.3
-        },
-        deepseek: {
-            provider: 'deepseek',
-            endpoint: 'https://api.deepseek.com/v1',
-            model: 'deepseek-chat',
-            temperature: 0.3
-        },
-        openai: {
-            provider: 'openai',
-            endpoint: 'https://api.openai.com/v1',
-            model: 'gpt-4o',
-            temperature: 0.3
-        },
-        claude: {
-            provider: 'claude',
-            endpoint: 'https://openrouter.ai/api/v1',
-            model: 'anthropic/claude-3.7-sonnet',
-            temperature: 0.3
-        },
-        ollama: {
-            provider: 'ollama',
-            endpoint: 'http://localhost:11434/v1',
-            model: 'qwen2.5:7b',
-            temperature: 0.3
-        },
-        openrouter: {
-            provider: 'openrouter',
-            endpoint: 'https://openrouter.ai/api/v1',
-            model: 'anthropic/claude-3.7-sonnet',
-            temperature: 0.3
-        },
-        custom: {
-            provider: 'custom',
-            endpoint: '',
-            model: 'gpt-4o',
-            temperature: 0.3
-        }
-    };
-    const STORAGE_KEY = 'autopilot_webmcp_llm_config';
-    function getDefaultModelsForProvider(provider) {
-        switch (provider) {
-            case 'gemini':
-                return [
-                    { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash (新一代极速首选)', provider: 'gemini', enabled: true },
-                    { id: 'gemini-2.0-flash-thinking-exp-01-21', name: 'Gemini 2.0 Flash Thinking (深度思考)', provider: 'gemini', enabled: true, isReasoning: true },
-                    { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro (最强综合推理旗舰)', provider: 'gemini', enabled: true, isReasoning: true },
-                    { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro (百万长上下文)', provider: 'gemini', enabled: false },
-                    { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash (轻量低延迟)', provider: 'gemini', enabled: false }
-                ];
-            case 'deepseek':
-                return [
-                    { id: 'deepseek-chat', name: 'DeepSeek-V3 (通用极速性价比之王)', provider: 'deepseek', enabled: true },
-                    { id: 'deepseek-reasoner', name: 'DeepSeek-R1 (深度慢思考长链推理)', provider: 'deepseek', enabled: true, isReasoning: true }
-                ];
-            case 'openai':
-                return [
-                    { id: 'gpt-4o', name: 'GPT-4o (全能多模态旗舰)', provider: 'openai', enabled: true, isVision: true },
-                    { id: 'gpt-4o-mini', name: 'GPT-4o-mini (轻巧极速低成本)', provider: 'openai', enabled: true },
-                    { id: 'o3-mini', name: 'o3-mini (新一代高效推理)', provider: 'openai', enabled: true, isReasoning: true },
-                    { id: 'o1', name: 'o1 (高级慢思考与规划)', provider: 'openai', enabled: false, isReasoning: true },
-                    { id: 'gpt-4-turbo', name: 'GPT-4 Turbo', provider: 'openai', enabled: false }
-                ];
-            case 'claude':
-            case 'openrouter':
-                return [
-                    { id: 'anthropic/claude-3.7-sonnet', name: 'Claude 3.7 Sonnet (混合推理新旗舰)', provider: 'openrouter', enabled: true, isReasoning: true },
-                    { id: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet (代码与逻辑标杆)', provider: 'openrouter', enabled: true },
-                    { id: 'anthropic/claude-3.5-haiku', name: 'Claude 3.5 Haiku (超轻量秒级响应)', provider: 'openrouter', enabled: false },
-                    { id: 'openai/gpt-4o', name: 'OpenAI GPT-4o (OpenRouter)', provider: 'openrouter', enabled: true },
-                    { id: 'deepseek/deepseek-r1', name: 'DeepSeek R1 (OpenRouter)', provider: 'openrouter', enabled: true, isReasoning: true }
-                ];
-            case 'ollama':
-                return [
-                    { id: 'qwen2.5:7b', name: '通义千问 Qwen 2.5 7B (本地推荐)', provider: 'ollama', enabled: true },
-                    { id: 'deepseek-r1:7b', name: 'DeepSeek R1 本地量化 7B', provider: 'ollama', enabled: true, isReasoning: true },
-                    { id: 'llama3.1:8b', name: 'Meta Llama 3.1 8B', provider: 'ollama', enabled: false }
-                ];
-            default:
-                return [
-                    { id: 'gpt-4o', name: 'GPT-4o 兼容', provider: 'custom', enabled: true },
-                    { id: 'deepseek-chat', name: 'DeepSeek-V3 兼容', provider: 'custom', enabled: true }
-                ];
-        }
-    }
-    function getLlmConfig() {
-        try {
-            const raw = localStorage.getItem(STORAGE_KEY);
-            if (raw) {
-                const parsed = JSON.parse(raw);
-                const provider = parsed.provider || 'gemini';
-                const defaultModels = getDefaultModelsForProvider(provider);
-                const models = Array.isArray(parsed.models) && parsed.models.length > 0
-                    ? parsed.models
-                    : defaultModels;
-                const model = parsed.model || models.find(m => m.enabled)?.id || defaultModels[0].id;
-                return {
-                    provider,
-                    endpoint: parsed.endpoint || LLM_PRESETS[provider]?.endpoint || 'https://generativelanguage.googleapis.com/v1beta/openai',
-                    apiKey: parsed.apiKey || '',
-                    model,
-                    temperature: typeof parsed.temperature === 'number' ? parsed.temperature : 0.3,
-                    models
-                };
-            }
-        }
-        catch (e) {
-            AutopilotLogger.warn('[LLM] 读取配置失败，采用默认配置');
-        }
-        const defaultModels = getDefaultModelsForProvider('gemini');
-        return {
-            provider: 'gemini',
-            endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai',
-            apiKey: '',
-            model: 'gemini-2.0-flash',
-            temperature: 0.3,
-            models: defaultModels
-        };
-    }
-    function saveLlmConfig(config) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
-        AutopilotLogger.info('[LLM] 配置已保存');
-        try {
-            if (typeof window !== 'undefined') {
-                window.dispatchEvent(new CustomEvent('autopilot:llm_config_changed', { detail: config }));
-            }
-        }
-        catch (e) { }
-    }
-    /**
-     * 自动探测与拉取远端 LLM 端点支持的模型列表
-     * 兼容 OpenAI /v1/models、Google Gemini API、Ollama /api/tags
-     */
-    async function fetchAvailableModels(config) {
-        const startTime = Date.now();
-        const rawEndpoint = (config.endpoint || '').trim();
-        if (!rawEndpoint) {
-            const fallbacks = getDefaultModelsForProvider(config.provider);
-            return {
-                success: false,
-                models: fallbacks,
-                message: '请先填写 API 基础地址'
-            };
-        }
-        const apiKey = (config.apiKey || '').trim();
-        // 1. Google Gemini
-        if (config.provider === 'gemini') {
-            // 优先尝试官方 OpenAI 兼容 /models 端点
-            try {
-                const openaiModelsUrl = rawEndpoint.replace(/\/chat\/completions\/?$/, '').replace(/\/+$/, '') + '/models';
-                const res = await fetch(openaiModelsUrl, {
-                    headers: apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}
-                });
-                if (res.ok) {
-                    const data = await res.json();
-                    if (Array.isArray(data.data) && data.data.length > 0) {
-                        const list = data.data
-                            .filter((m) => m.id && !m.id.includes('embedding') && !m.id.includes('aqa') && !m.id.includes('imagen'))
-                            .map((m) => {
-                            const isReasoning = m.id.includes('thinking') || m.id.includes('pro');
-                            return {
-                                id: m.id,
-                                name: formatModelDisplayName(m.id),
-                                provider: 'gemini',
-                                enabled: isReasoning || m.id.includes('flash'),
-                                isReasoning
-                            };
-                        });
-                        if (list.length > 0) {
-                            return {
-                                success: true,
-                                models: list,
-                                message: `成功自动识别 ${list.length} 个 Gemini 模型 (${Date.now() - startTime}ms)`
-                            };
-                        }
-                    }
-                }
-            }
-            catch (e) { }
-            // 备用：Google AI Studio API
-            if (apiKey) {
-                try {
-                    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`;
-                    const res = await fetch(geminiUrl);
-                    if (res.ok) {
-                        const data = await res.json();
-                        if (Array.isArray(data.models) && data.models.length > 0) {
-                            const list = data.models
-                                .filter((m) => m.name && (m.supportedGenerationMethods?.includes('generateContent') || m.name.includes('gemini')))
-                                .map((m) => {
-                                const cleanId = m.name.replace(/^models\//, '');
-                                const isReasoning = cleanId.includes('thinking') || cleanId.includes('pro');
-                                return {
-                                    id: cleanId,
-                                    name: m.displayName || formatModelDisplayName(cleanId),
-                                    provider: 'gemini',
-                                    enabled: isReasoning || cleanId.includes('flash'),
-                                    isReasoning
-                                };
-                            });
-                            if (list.length > 0) {
-                                return {
-                                    success: true,
-                                    models: list,
-                                    message: `成功探测并载入 ${list.length} 个 Gemini 原生模型 (${Date.now() - startTime}ms)`
-                                };
-                            }
-                        }
-                    }
-                }
-                catch (e) { }
-            }
-        }
-        // 2. Ollama
-        if (config.provider === 'ollama') {
-            const base = rawEndpoint.replace(/\/v1\/?$/, '').replace(/\/+$/, '');
-            try {
-                const res = await fetch(`${base}/api/tags`);
-                if (res.ok) {
-                    const data = await res.json();
-                    if (Array.isArray(data.models) && data.models.length > 0) {
-                        const list = data.models.map((m) => ({
-                            id: m.name,
-                            name: `${m.name} (${m.details?.parameter_size || 'Local'})`,
-                            provider: 'ollama',
-                            enabled: true
-                        }));
-                        return {
-                            success: true,
-                            models: list,
-                            message: `成功检测到本地 Ollama 已运行的 ${list.length} 个模型 (${Date.now() - startTime}ms)`
-                        };
-                    }
-                }
-            }
-            catch (e) { }
-        }
-        // 3. 通用 OpenAI 兼容 /models
-        try {
-            const baseModelsUrl = rawEndpoint.replace(/\/chat\/completions\/?$/, '').replace(/\/+$/, '') + '/models';
-            const headers = { 'Content-Type': 'application/json' };
-            if (apiKey) {
-                headers['Authorization'] = `Bearer ${apiKey}`;
-            }
-            const res = await fetch(baseModelsUrl, { method: 'GET', headers });
-            if (res.ok) {
-                const data = await res.json();
-                const rawList = Array.isArray(data.data) ? data.data : (Array.isArray(data) ? data : []);
-                if (rawList.length > 0) {
-                    const list = rawList
-                        .filter((m) => m.id && !m.id.includes('embedding') && !m.id.includes('tts') && !m.id.includes('whisper') && !m.id.includes('dall-e') && !m.id.includes('moderation'))
-                        .map((m) => {
-                        const id = m.id;
-                        const isReasoning = id.includes('r1') || id.includes('reasoner') || id.includes('o1') || id.includes('o3') || id.includes('thinking');
-                        return {
-                            id,
-                            name: formatModelDisplayName(id),
-                            provider: config.provider,
-                            enabled: true,
-                            isReasoning
-                        };
-                    });
-                    if (list.length > 0) {
-                        return {
-                            success: true,
-                            models: list,
-                            message: `成功自动拉取 ${list.length} 个可用模型 (${Date.now() - startTime}ms)`
-                        };
-                    }
-                }
-            }
-        }
-        catch (e) {
-            AutopilotLogger.warn('[LLM] 远端 /models 接口探测失败或受同源策略限制: ' + (e instanceof Error ? e.message : String(e)));
-        }
-        // 兜底回退：载入官方预设推荐库
-        const defaultList = getDefaultModelsForProvider(config.provider);
-        return {
-            success: true,
-            models: defaultList,
-            message: `未能从远端自动拉取，已为您载入 ${defaultList.length} 个主流官方推荐模型（可手动增删）`
-        };
-    }
-    function formatModelDisplayName(id) {
-        if (id === 'gemini-2.0-flash')
-            return 'Gemini 2.0 Flash (新一代极速首选)';
-        if (id === 'gemini-2.0-flash-thinking-exp-01-21')
-            return 'Gemini 2.0 Flash Thinking (深度思考)';
-        if (id === 'gemini-2.5-pro')
-            return 'Gemini 2.5 Pro (最强复杂推理)';
-        if (id === 'deepseek-chat')
-            return 'DeepSeek-V3 (通用极速)';
-        if (id === 'deepseek-reasoner')
-            return 'DeepSeek-R1 (深度长链推理)';
-        if (id === 'gpt-4o')
-            return 'GPT-4o (全能旗舰)';
-        if (id === 'gpt-4o-mini')
-            return 'GPT-4o-mini (轻巧极速)';
-        if (id === 'o3-mini')
-            return 'o3-mini (高效推理)';
-        if (id.includes('claude-3-7-sonnet') || id.includes('claude-3.7-sonnet'))
-            return 'Claude 3.7 Sonnet (混合推理)';
-        if (id.includes('claude-3-5-sonnet') || id.includes('claude-3.5-sonnet'))
-            return 'Claude 3.5 Sonnet (逻辑标杆)';
-        return id;
-    }
-    function isLlmConfigured() {
-        const cfg = getLlmConfig();
-        return Boolean(cfg.apiKey && cfg.apiKey.trim().length > 0 && cfg.endpoint && cfg.endpoint.trim().length > 0);
-    }
-    /**
-     * 规范化 API 端点 URL
-     * 兼容 Google AI Studio (Gemini OpenAI Compatibility) 与各种标准 OpenAI 兼容端点变体
-     */
-    function normalizeEndpoint(endpoint) {
-        let url = (endpoint || '').trim().replace(/\/+$/, '');
-        if (!url)
-            return '';
-        // 特殊处理 Google Gemini (Google AI Studio) 域名变体
-        if (url.includes('generativelanguage.googleapis.com')) {
-            if (!url.includes('/openai')) {
-                url = url.replace(/\/+$/, '');
-                if (!url.endsWith('/openai')) {
-                    url = `${url}/openai`;
-                }
-            }
-        }
-        if (!url.endsWith('/chat/completions')) {
-            url = `${url}/chat/completions`;
-        }
-        return url;
-    }
-    /**
-     * 测试 LLM API 连通性
-     */
-    async function testLlmConnection(config) {
-        const startTime = Date.now();
-        const url = normalizeEndpoint(config.endpoint);
-        try {
-            const res = await fetch(url, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${config.apiKey.trim()}`
-                },
-                body: JSON.stringify({
-                    model: config.model.trim(),
-                    messages: [
-                        { role: 'system', content: 'You are a test agent.' },
-                        { role: 'user', content: 'Ping! Reply with "Pong" only.' }
-                    ],
-                    max_tokens: 10,
-                    temperature: 0.1
-                })
-            });
-            const latencyMs = Date.now() - startTime;
-            if (!res.ok) {
-                const errText = await res.text();
-                return {
-                    success: false,
-                    latencyMs,
-                    message: extractCleanErrorMessage(errText, res.status)
-                };
-            }
-            const data = await res.json();
-            const reply = data.choices?.[0]?.message?.content?.trim() || 'OK';
-            return {
-                success: true,
-                latencyMs,
-                message: `连接成功 (${latencyMs}ms): 模型回复 "${reply}"`
-            };
-        }
-        catch (err) {
-            return {
-                success: false,
-                latencyMs: Date.now() - startTime,
-                message: `网络异常: ${err.message}`
-            };
-        }
-    }
-    /**
-     * 提取并提炼出友好的错误信息，避免向用户裸露未经格式化的 JSON 字符串
-     */
-    function extractCleanErrorMessage(errText, status) {
-        try {
-            const data = JSON.parse(errText);
-            const item = Array.isArray(data) ? data[0] : data;
-            const msg = item?.error?.message || item?.message || item?.msg;
-            if (msg) {
-                if (msg.includes('high demand') || msg.includes('overloaded') || status === 503) {
-                    return `大模型服务繁忙 (HTTP 503: 服务高峰排队中，建议切换为 Gemini 1.5/2.0 Flash 或稍后重试)`;
-                }
-                if (msg.includes('rate limit') || status === 429) {
-                    return `模型调用超出频次限额 (HTTP 429: Rate Limit)`;
-                }
-                return `HTTP ${status}: ${msg}`;
-            }
-        }
-        catch {
-            // Not JSON
-        }
-        return `HTTP ${status}: ${errText.slice(0, 140)}`;
-    }
-    /**
-     * 直接调用大模型获取结构化 JSON 响应 (用于费用推断、单据分析等精准单步任务)
-     */
-    async function callDirectLlmJson(systemPrompt, userPrompt, signal, timeoutMs = 240000 // 默认 240 秒 (4 分钟) 超时守卫，兼顾慢速代理与复杂思维链模型
-    ) {
-        const config = getLlmConfig();
-        if (!config.apiKey || !config.endpoint) {
-            return { success: false, error: '未配置大模型 API Key 或端点' };
-        }
-        const url = normalizeEndpoint(config.endpoint);
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-        const activeSignal = controller.signal;
-        try {
-            const res = await fetch(url, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${config.apiKey.trim()}`
-                },
-                body: JSON.stringify({
-                    model: config.model.trim(),
-                    messages: [
-                        { role: 'system', content: systemPrompt },
-                        { role: 'user', content: userPrompt }
-                    ],
-                    temperature: 0.1
-                }),
-                signal: activeSignal
-            });
-            clearTimeout(timeoutId);
-            if (!res.ok) {
-                const errText = await res.text();
-                return {
-                    success: false,
-                    error: extractCleanErrorMessage(errText, res.status)
-                };
-            }
-            const data = await res.json();
-            const content = data.choices?.[0]?.message?.content?.trim() || '';
-            // 过滤思维链标签 (如 <think>...</think> 或 <thought>...</thought>)
-            let cleanContent = content.replace(/<(?:think|thought)>[\s\S]*?<\/(?:think|thought)>/gi, '').trim();
-            // Extract JSON from markdown block ```json ... ``` or raw {...}
-            let cleanJson = cleanContent;
-            const match = cleanContent.match(/```(?:json)?\s*([\s\S]*?)```/);
-            if (match) {
-                cleanJson = match[1].trim();
-            }
-            else {
-                const firstBrace = cleanContent.indexOf('{');
-                const lastBrace = cleanContent.lastIndexOf('}');
-                if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-                    cleanJson = cleanContent.slice(firstBrace, lastBrace + 1);
-                }
-            }
-            const parsed = JSON.parse(cleanJson);
-            return { success: true, data: parsed, rawText: content };
-        }
-        catch (err) {
-            clearTimeout(timeoutId);
-            AutopilotLogger.warn(`[DirectLLM] 请求或解析 JSON 失败: ${err?.message || err}`);
-            const timeoutSec = Math.round(timeoutMs / 1000);
-            return {
-                success: false,
-                error: err.name === 'AbortError' ? `大模型请求超时 (超过 ${timeoutSec} 秒未响应，建议检查网络代理或将单批次记录分拆)` : (err.message || '大模型请求异常')
-            };
-        }
-    }
-    /**
-     * 直接调用大模型获取自然语言 / Markdown 文本响应 (用于报告撰写、对话问答等)
-     */
-    async function callDirectLlmText(systemPrompt, userPrompt, signal, timeoutMs = 180000) {
-        const config = getLlmConfig();
-        if (!config.apiKey || !config.endpoint) {
-            return { success: false, error: '未配置大模型 API Key 或端点' };
-        }
-        const url = normalizeEndpoint(config.endpoint);
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-        const activeSignal = controller.signal;
-        try {
-            const res = await fetch(url, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${config.apiKey.trim()}`
-                },
-                body: JSON.stringify({
-                    model: config.model.trim(),
-                    messages: [
-                        { role: 'system', content: systemPrompt },
-                        { role: 'user', content: userPrompt }
-                    ],
-                    temperature: 0.3
-                }),
-                signal: activeSignal
-            });
-            clearTimeout(timeoutId);
-            if (!res.ok) {
-                const errText = await res.text();
-                return {
-                    success: false,
-                    error: extractCleanErrorMessage(errText, res.status)
-                };
-            }
-            const data = await res.json();
-            const content = data.choices?.[0]?.message?.content?.trim() || '';
-            // 过滤思维链标签 (如 <think>...</think> 或 <thought>...</thought>)
-            const cleanContent = content.replace(/<(?:think|thought)>[\s\S]*?<\/(?:think|thought)>/gi, '').trim();
-            return { success: true, text: cleanContent };
-        }
-        catch (err) {
-            clearTimeout(timeoutId);
-            AutopilotLogger.warn(`[DirectLLMText] 调用大模型失败: ${err?.message || err}`);
-            const timeoutSec = Math.round(timeoutMs / 1000);
-            return {
-                success: false,
-                error: err.name === 'AbortError' ? `大模型请求超时 (超过 ${timeoutSec} 秒未响应)` : (err.message || '大模型请求异常')
-            };
-        }
-    }
-
-    /**
-     * inferenceService.ts — 推断流水线服务
-     *
-     * 将 batchEditExpenseModal.ts 中的第二层 LLM 推断逻辑（~430 行）抽离重构为
-     * "时空骨架提取 + 分通道分流 + 极简 IO Schema" 的高性能推断管线。
-     *
-     * 三大核心优化：
-     * 1. 时空骨架压缩 (extractTripSkeleton)：tripTickets JSON → 纯文本时间线，压缩 ~93%
-     * 2. 按类型精准分流 (dispatchInferenceChannels)：三个独立通道并行执行
-     *    - 通道 A (TAXI)：出租车批量起止地，极简 [id, from, to] 输出
-     *    - 通道 B (STAY/TRANSIT)：住宿 + 大交通日程对齐
-     *    - 通道 C (UNKNOWN)：未识别类型归类
-     * 3. 极简 IO Schema：各通道仅传/仅返回该类型必要字段
-     *
-     * @since v4.38.0
-     */
-    /**
-     * 依据费用类型 ID 或名称确定单据流向 (BC 差旅报销 vs BJ 经费报销)
-     */
-    function getExpenseBillFlow(typeId, typeName) {
-        const s = `${typeName || ''} ${typeId || ''}`.toLowerCase();
-        // 1. 明确属于差旅大类的：飞机票、火车票、住宿费、出租车(taxi)、出差、差旅
-        if (s.includes('飞机') || s.includes('航空') || s.includes('jnc') || typeId === '035671613fdde1653e55bb00bc610000')
-            return 'BC';
-        if (s.includes('火车') || s.includes('高铁') || s.includes('hcp') || typeId === '0356c4c2b14de1653e55bb00bc610000')
-            return 'BC';
-        if (s.includes('住宿') || s.includes('酒店') || s.includes('zsf') || typeId === '0356c4e2b72de1653e55bb00bc610001')
-            return 'BC';
-        if ((s.includes('出租车') && s.includes('taxi')) || typeId === '0356c4cef03345af7f1906ec05cc0000')
-            return 'BC';
-        if (s.includes('差旅'))
-            return 'BC';
-        // 2. 明确属于非差旅/日常经费类的：市内交通费、手机通信费、交际费、会议费、福利费、培训费、办公用品、快递等
-        if (s.includes('市内交通') || typeId === '0356c529e72de1653e55bb00bc610001')
-            return 'BJ';
-        if (s.includes('手机') || s.includes('通信费-员工') || s.includes('txf') || typeId === '0356c577f8ede1653e55bb00bc610001')
-            return 'BJ';
-        if (s.includes('交际') || s.includes('会议') || s.includes('福利') || s.includes('礼金') || s.includes('培训') || s.includes('办公') || s.includes('快递') || s.includes('耗材') || s.includes('服务'))
-            return 'BJ';
-        // 3. 其它费用/未分类日常费用：在无出差特征时默认归入日常经费 (BJ)
-        if (s.includes('其他费用') || typeId === '0356c583e17de1653e55bb00bc610000')
-            return 'BJ';
-        return 'BJ';
-    }
-    /**
-     * 根据类型 ID 或类型名称智能识别费用主类别
-     */
-    function detectTypeCategory(typeId, typeName) {
-        const s = `${typeName || ''} ${typeId || ''}`.toLowerCase();
-        if (s.includes('住宿') || s.includes('酒店') || s.includes('zsf') || typeId === '0356c4e2b72de1653e55bb00bc610001')
-            return 'HOTEL';
-        if (s.includes('飞机') || s.includes('航空') || s.includes('jnc') || typeId === '035671613fdde1653e55bb00bc610000')
-            return 'FLIGHT';
-        if (s.includes('火车') || s.includes('高铁') || s.includes('hcp') || typeId === '0356c4c2b14de1653e55bb00bc610000')
-            return 'TRAIN';
-        if (s.includes('出租') || s.includes('taxi') || s.includes('czc') || s.includes('市内交通') || s.includes('snj') ||
-            typeId === '0356c4cef03345af7f1906ec05cc0000' || typeId === '0356c529e72de1653e55bb00bc610001')
-            return 'TAXI';
-        if (s.includes('手机') || s.includes('员工手机') || s.includes('通信') || s.includes('txf') || typeId === '0356c577f8ede1653e55bb00bc610001')
-            return 'MOBILE';
-        return 'OTHER';
-    }
-    /**
-     * 获取费用分组的识别主类别
-     */
-    function getGroupCategory(group) {
-        return detectTypeCategory(group.newExpenseTypeId || group.expenseTypeId, group.newExpenseTypeName || group.expenseTypeName);
-    }
-    /**
-     * 获取费用分组的单据流向
-     */
-    function getGroupBillFlow(group) {
-        return getExpenseBillFlow(group.newExpenseTypeId || group.expenseTypeId, group.newExpenseTypeName || group.expenseTypeName);
-    }
-    /**
-     * 检测出租车费用是否存在出差/日常错配嫌疑
-     */
-    function checkTaxiMisclassification(group, tripDateIntervals) {
-        // 核心铁律：已报销的费用已完成审批归档，严格只读展示，严禁触发错配报警或建议变更
-        if (normalizeExpenseStatus(group.status) === '已报销') {
-            return { hasMisclass: false };
-        }
-        const typeId = group.newExpenseTypeId || group.expenseTypeId;
-        const typeName = group.newExpenseTypeName || group.expenseTypeName;
-        const date = group.newBusinessDate || group.businessDate || group.earliestInvoiceDate;
-        if (!date)
-            return { hasMisclass: false };
-        const isLocalTaxi = typeName?.includes('市内交通') || typeId === '0356c529e72de1653e55bb00bc610001';
-        const isTripTaxi = (typeName?.includes('taxi') && !typeName?.includes('市内')) || typeId === '0356c4cef03345af7f1906ec05cc0000';
-        const hasTaxiInvoice = group.invoices?.some(inv => {
-            const s = `${inv.invoiceType || ''} ${inv.salesName || ''} ${inv.fileName || ''} ${inv.remarks || ''}`.toLowerCase();
-            return s.includes('出租车') || s.includes('打车') || s.includes('滴滴') || s.includes('taxi') || Boolean(inv.timeGetOn || inv.timeGetOff);
-        });
-        if (!isLocalTaxi && !isTripTaxi && !hasTaxiInvoice)
-            return { hasMisclass: false };
-        const matchedTrip = tripDateIntervals.find(t => date >= t.start && date <= t.end);
-        // 1. 发票明明是出租车，但费用类型被设置成了“其他费用”或未知类型
-        if (!isLocalTaxi && !isTripTaxi && hasTaxiInvoice) {
-            if (matchedTrip) {
-                return {
-                    hasMisclass: true,
-                    suggestedTypeId: '0356c4cef03345af7f1906ec05cc0000',
-                    suggestedTypeName: '出租车（taxi）',
-                    reason: `底层发票为出租车票且发生于 Trip ${matchedTrip.tripNo} (${matchedTrip.destination}) 出差期间，建议变更为【差旅费 - 出租车(taxi)】`
-                };
-            }
-            else {
-                return {
-                    hasMisclass: true,
-                    suggestedTypeId: '0356c529e72de1653e55bb00bc610001',
-                    suggestedTypeName: '市内交通费',
-                    reason: `底层发票为出租车打车票且非出差期间，建议变更为【交通费 - 市内交通费 (日常经费)】`
-                };
-            }
-        }
-        if (matchedTrip && isLocalTaxi) {
-            return {
-                hasMisclass: true,
-                suggestedTypeId: '0356c4cef03345af7f1906ec05cc0000',
-                suggestedTypeName: '出租车（taxi）',
-                reason: `该打车发生于 Trip ${matchedTrip.tripNo} (${matchedTrip.destination}) 出差期间，建议变更为【差旅费 - 出租车(taxi)】`
-            };
-        }
-        if (!matchedTrip && isTripTaxi && tripDateIntervals.length > 0) {
-            return {
-                hasMisclass: true,
-                suggestedTypeId: '0356c529e72de1653e55bb00bc610001',
-                suggestedTypeName: '市内交通费',
-                reason: `该打车不在任何出差期间内，建议变更为【交通费 - 市内交通费 (日常经费)】`
-            };
-        }
-        return { hasMisclass: false };
-    }
-    /**
-     * 判断费用分组是否为未识别类型 / 未分类 / OTHER
-     */
-    function isUnknownTypeGroup(group) {
-        const typeId = group.newExpenseTypeId || group.expenseTypeId;
-        const typeName = group.newExpenseTypeName || group.expenseTypeName;
-        return !typeId || typeId === 'UNIDENTIFIED' || typeName === '未知类型' || getGroupCategory(group) === 'OTHER';
-    }
-    /** 出租车通道分片阈值 */
-    const TAXI_BATCH_SIZE = 40;
-    // ============================================================
-    // 二、时空骨架提取 (Trip Skeleton Compression)
-    // ============================================================
-    /**
-     * 从已确认的大交通和住宿记录中提取极简纯文本时间线。
-     * 将数千 Token 的 JSON 上下文压缩至数百 Token 的人类可读时间线。
-     *
-     * 输出格式示例：
-     * ```
-     * [07-20] 机票: 上海虹桥→天津滨海 (MU5227 12:35) | 宿: 天津亚朵酒店
-     * [07-21~07-24] 宿: 天津美悦酒店
-     * [07-25] 机票: 天津滨海→上海虹桥 (FM9116 16:00)
-     * ```
-     */
-    function extractTripSkeleton(groups, itineraryText) {
-        // 收集大交通与住宿记录
-        const anchors = [];
-        for (const g of groups) {
-            const cat = getGroupCategory(g);
-            const dyn = g.dynamicFields || {};
-            const inv0 = g.invoices[0];
-            if (cat === 'FLIGHT') {
-                const from = dyn.flightFromCity || inv0?.stationGetOn || '?';
-                const to = dyn.flightToCity || inv0?.stationGetOff || '?';
-                const num = dyn.flightNum || inv0?.trainNo || '';
-                const depTime = inv0?.departureTime || '';
-                const date = dyn.flightStartDate || inv0?.departureDate || g.businessDate || g.earliestInvoiceDate;
-                const endDate = dyn.flightEndDate;
-                let text = `机票: ${from}→${to}`;
-                if (num)
-                    text += ` (${num}`;
-                if (depTime)
-                    text += num ? ` ${depTime})` : ` (${depTime})`;
-                else if (num)
-                    text += ')';
-                anchors.push({ date, endDate, type: 'FLIGHT', text });
-            }
-            else if (cat === 'TRAIN') {
-                const from = dyn.trainFromStation || inv0?.stationGetOn || '?';
-                const to = dyn.trainToStation || inv0?.stationGetOff || '?';
-                const num = inv0?.trainNo || '';
-                const depTime = inv0?.departureTime || '';
-                const date = dyn.trainStartDate || inv0?.departureDate || g.businessDate || g.earliestInvoiceDate;
-                const endDate = dyn.trainEndDate;
-                let text = `高铁: ${from}→${to}`;
-                if (num)
-                    text += ` (${num}`;
-                if (depTime)
-                    text += num ? ` ${depTime})` : ` (${depTime})`;
-                else if (num)
-                    text += ')';
-                anchors.push({ date, endDate, type: 'TRAIN', text });
-            }
-            else if (cat === 'HOTEL') {
-                const hotel = dyn.hotelName || inv0?.salesName || '?';
-                const city = dyn.city || '';
-                const checkIn = dyn.checkInDate || g.businessDate || g.earliestInvoiceDate;
-                const checkOut = dyn.checkOutDate;
-                let text = `宿: ${hotel}`;
-                if (city)
-                    text += ` (${city})`;
-                anchors.push({
-                    date: checkIn,
-                    endDate: checkOut,
-                    type: 'HOTEL',
-                    text
-                });
-            }
-        }
-        if (anchors.length === 0 && !itineraryText)
-            return '';
-        // 按日期正序排列
-        anchors.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
-        // 按日期分组聚合
-        const dateMap = new Map();
-        for (const anchor of anchors) {
-            const dateKey = formatSkeletonDateRange(anchor.date, anchor.endDate);
-            if (!dateMap.has(dateKey))
-                dateMap.set(dateKey, []);
-            dateMap.get(dateKey).push(anchor.text);
-        }
-        const lines = [];
-        for (const [dateKey, texts] of dateMap) {
-            lines.push(`[${dateKey}] ${texts.join(' | ')}`);
-        }
-        let skeleton = lines.join('\n');
-        // 附加用户权威排期表（如果存在）
-        if (itineraryText) {
-            skeleton += '\n\n【用户权威出差排期日程 (Ground Truth)】：\n' + itineraryText;
-        }
-        return skeleton;
-    }
-    /** 格式化骨架日期范围：07-20 或 07-21~07-24 */
-    function formatSkeletonDateRange(startDate, endDate) {
-        const fmt = (d) => {
-            if (!d)
-                return '';
-            const m = d.match(/\d{4}-(\d{2}-\d{2})/);
-            return m ? m[1] : d;
-        };
-        const s = fmt(startDate);
-        const e = fmt(endDate);
-        if (!s)
-            return '?';
-        if (!e || e === s)
-            return s;
-        // 住宿的 endDate 减 1 天 (checkOut 日不算入住)
-        return `${s}~${e}`;
-    }
-    // ============================================================
-    // 三、分通道调度器 (Dispatcher)
-    // ============================================================
-    /**
-     * 将待推断记录按类型分流至三个独立通道，采用两阶段瀑布式并行执行后合并结果。
-     *
-     * 【关键设计决策：两阶段瀑布式并行 (Two-Phase Waterfall)】
-     * 出租车的时空闭环推理强依赖住宿酒店名称和大交通枢纽站点信息。
-     * 若三通道完全并行，出租车通道可能拿不到 Channel B (住宿/大交通) 的 LLM 推断结果
-     * （如从排期表匹配到的精确酒店商业品牌名、入离店日期等），导致推断质量下降。
-     *
-     * 因此采用瀑布式分阶段执行：
-     *   阶段 1：Channel B (住宿+大交通) + Channel C (未知类型) → 并行执行（数量少，~10-20s）
-     *   阶段 2：Channel A (出租车) → 使用被 Phase 1 结果增强后的骨架执行（信息完整）
-     *
-     * 总延迟 ≈ Phase1(~20s) + Phase2(~30s) ≈ 50s，远优于全串行 3~5 分钟。
-     */
-    async function dispatchInferenceChannels(groupsWithMissingFields, allGroups, tripSkeleton, itineraryText, onProgress) {
-        // 按类型分桶
-        const taxiGroups = [];
-        const stayTransitGroups = [];
-        const unknownGroups = [];
-        for (const g of groupsWithMissingFields) {
-            // 核心铁律：已报销记录严格只读，绝不分流至任何 LLM 推断通道
-            if (normalizeExpenseStatus(g.status) === '已报销')
-                continue;
-            if (isUnknownTypeGroup(g)) {
-                unknownGroups.push(g);
-            }
-            else {
-                const cat = getGroupCategory(g);
-                if (cat === 'TAXI') {
-                    taxiGroups.push(g);
-                }
-                else if (cat === 'HOTEL' || cat === 'FLIGHT' || cat === 'TRAIN') {
-                    stayTransitGroups.push(g);
-                }
-                // MOBILE 和 OTHER 通常在 Tier 1 规则层已处理完毕，不进入 LLM 通道
-            }
-        }
-        const results = {
-            taxi: [],
-            stayTransit: [],
-            unknown: []
-        };
-        // ================================================================
-        // 阶段 1：Channel B (住宿+大交通) + Channel C (未知类型) 并行执行
-        // 数量少（通常 5~15 笔），耗时短（~10-20s）
-        // ================================================================
-        const phase1Promises = [];
-        if (stayTransitGroups.length > 0) {
-            const statusPrefix = `🏨✈️ 差旅大项 ${stayTransitGroups.length} 笔`;
-            onProgress?.(`阶段1: ${statusPrefix} 推断中...`);
-            phase1Promises.push(executeStayTransitChannel(stayTransitGroups, tripSkeleton)
-                .then(r => { results.stayTransit = r; onProgress?.(`${statusPrefix} ✅`); })
-                .catch(err => {
-                AutopilotLogger.warn(`[InferenceService] 差旅大项通道异常: ${err?.message}`);
-                onProgress?.(`${statusPrefix} ⚠️ 部分失败`);
-            }));
-        }
-        if (unknownGroups.length > 0) {
-            const statusPrefix = `❓ 未知类型 ${unknownGroups.length} 笔`;
-            onProgress?.(`阶段1: ${statusPrefix} 推断中...`);
-            phase1Promises.push(executeUnknownChannel(unknownGroups, tripSkeleton)
-                .then(r => { results.unknown = r; onProgress?.(`${statusPrefix} ✅`); })
-                .catch(err => {
-                AutopilotLogger.warn(`[InferenceService] 未知类型通道异常: ${err?.message}`);
-                onProgress?.(`${statusPrefix} ⚠️ 部分失败`);
-            }));
-        }
-        // 等待阶段 1 全部完成
-        if (phase1Promises.length > 0) {
-            await Promise.allSettled(phase1Promises);
-        }
-        // ================================================================
-        // 阶段间增强：将 Phase 1 推断结果写回 groups，然后重新提取增强骨架
-        // 这样出租车通道拿到的骨架已包含 LLM 推断出的精确酒店名/入离店日期/航线等
-        // ================================================================
-        let enrichedSkeleton = tripSkeleton;
-        if (results.stayTransit.length > 0 || results.unknown.length > 0) {
-            // 临时将 Phase 1 结果写入 groups 的 dynamicFields（mergeInferenceResults 后续会正式处理）
-            applyPhase1ResultsToGroups(allGroups, results);
-            // 重新提取增强后的骨架
-            enrichedSkeleton = extractTripSkeleton(allGroups, itineraryText);
-            AutopilotLogger.info(`[InferenceService] Phase 1 完成，骨架已增强 (stayTransit=${results.stayTransit.length}, unknown=${results.unknown.length})`);
-        }
-        // ================================================================
-        // 阶段 2：Channel A (出租车) 使用增强骨架执行
-        // 数量最多（通常 60~80%），但此时信息完整
-        // ================================================================
-        if (taxiGroups.length > 0) {
-            const statusPrefix = `🚕 出租车 ${taxiGroups.length} 笔`;
-            onProgress?.(`阶段2: ${statusPrefix} 推断中...`);
-            try {
-                results.taxi = await executeTaxiChannel(taxiGroups, enrichedSkeleton, itineraryText);
-                onProgress?.(`${statusPrefix} ✅`);
-            }
-            catch (err) {
-                AutopilotLogger.warn(`[InferenceService] 出租车通道异常: ${err?.message}`);
-                onProgress?.(`${statusPrefix} ⚠️ 部分失败`);
-            }
-        }
-        return results;
-    }
-    /**
-     * 将阶段 1 推断结果临时写入 groups 的 dynamicFields，以便重新提取增强骨架。
-     * 仅写入影响骨架生成的关键锚点字段（酒店名/城市/入离店/航线/车站）。
-     */
-    function applyPhase1ResultsToGroups(groups, results) {
-        const groupMap = new Map(groups.map(g => [g.expenseRecordId, g]));
-        // 写入 Channel B (住宿+大交通) 推断结果
-        for (const st of results.stayTransit) {
-            const g = groupMap.get(st.id);
-            if (!g)
-                continue;
-            g.dynamicFields = g.dynamicFields || {};
-            const dyn = g.dynamicFields;
-            const f = st.fields;
-            if (f.hotelName && !dyn.hotelName)
-                dyn.hotelName = f.hotelName;
-            if (f.city && !dyn.city)
-                dyn.city = f.city;
-            if (f.checkInDate && !dyn.checkInDate)
-                dyn.checkInDate = f.checkInDate;
-            if (f.checkOutDate && !dyn.checkOutDate)
-                dyn.checkOutDate = f.checkOutDate;
-            if (f.flightFromCity && !dyn.flightFromCity)
-                dyn.flightFromCity = f.flightFromCity;
-            if (f.flightToCity && !dyn.flightToCity)
-                dyn.flightToCity = f.flightToCity;
-            if (f.flightNum && !dyn.flightNum)
-                dyn.flightNum = f.flightNum;
-            if (f.flightStartDate && !dyn.flightStartDate)
-                dyn.flightStartDate = f.flightStartDate;
-            if (f.trainFromStation && !dyn.trainFromStation)
-                dyn.trainFromStation = f.trainFromStation;
-            if (f.trainToStation && !dyn.trainToStation)
-                dyn.trainToStation = f.trainToStation;
-            if (f.trainStartDate && !dyn.trainStartDate)
-                dyn.trainStartDate = f.trainStartDate;
-        }
-        // 写入 Channel C (未知类型归类) 推断结果 — 更新类型以便骨架提取识别
-        for (const unk of results.unknown) {
-            const g = groupMap.get(unk.id);
-            if (!g)
-                continue;
-            g.newExpenseTypeId = unk.targetExpenseTypeId;
-            g.newExpenseTypeName = unk.targetExpenseTypeName;
-            if (unk.fields) {
-                g.dynamicFields = g.dynamicFields || {};
-                const dyn = g.dynamicFields;
-                const f = unk.fields;
-                if (f.hotelName && !dyn.hotelName)
-                    dyn.hotelName = f.hotelName;
-                if (f.city && !dyn.city)
-                    dyn.city = f.city;
-                if (f.checkInDate && !dyn.checkInDate)
-                    dyn.checkInDate = f.checkInDate;
-                if (f.checkOutDate && !dyn.checkOutDate)
-                    dyn.checkOutDate = f.checkOutDate;
-                if (f.flightFromCity && !dyn.flightFromCity)
-                    dyn.flightFromCity = f.flightFromCity;
-                if (f.flightToCity && !dyn.flightToCity)
-                    dyn.flightToCity = f.flightToCity;
-                if (f.trainFromStation && !dyn.trainFromStation)
-                    dyn.trainFromStation = f.trainFromStation;
-                if (f.trainToStation && !dyn.trainToStation)
-                    dyn.trainToStation = f.trainToStation;
-            }
-        }
-    }
-    // ============================================================
-    // 四、通道 A：出租车批量起止地推断
-    // ============================================================
-    const TAXI_SYSTEM_PROMPT_TEMPLATE = `你是元年云 FSSC 出租车行程智能推断专家。
-根据出差时空骨架与打车时间，推断每笔出租车的始发地与目的地。
-
-【出差时空骨架 (行程时间线)】：
-{SKELETON}
-
-【时空轨迹闭环推理规则】：
-1. 大交通出发首日 (去程日)：
-   - 出发前打车（早间/提前 1~2 小时）：始发地为「住所」，目的地为当天出发交通枢纽（如上海虹桥机场/上海虹桥站）
-   - 到达外地后打车：始发地为到达交通枢纽（如天津滨海机场），目的地为当天入住酒店的具体商业品牌名
-2. 大交通返程末日 (回程日)：
-   - 返程前打车：始发地为当天退房酒店，目的地为外地出发交通枢纽
-   - 返程到达常驻地后打车：始发地为到达交通枢纽，目的地为「住所」
-3. 在途常驻出差日：
-   - 在当天入住酒店与「客户现场」之间流转
-4.【去代称铁律】：严禁输出"酒店"、"机场"、"车站"、"Home"等模糊代称！必须解析为真实酒店名/真实枢纽站名或「住所」
-5. 仅对能确信推断的记录输出，无法判断的记录直接不放入数组
-
-JSON 输出格式 (严禁输出其他字段/废话/思考过程)：
-{"results":[{"id":"记录ID","from":"始发据点","to":"到达据点"}]}`;
-    async function executeTaxiChannel(groups, skeleton, itineraryText) {
-        const systemPrompt = TAXI_SYSTEM_PROMPT_TEMPLATE.replace('{SKELETON}', skeleton);
-        // 构建极简输入
-        const buildInputRecords = (gs) => gs.map(g => {
-            const inv = g.invoices.find(i => i.timeGetOn || i.timeGetOff) || g.invoices[0];
-            const rec = {
-                id: g.expenseRecordId,
-                date: g.businessDate || g.earliestInvoiceDate
-            };
-            if (inv?.timeGetOn)
-                rec.on = inv.timeGetOn;
-            if (inv?.timeGetOff)
-                rec.off = inv.timeGetOff;
-            if (inv?.salesName)
-                rec.sales = inv.salesName;
-            // 合并备注与文件名中的行程线索
-            const remark = [inv?.remarks, inv?.reconciliationNote].filter(Boolean).join(' ').trim();
-            if (remark)
-                rec.remark = remark;
-            return rec;
-        });
-        // 分片处理：超过阈值则分批并行
-        if (groups.length > TAXI_BATCH_SIZE) {
-            const batches = [];
-            for (let i = 0; i < groups.length; i += TAXI_BATCH_SIZE) {
-                batches.push(groups.slice(i, i + TAXI_BATCH_SIZE));
-            }
-            const batchResults = await Promise.allSettled(batches.map(batch => callTaxiLlm(systemPrompt, buildInputRecords(batch))));
-            const merged = [];
-            for (const r of batchResults) {
-                if (r.status === 'fulfilled' && r.value)
-                    merged.push(...r.value);
-            }
-            return merged;
-        }
-        return callTaxiLlm(systemPrompt, buildInputRecords(groups));
-    }
-    async function callTaxiLlm(systemPrompt, records) {
-        const userPrompt = JSON.stringify({ records });
-        const res = await callDirectLlmJson(systemPrompt, userPrompt, undefined, 120000);
-        if (res.success && res.data?.results) {
-            return res.data.results.filter(r => r.id && (r.from || r.to));
-        }
-        if (!res.success) {
-            AutopilotLogger.warn(`[TaxiChannel] LLM 调用失败: ${res.error}`);
-        }
-        return [];
-    }
-    // ============================================================
-    // 五、通道 B：差旅核心大项推断 (HOTEL / FLIGHT / TRAIN)
-    // ============================================================
-    const STAY_TRANSIT_SYSTEM_PROMPT_TEMPLATE = `你是元年云 FSSC 差旅核心大项（住宿/机票/火车票）智能推断专家。
-根据出差时空骨架与发票证据链，推断指定记录的缺失专属必填字段。
-
-【出差时空骨架 (行程时间线)】：
-{SKELETON}
-
-【住宿费 (HOTEL) 规则】：
-- checkInDate (YYYY-MM-DD)：实际入住日期，严禁误用开票日期！以排期/时间线为准
-- checkOutDate (YYYY-MM-DD)：实际离店日期
-- city：出差城市名（如天津、广州、大连），连锁酒店品牌词（亚朵、全季）不是城市
-- hotelName：酒店商业品牌名（如"全季酒店(天津津南新城店)"），严禁用开票抬头/管理公司
-- roomNum：数字，默认 1
-
-【飞机票 (FLIGHT) 规则】：
-- flightStartDate (YYYY-MM-DD)：出发日期
-- flightEndDate (YYYY-MM-DD)：到达日期
-- flightFromCity：出发城市
-- flightToCity：到达城市
-- flightNum：航班号。往返双程需完整填写并用正斜杠连接（如 CZ6534/CZ6523），严禁只截取单程！严禁把项目编号误识别为航班号！
-
-【火车票 (TRAIN) 规则】：
-- trainStartDate (YYYY-MM-DD)：出发日期
-- trainEndDate (YYYY-MM-DD)：到达日期
-- trainFromStation：出发站
-- trainToStation：到达站
-
-【输出约束】：
-- 仅对能确信推断的字段输出键值，严禁输出 null 字段
-- 严禁输出 reason / 思考过程 / 多余文字
-- 无法推断的记录直接不放入数组
-
-JSON 输出格式：
-{"inferences":[{"id":"记录ID","fields":{"checkInDate":"YYYY-MM-DD","city":"城市",...}}]}`;
-    async function executeStayTransitChannel(groups, skeleton, itineraryText) {
-        const systemPrompt = STAY_TRANSIT_SYSTEM_PROMPT_TEMPLATE.replace('{SKELETON}', skeleton);
-        const records = groups.map(g => {
-            const cat = getGroupCategory(g);
-            const inv0 = g.invoices[0];
-            const dyn = g.dynamicFields || {};
-            const rec = {
-                id: g.expenseRecordId,
-                type: cat,
-                amount: g.expenseAmount,
-                bizDate: g.businessDate,
-                invDate: g.earliestInvoiceDate,
-                missing: []
-            };
-            if (inv0?.salesName)
-                rec.sales = inv0.salesName;
-            if (inv0?.stationGetOn)
-                rec.stationOn = inv0.stationGetOn;
-            if (inv0?.stationGetOff)
-                rec.stationOff = inv0.stationGetOff;
-            if (inv0?.departureDate)
-                rec.depDate = inv0.departureDate;
-            if (inv0?.trainNo)
-                rec.flightNo = inv0.trainNo;
-            if (inv0?.remarks)
-                rec.remarks = inv0.remarks;
-            if (inv0?.fileName)
-                rec.fileName = inv0.fileName;
-            if (dyn.hotelName)
-                rec.hotelName = dyn.hotelName;
-            if (dyn.city)
-                rec.city = dyn.city;
-            if (dyn.checkInDate)
-                rec.checkIn = dyn.checkInDate;
-            if (dyn.checkOutDate)
-                rec.checkOut = dyn.checkOutDate;
-            // 明确列出缺失字段
-            if (cat === 'HOTEL') {
-                if (!dyn.checkInDate)
-                    rec.missing.push('checkInDate');
-                if (!dyn.checkOutDate)
-                    rec.missing.push('checkOutDate');
-                if (!dyn.city)
-                    rec.missing.push('city');
-                if (!dyn.hotelName)
-                    rec.missing.push('hotelName');
-            }
-            else if (cat === 'FLIGHT') {
-                if (!dyn.flightStartDate)
-                    rec.missing.push('flightStartDate');
-                if (!dyn.flightEndDate)
-                    rec.missing.push('flightEndDate');
-                if (!dyn.flightFromCity)
-                    rec.missing.push('flightFromCity');
-                if (!dyn.flightToCity)
-                    rec.missing.push('flightToCity');
-                if (!dyn.flightNum)
-                    rec.missing.push('flightNum');
-            }
-            else if (cat === 'TRAIN') {
-                if (!dyn.trainStartDate)
-                    rec.missing.push('trainStartDate');
-                if (!dyn.trainEndDate)
-                    rec.missing.push('trainEndDate');
-                if (!dyn.trainFromStation)
-                    rec.missing.push('trainFromStation');
-                if (!dyn.trainToStation)
-                    rec.missing.push('trainToStation');
-            }
-            return rec;
-        });
-        const userPrompt = JSON.stringify({ records });
-        const res = await callDirectLlmJson(systemPrompt, userPrompt, undefined, 120000);
-        if (res.success && res.data?.inferences) {
-            return res.data.inferences
-                .filter(inf => inf.id && inf.fields)
-                .map(inf => ({ id: inf.id, fields: inf.fields }));
-        }
-        if (!res.success) {
-            AutopilotLogger.warn(`[StayTransitChannel] LLM 调用失败: ${res.error}`);
-        }
-        return [];
-    }
-    // ============================================================
-    // 六、通道 C：未识别类型归类
-    // ============================================================
-    const UNKNOWN_SYSTEM_PROMPT = `你是元年云 FSSC 费用类型智能分类专家。
-根据发票金额、销售方、备注与文件名等证据，判定每笔未识别费用的标准类型，并一并补齐该类型的必填字段。
-
-【系统标准费用类型字典】：
-1. 飞机票（航空券）→ ID: "035671613fdde1653e55bb00bc610000", 必填: flightStartDate, flightEndDate, flightFromCity, flightToCity, flightNum
-2. 火车公交车票 （電車Bus代）→ ID: "0356c4c2b14de1653e55bb00bc610000", 必填: trainStartDate, trainEndDate, trainFromStation, trainToStation
-3. 住宿费（宿泊代）→ ID: "0356c4e2b72de1653e55bb00bc610001", 必填: checkInDate, checkOutDate, city, hotelName, roomNum
-4. 出租车（taxi）→ ID: "0356c4cef03345af7f1906ec05cc0000", 必填: startAddress, endAddress
-5. 通信传真费（通信代）→ ID: "0356c4f6701345af7f1906ec05cc0000", 必填: billMonth (YYYY-MM)
-6. 交通费-其他(その他）→ ID: "0356c529e72de1653e55bb00bc610001", 必填: startAddress, endAddress
-
-【分类判定规则】：
-- 飞机/航空/机票 → 飞机票
-- 火车/高铁/铁路/12306 → 火车公交车票
-- 酒店/住宿/客房/宾馆 → 住宿费
-- 出租车/滴滴/网约车/曹操/taxi → 出租车
-- 通信/话费/移动/电信/联通 → 通信传真费
-- 大额 (≥¥350) 且无打车特征 → 勿随意降级为出租车
-
-【输出约束】：
-- 仅输出能确信归类的记录，无法判断的不放入数组
-- 严禁输出 reason / 思考过程
-
-JSON 输出格式：
-{"classifications":[{"id":"记录ID","targetExpenseTypeId":"类型ID","targetExpenseTypeName":"类型名称","fields":{"startAddress":"...",...}}]}`;
-    async function executeUnknownChannel(groups, skeleton) {
-        const systemPrompt = skeleton
-            ? `${UNKNOWN_SYSTEM_PROMPT}\n\n【出差时空骨架 (辅助参考)】：\n${skeleton}`
-            : UNKNOWN_SYSTEM_PROMPT;
-        const records = groups.map(g => {
-            const inv0 = g.invoices[0];
-            const rec = {
-                id: g.expenseRecordId,
-                amount: g.expenseAmount,
-                bizDate: g.businessDate,
-                invDate: g.earliestInvoiceDate
-            };
-            if (inv0?.salesName)
-                rec.sales = inv0.salesName;
-            if (inv0?.fileName)
-                rec.fileName = inv0.fileName;
-            if (inv0?.remarks)
-                rec.remarks = inv0.remarks;
-            if (inv0?.timeGetOn)
-                rec.timeGetOn = inv0.timeGetOn;
-            if (inv0?.timeGetOff)
-                rec.timeGetOff = inv0.timeGetOff;
-            if (inv0?.stationGetOn)
-                rec.stationOn = inv0.stationGetOn;
-            if (inv0?.stationGetOff)
-                rec.stationOff = inv0.stationGetOff;
-            return rec;
-        });
-        const userPrompt = JSON.stringify({ records });
-        const res = await callDirectLlmJson(systemPrompt, userPrompt, undefined, 60000);
-        if (res.success && res.data?.classifications) {
-            return res.data.classifications
-                .filter(c => c.id && c.targetExpenseTypeId && c.targetExpenseTypeName)
-                .map(c => ({
-                id: c.id,
-                targetExpenseTypeId: c.targetExpenseTypeId,
-                targetExpenseTypeName: c.targetExpenseTypeName,
-                fields: c.fields
-            }));
-        }
-        if (!res.success) {
-            AutopilotLogger.warn(`[UnknownChannel] LLM 调用失败: ${res.error}`);
-        }
-        return [];
-    }
-    // ============================================================
-    // 七、结果合并回填 (Merge & Backfill)
-    // ============================================================
-    /**
-     * 将三通道推断结果统一映射回 groups 的 dynamicFields / inferredFields。
-     * 完整保留现有的联动逻辑：
-     * - 住宿城市 → cityType 自动推导
-     * - 住宿/大交通业务日期 → newBusinessDate 同步
-     * - selectedRecordIds 自动选中
-     *
-     * @returns LLM 推断填充的总字段数
-     */
-    function mergeInferenceResults(groups, inferenceResults, selectedRecordIds) {
-        let llmInferredCount = 0;
-        const groupMap = new Map(groups.map(g => [g.expenseRecordId, g]));
-        // ---- 合并通道 C：未知类型归类 ----
-        for (const unk of inferenceResults.unknown) {
-            const targetG = groupMap.get(unk.id);
-            if (!targetG)
-                continue;
-            targetG.dynamicFields = targetG.dynamicFields || {};
-            targetG.inferredFields = targetG.inferredFields || {};
-            targetG.newExpenseTypeId = unk.targetExpenseTypeId;
-            targetG.newExpenseTypeName = unk.targetExpenseTypeName;
-            targetG.inferredFields['expenseType'] = 'llm';
-            llmInferredCount++;
-            selectedRecordIds.add(targetG.expenseRecordId);
-            // 归类后一并补齐的字段
-            if (unk.fields) {
-                llmInferredCount += applyFieldsToGroup(targetG, unk.fields);
-            }
-        }
-        // ---- 合并通道 A：出租车起止地 ----
-        for (const taxi of inferenceResults.taxi) {
-            const targetG = groupMap.get(taxi.id);
-            if (!targetG)
-                continue;
-            targetG.dynamicFields = targetG.dynamicFields || {};
-            targetG.inferredFields = targetG.inferredFields || {};
-            if (taxi.from) {
-                targetG.dynamicFields.startAddress = taxi.from;
-                targetG.inferredFields['dynAddrFrom'] = 'llm';
-                targetG.inferredFields['startAddress'] = 'llm';
-                llmInferredCount++;
-            }
-            if (taxi.to) {
-                targetG.dynamicFields.endAddress = taxi.to;
-                targetG.inferredFields['dynAddrTo'] = 'llm';
-                targetG.inferredFields['endAddress'] = 'llm';
-                llmInferredCount++;
-            }
-            if (taxi.from || taxi.to) {
-                selectedRecordIds.add(targetG.expenseRecordId);
-            }
-        }
-        // ---- 合并通道 B：差旅大项 ----
-        for (const st of inferenceResults.stayTransit) {
-            const targetG = groupMap.get(st.id);
-            if (!targetG)
-                continue;
-            targetG.dynamicFields = targetG.dynamicFields || {};
-            targetG.inferredFields = targetG.inferredFields || {};
-            const count = applyFieldsToGroup(targetG, st.fields);
-            if (count > 0) {
-                llmInferredCount += count;
-                selectedRecordIds.add(targetG.expenseRecordId);
-            }
-        }
-        return llmInferredCount;
-    }
-    /**
-     * 将推断字段应用到目标分组，包含完整的联动逻辑
-     * @returns 实际填充的字段数
-     */
-    function applyFieldsToGroup(targetG, fields) {
-        const dyn = targetG.dynamicFields;
-        const inf = targetG.inferredFields;
-        const effectiveCat = getGroupCategory(targetG);
-        let count = 0;
-        // 住宿费专属字段
-        if (fields.checkInDate) {
-            dyn.checkInDate = fields.checkInDate;
-            inf['dynCheckIn'] = 'llm';
-            inf['checkInDate'] = 'llm';
-            if (effectiveCat === 'HOTEL') {
-                targetG.newBusinessDate = fields.checkInDate;
-                inf['businessDate'] = 'llm';
-            }
-            count++;
-        }
-        if (fields.checkOutDate) {
-            dyn.checkOutDate = fields.checkOutDate;
-            inf['dynCheckOut'] = 'llm';
-            inf['checkOutDate'] = 'llm';
-            count++;
-        }
-        if (fields.city) {
-            dyn.city = fields.city;
-            inf['dynCity'] = 'llm';
-            inf['city'] = 'llm';
-            // 城市级别自动推导
-            const c = String(fields.city).replace(/市|区|县/g, '').trim();
-            const isTier1 = /北京|上海|广州|深圳/.test(c);
-            dyn.cityType = isTier1 ? '境内-北上广深' : '境内-其他';
-            inf['dynCityType'] = 'rule';
-            inf['cityType'] = 'rule';
-            count++;
-        }
-        if (fields.hotelName) {
-            dyn.hotelName = fields.hotelName;
-            inf['dynHotel'] = 'llm';
-            inf['hotelName'] = 'llm';
-            count++;
-        }
-        if (fields.roomNum !== undefined) {
-            dyn.roomNum = Number(fields.roomNum) || 1;
-            inf['dynRoomNum'] = 'llm';
-            inf['roomNum'] = 'llm';
-            count++;
-        }
-        // 出租车始发到达
-        if (fields.startAddress) {
-            dyn.startAddress = fields.startAddress;
-            inf['dynAddrFrom'] = 'llm';
-            inf['startAddress'] = 'llm';
-            count++;
-        }
-        if (fields.endAddress) {
-            dyn.endAddress = fields.endAddress;
-            inf['dynAddrTo'] = 'llm';
-            inf['endAddress'] = 'llm';
-            count++;
-        }
-        // 飞机票专属字段
-        if (fields.flightStartDate) {
-            dyn.flightStartDate = fields.flightStartDate;
-            inf['dynStartDate'] = 'llm';
-            inf['flightStartDate'] = 'llm';
-            if (effectiveCat === 'FLIGHT') {
-                targetG.newBusinessDate = fields.flightStartDate;
-                inf['businessDate'] = 'llm';
-            }
-            count++;
-        }
-        if (fields.flightEndDate) {
-            dyn.flightEndDate = fields.flightEndDate;
-            inf['dynEndDate'] = 'llm';
-            inf['flightEndDate'] = 'llm';
-            count++;
-        }
-        if (fields.flightFromCity) {
-            dyn.flightFromCity = fields.flightFromCity;
-            inf['dynFrom'] = 'llm';
-            inf['flightFromCity'] = 'llm';
-            count++;
-        }
-        if (fields.flightToCity) {
-            dyn.flightToCity = fields.flightToCity;
-            inf['dynTo'] = 'llm';
-            inf['flightToCity'] = 'llm';
-            count++;
-        }
-        if (fields.flightNum) {
-            dyn.flightNum = fields.flightNum;
-            inf['dynTransitNo'] = 'llm';
-            inf['flightNum'] = 'llm';
-            count++;
-        }
-        // 火车票专属字段
-        if (fields.trainStartDate) {
-            dyn.trainStartDate = fields.trainStartDate;
-            inf['dynStartDate'] = 'llm';
-            inf['trainStartDate'] = 'llm';
-            if (effectiveCat === 'TRAIN') {
-                targetG.newBusinessDate = fields.trainStartDate;
-                inf['businessDate'] = 'llm';
-            }
-            count++;
-        }
-        if (fields.trainEndDate) {
-            dyn.trainEndDate = fields.trainEndDate;
-            inf['dynEndDate'] = 'llm';
-            inf['trainEndDate'] = 'llm';
-            count++;
-        }
-        if (fields.trainFromStation) {
-            dyn.trainFromStation = fields.trainFromStation;
-            inf['dynFrom'] = 'llm';
-            inf['trainFromStation'] = 'llm';
-            count++;
-        }
-        if (fields.trainToStation) {
-            dyn.trainToStation = fields.trainToStation;
-            inf['dynTo'] = 'llm';
-            inf['trainToStation'] = 'llm';
-            count++;
-        }
-        // 通信费专属字段
-        if (fields.billMonth) {
-            dyn.billMonth = fields.billMonth;
-            inf['dynBillMonth'] = 'llm';
-            inf['billMonth'] = 'llm';
-            count++;
-        }
-        return count;
-    }
-    const ITINERARY_PARSER_SYSTEM_PROMPT = `你是一个专业的企业财务差旅排期与出行行程认知推理专家。
-用户会提供一段出差排期文本（可能来自 Excel 表格复制、日程备忘录、微信聊天、邮件通知等）。
-请运用大语言模型的常识认知决策与世界地理常识，精准识别并切分出本次日程中包含的所有“出差行程轮次 (Trips)”。
-
-【严格遵循的输出 JSON Schema】：
-{
-  "trips": [
-    {
-      "tripNo": 1,
-      "destination": "目的地城市名（如 天津、广州、合肥、大连、嘉兴；若为同城园区特殊出差可带园区如 上海金山）",
-      "startDate": "YYYY-MM-DD",
-      "endDate": "YYYY-MM-DD",
-      "hotelName": "排期中入住的酒店名称（多家用 / 分隔）",
-      "flightOrTrain": "主要交通工具（飞机 / 高铁 / 火车）",
-      "purpose": "出差目的或调研事由（如：天津业务差旅与实地调研 (住理工津荣模具、環宇住理工、東海化成)）",
-      "targetFactories": "走访据点或企业客户名称列表（用、分隔）",
-      "travelers": ["出行人员姓名列表"],
-      "legs": [
-        { "date": "YYYY-MM-DD", "fromCity": "出发城市", "toCity": "到达城市", "transport": "飞机/高铁" },
-        { "date": "YYYY-MM-DD", "fromCity": "离开城市", "toCity": "返回城市", "transport": "飞机/高铁" }
-      ]
-    }
-  ]
-}
-
-【认知推理核心铁律】：
-1. 往返闭环定义：从常驻出发地出发，到外地开展活动，最终返回常驻地，视为一轮完整独立的出差 (Trip)；
-2. 往返周期绝对隔离：若同一月份前往同一城市多次（例如 7/20~7/25 去天津，8/17~8/21 又去天津），必须切分为独立的两个 Trip，绝对不可跨往返周期合并；
-3. 有住宿即为出差：只要排期中包含酒店住宿（即使是同城或同省远距离据点园区住宿），均应作为独立出差单据识别；
-4. 标准化日期：将各种日期格式（如 2026/7/20、7月20日、2026.07.20）一律归一化为标准的 YYYY-MM-DD；
-5. 必须返回纯 JSON，严禁输出任何 markdown 代码块以外的解释说明文字。
-`;
-    /**
-     * 将解析出的多轮 Trip 渲染为清晰规整的 Markdown 业务报表供对话框与看板展示
-     */
-    function formatTripsToMarkdownSummary(trips, engine, latencyMs) {
-        if (!trips || trips.length === 0) {
-            return `未能从排期文本中识别出有效出差行程。请确认文本包含目的地、起止日期或活动类型。`;
-        }
-        const headerBadge = engine === 'llm'
-            ? `✨ **大模型 (LLM) 深度认知解析完成**` + (latencyMs ? ` (耗时 ${(latencyMs / 1000).toFixed(1)}s)` : '')
-            : `⚡ **轻量规则引擎已解析排期** (已启用本地确定性规则切分)`;
-        let totalDays = 0;
-        trips.forEach(t => {
-            try {
-                const d1 = new Date(t.startDate.replace(/-/g, '/')).getTime();
-                const d2 = new Date(t.endDate.replace(/-/g, '/')).getTime();
-                const diff = Math.max(1, Math.round((d2 - d1) / (1000 * 3600 * 24)) + 1);
-                totalDays += diff;
-            }
-            catch (e) {
-                totalDays += 1;
-            }
-        });
-        let md = `${headerBadge}\n\n`;
-        md += `共精准切分出 **${trips.length}** 轮独立往返 Trip（累计约 **${totalDays}** 天出差日程），大表格已按 Trip 自动归集聚类：\n\n`;
-        md += `| 轮次 | 目的地 | 日期区间 | 交通工具 | 住宿酒店 | 走访据点/企业 | 出行人 |\n`;
-        md += `| :---: | :--- | :--- | :---: | :--- | :--- | :--- |\n`;
-        trips.forEach((t, idx) => {
-            const no = t.tripNo || (idx + 1);
-            const dest = t.destination || '待定';
-            const dates = t.startDate === t.endDate ? t.startDate : `${t.startDate} ~ ${t.endDate}`;
-            const transport = t.flightOrTrain || '飞机/高铁';
-            const hotel = t.hotelName || '-';
-            const factories = t.targetFactories ? t.targetFactories.replace(/、/g, '<br>') : '-';
-            const travelers = (t.travelers && t.travelers.length > 0) ? t.travelers.join(', ') : (t.applicantName || '本人');
-            md += `| **Trip #${no}** | **${dest}** | ${dates} | ${transport} | ${hotel} | ${factories} | ${travelers} |\n`;
-        });
-        md += `\n> 💡 **系统状态**：大表格已切换至 **Trip 分组** 视图。正在结合发票证据链智能推断专属必填字段...`;
-        return md;
-    }
-    /**
-     * 结构化排期解析主调度器：
-     * 1. 优先调用大语言模型 (LLM) 进行概率认知决策与常识往返切分；
-     * 2. 若未配置 API Key、网络断开或调用异常，自动无缝降级为本地规则解析器 (parseItineraryTable)，提供高可用保障。
-     */
-    async function parseItineraryWithAiDetailed(itineraryText, signal) {
-        if (!itineraryText || itineraryText.trim().length < 10) {
-            return {
-                trips: [],
-                summaryMarkdown: '排期内容过短，无法解析。',
-                engine: 'rule'
-            };
-        }
-        const trimmed = itineraryText.trim();
-        const canUseLlm = isLlmConfigured();
-        if (canUseLlm) {
-            const startTime = Date.now();
-            try {
-                AutopilotLogger.info(`[InferenceService] 开始调用大模型解析排期文本...`);
-                const res = await callDirectLlmJson(ITINERARY_PARSER_SYSTEM_PROMPT, trimmed, signal, 45000 // 45s 超时守卫
-                );
-                const latencyMs = Date.now() - startTime;
-                if (res.success && res.data?.trips && Array.isArray(res.data.trips) && res.data.trips.length > 0) {
-                    const trips = res.data.trips.map((t, idx) => ({
-                        tripNo: t.tripNo || (idx + 1),
-                        applicantName: (t.travelers && t.travelers[0]) || t.applicantName || '当前用户',
-                        isProxy: false,
-                        destination: (t.destination || '出差地').replace(/省|市/g, ''),
-                        startDate: t.startDate,
-                        endDate: t.endDate || t.startDate,
-                        hotelName: (t.hotelName || '').replace(/^[-—\s]+|[-—\s]+$/g, ''),
-                        flightOrTrain: t.flightOrTrain || '飞机/高铁',
-                        purpose: t.purpose || `出差${t.destination}业务交流及现场技术支持`,
-                        targetFactories: t.targetFactories || '',
-                        travelers: t.travelers || [],
-                        legs: t.legs || []
-                    }));
-                    AutopilotLogger.info(`[InferenceService] 大模型成功解析排期文本，识别出 ${trips.length} 轮 Trip (耗时 ${latencyMs}ms)`);
-                    return {
-                        trips,
-                        summaryMarkdown: formatTripsToMarkdownSummary(trips, 'llm', latencyMs),
-                        engine: 'llm',
-                        latencyMs
-                    };
-                }
-            }
-            catch (e) {
-                AutopilotLogger.warn(`[InferenceService] parseItineraryWithAi 调用大模型异常: ${e?.message || e}，将降级使用规则提取`);
-            }
-        }
-        // 容灾兜底：降级使用确定性规则解析器 (Zero-LLM Guard)
-        try {
-            const trips = parseItineraryTable(trimmed);
-            if (trips.length > 0) {
-                AutopilotLogger.info(`[InferenceService] 本地规则引擎成功切分出 ${trips.length} 轮 Trip`);
-                return {
-                    trips,
-                    summaryMarkdown: formatTripsToMarkdownSummary(trips, 'rule'),
-                    engine: 'rule'
-                };
-            }
-        }
-        catch (ruleErr) {
-            AutopilotLogger.warn(`[InferenceService] parseItineraryTable 规则解析失败: ${ruleErr?.message || ruleErr}`);
-        }
-        return {
-            trips: [],
-            summaryMarkdown: '未能从输入文本中解析出有效排期，请检查表格表头或格式。',
-            engine: 'rule'
-        };
-    }
-    /**
-     * 运用大语言模型 (LLM) 概率认知决策深度解析非结构化或复杂出差排期文本
-     * 严格遵照 AGENTS.md 反硬编码铁律，不依赖任何静态正则字典，由大模型完成世界常识推理与往返切分
-     */
-    async function parseItineraryWithAi(itineraryText, signal) {
-        const res = await parseItineraryWithAiDetailed(itineraryText, signal);
-        return res.trips;
     }
 
     /**
@@ -70645,748 +72388,6 @@ textarea::-webkit-resizer {
                             }, onClick: () => setPreviewImageUrl(null), children: [jsxRuntimeExports.jsx("img", { src: previewImageUrl, alt: "Preview", style: { maxWidth: '90%', maxHeight: '90%', borderRadius: tokens.radius.lg, boxShadow: '0 8px 32px rgba(0,0,0,0.5)' } }), jsxRuntimeExports.jsx(IconButton, { icon: jsxRuntimeExports.jsx(CloseIcon, {}), size: 36, variant: "secondary", label: "\u5173\u95ED\u9884\u89C8", onClick: () => setPreviewImageUrl(null), style: { position: 'absolute', top: '20px', right: '20px', background: 'rgba(255,255,255,0.2)', color: '#fff' } })] }))] }) }) }));
     };
 
-    const BILL_TYPE_LABELS = {
-        BC: '出差费用报销单',
-        BJ: '经费报销单'
-    };
-    // ─── 工具函数 ────────────────────────────────────────────────
-    function computeSCTotal(sc) {
-        const air = Number(sc.airfareBudget) || 0;
-        const hotel = Number(sc.hotelBudget) || 0;
-        const meal = Number(sc.mealAllowance) || 0;
-        const other = Number(sc.otherBudget) || 0;
-        return Math.round((air + hotel + meal + other) * 100) / 100;
-    }
-    function formatCurrency(amount) {
-        return '¥' + (amount || 0).toLocaleString('zh-CN', {
-            minimumFractionDigits: 2,
-            maximumFractionDigits: 2,
-        });
-    }
-
-    /**
-     * 报销单管理纯表格模式 (Grid Mode) — 数据聚合与业务服务
-     *
-     * 核心逻辑：
-     * 1. 严格对齐真实单据原生字段，移除一切多余非原生输入框；
-     * 2. 从费用记录中按费用类型提取并初始化预算归属分摊表 (BudgetAllocationItem)；
-     * 3. 提供预算归属拆分功能 (例如某笔费用 50% 请款，50% 自负)；
-     * 4. 4 项原生预算联动重算合计 (TOTAL)，确保预算总额覆盖实报金额。
-     */
-    let billIdCounter = 0;
-    function nextBillId(type) {
-        billIdCounter += 1;
-        return `bill_${type.toLowerCase()}_${billIdCounter}`;
-    }
-    function formatDateShort(dateStr) {
-        if (!dateStr)
-            return '';
-        const parts = dateStr.split('-');
-        if (parts.length >= 3) {
-            return `${parts[1]}-${parts[2]}`;
-        }
-        return dateStr;
-    }
-    /**
-     * 提取一组费用记录按费用类型分组的预算归属行
-     */
-    function buildInitialBudgetAllocations(expenses, projectId, projectName) {
-        const typeMap = new Map();
-        for (const g of expenses) {
-            const tName = g.expenseTypeName || '日常报销费用';
-            const amt = Number(g.expenseAmount || 0);
-            typeMap.set(tName, (typeMap.get(tName) || 0) + amt);
-        }
-        const allocations = [];
-        let idx = 1;
-        typeMap.forEach((amt, tName) => {
-            allocations.push({
-                id: `alloc_${idx++}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-                expenseTypeName: tName,
-                expenseAmount: Math.round(amt * 100) / 100,
-                projectId: projectId || '',
-                projectName: projectName || '',
-                allocatedAmount: Math.round(amt * 100) / 100,
-                ratioPercent: 100,
-                customerCharge: false,
-            });
-        });
-        return allocations;
-    }
-    /**
-     * 从费用记录分组和 Trip 规划中聚合生成报销单计划行
-     */
-    function aggregateExpensesIntoBillPlans(groups, tripPlans, applicantName = '', projectName = '') {
-        billIdCounter = 0;
-        const plans = [];
-        // ── 1. 为每个 Trip 生成 BC 报销单行 ──
-        if (tripPlans.length > 0) {
-            for (const trip of tripPlans) {
-                const tripExpenses = groups.filter(g => g.tripId === trip.id);
-                const expenseRecordIds = tripExpenses.map(g => g.expenseRecordId);
-                const invoiceCount = tripExpenses.reduce((sum, g) => sum + (g.invoiceCount || 0), 0);
-                const totalAmount = tripExpenses.reduce((sum, g) => sum + Number(g.expenseAmount || 0), 0);
-                const projId = trip.projectVO?.value || '';
-                const projName = trip.projectName || projectName;
-                // 原生 4 项预算估算
-                const airfare = Math.round(trip.trafficFee * 100) / 100;
-                const hotel = Math.round(trip.hotelFee * 100) / 100;
-                const meal = Math.round(trip.mealFee * 100) / 100;
-                const other = Math.round(trip.otherFee * 100) / 100;
-                const totalBudget = Math.round((airfare + hotel + meal + other) * 100) / 100;
-                const scPlan = {
-                    applicantName: trip.applicantName || applicantName,
-                    tripType: '境内出張',
-                    destination: trip.destination,
-                    purpose: trip.purpose || `出差${trip.destination}技术支持与业务交流`,
-                    startDate: trip.startDate,
-                    endDate: trip.endDate,
-                    days: trip.days,
-                    nights: trip.nights,
-                    legs: trip.legs || [],
-                    airfareBudget: airfare,
-                    hotelBudget: hotel,
-                    mealAllowance: meal,
-                    otherBudget: other,
-                    totalBudget: totalBudget,
-                    projectId: projId,
-                    projectName: projName,
-                    customerCharge: false,
-                    billCode: trip.billCode,
-                    billMainId: trip.billMainId,
-                };
-                const budgetAllocations = buildInitialBudgetAllocations(tripExpenses, projId, projName);
-                plans.push({
-                    id: nextBillId('BC'),
-                    type: 'BC',
-                    title: `Trip ${trip.tripNo}: ${trip.destination}出差 (${formatDateShort(trip.startDate)} ~ ${formatDateShort(trip.endDate)})`,
-                    tripType: '境内出張',
-                    destination: trip.destination,
-                    purpose: trip.purpose || `出差${trip.destination}技术交流与业务交流`,
-                    startDate: trip.startDate,
-                    endDate: trip.endDate,
-                    applicantName: trip.applicantName || applicantName,
-                    expenseRecordIds,
-                    expenseCount: expenseRecordIds.length,
-                    invoiceCount,
-                    totalAmount: Math.round(totalAmount * 100) / 100,
-                    budgetAllocations,
-                    projectId: projId,
-                    projectName: projName,
-                    customerCharge: false,
-                    departmentName: '',
-                    travelReport: trip.travelReport || '',
-                    scPlan,
-                    status: 'draft',
-                    errorMessage: '',
-                    sourceTripId: trip.id,
-                    billCode: trip.billCode,
-                    billMainId: trip.billMainId,
-                });
-            }
-        }
-        // ── 2. 日常经费 → BJ 报销单行 ──
-        const nonTripExpenses = groups.filter(g => tripPlans.length > 0
-            ? (g.tripId === 'NON_TRIP' || !g.tripId)
-            : getGroupBillFlow(g) === 'BJ');
-        if (nonTripExpenses.length > 0) {
-            const expenseRecordIds = nonTripExpenses.map(g => g.expenseRecordId);
-            const invoiceCount = nonTripExpenses.reduce((sum, g) => sum + (g.invoiceCount || 0), 0);
-            const totalAmount = nonTripExpenses.reduce((sum, g) => sum + Number(g.expenseAmount || 0), 0);
-            const budgetAllocations = buildInitialBudgetAllocations(nonTripExpenses, '', projectName);
-            plans.push({
-                id: nextBillId('BJ'),
-                type: 'BJ',
-                title: `日常经费报销 (${nonTripExpenses.length}笔费用)`,
-                tripType: '境内出張',
-                destination: '',
-                purpose: '日常办公与技术服务经费报销',
-                startDate: '',
-                endDate: '',
-                applicantName,
-                expenseRecordIds,
-                expenseCount: expenseRecordIds.length,
-                invoiceCount,
-                totalAmount: Math.round(totalAmount * 100) / 100,
-                budgetAllocations,
-                projectId: '',
-                projectName: projectName,
-                customerCharge: false,
-                departmentName: '',
-                travelReport: '',
-                scPlan: null,
-                status: 'draft',
-                errorMessage: '',
-                sourceTripId: 'NON_TRIP',
-            });
-        }
-        return plans;
-    }
-    /**
-     * 创建看板初始状态
-     */
-    function createInitialBillManagementState(groups, tripPlans, applicantName = '', projectName = '') {
-        const plans = aggregateExpensesIntoBillPlans(groups, tripPlans, applicantName, projectName);
-        return {
-            billPlans: plans,
-            selectedBillIds: new Set(plans.map(p => p.id)),
-            expandedBillIds: new Set(plans.filter(p => p.type === 'BC').map(p => p.id)),
-            isProcessing: false,
-            progressText: '',
-            searchQuery: '',
-        };
-    }
-    /**
-     * 不可变更新单据主表行字段
-     */
-    function updateBillPlanField(plans, billId, field, value) {
-        return plans.map(p => {
-            if (p.id !== billId)
-                return p;
-            const updated = { ...p, [field]: value };
-            // 若同时修改了主项目，且有关联 SC 申请单，同步 SC 项目
-            if (field === 'projectName' && updated.scPlan) {
-                updated.scPlan = { ...updated.scPlan, projectName: value };
-            }
-            return updated;
-        });
-    }
-    /**
-     * 不可变更新 SC 申请单字段
-     */
-    function updateSCField(plans, billId, field, value) {
-        return plans.map(p => {
-            if (p.id !== billId || !p.scPlan)
-                return p;
-            const updatedSC = { ...p.scPlan, [field]: value };
-            // 自动重算 4 项预算合计
-            if (['airfareBudget', 'hotelBudget', 'mealAllowance', 'otherBudget'].includes(field)) {
-                updatedSC.totalBudget = computeSCTotal(updatedSC);
-            }
-            return {
-                ...p,
-                scPlan: updatedSC,
-            };
-        });
-    }
-    /**
-     * 拆分某项费用的预算归属 (例如 50% 客户请款，50% 公司负担)
-     */
-    function splitBudgetAllocation(plans, billId, allocationId) {
-        return plans.map(p => {
-            if (p.id !== billId)
-                return p;
-            const target = p.budgetAllocations.find(a => a.id === allocationId);
-            if (!target)
-                return p;
-            // 默认将比例对半拆分
-            const halfRatio = Math.round((target.ratioPercent / 2) * 100) / 100;
-            const halfAmount = Math.round((target.allocatedAmount / 2) * 100) / 100;
-            const updatedAllocations = p.budgetAllocations.flatMap(a => {
-                if (a.id !== allocationId)
-                    return [a];
-                const originalUpdated = {
-                    ...a,
-                    ratioPercent: halfRatio,
-                    allocatedAmount: halfAmount,
-                };
-                const newSplitRow = {
-                    ...a,
-                    id: `alloc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-                    ratioPercent: halfRatio,
-                    allocatedAmount: halfAmount,
-                    customerCharge: !a.customerCharge, // 另一半默认请款状态相反
-                };
-                return [originalUpdated, newSplitRow];
-            });
-            return { ...p, budgetAllocations: updatedAllocations };
-        });
-    }
-    /**
-     * 删除拆分出来的多余预算归属行
-     */
-    function removeBudgetAllocation(plans, billId, allocationId) {
-        return plans.map(p => {
-            if (p.id !== billId)
-                return p;
-            if (p.budgetAllocations.length <= 1)
-                return p;
-            return {
-                ...p,
-                budgetAllocations: p.budgetAllocations.filter(a => a.id !== allocationId),
-            };
-        });
-    }
-    /**
-     * 修改预算归属行字段
-     */
-    function updateBudgetAllocationField(plans, billId, allocationId, field, value) {
-        return plans.map(p => {
-            if (p.id !== billId)
-                return p;
-            return {
-                ...p,
-                budgetAllocations: p.budgetAllocations.map(a => a.id === allocationId ? { ...a, [field]: value } : a),
-            };
-        });
-    }
-    /**
-     * 校验所有待建报销单的必填项与合规性
-     */
-    function validateBillPlans(plans) {
-        const errors = [];
-        const errorMapByBillId = {};
-        const addError = (err) => {
-            errors.push(err);
-            if (!errorMapByBillId[err.billId]) {
-                errorMapByBillId[err.billId] = {};
-            }
-            errorMapByBillId[err.billId][err.field] = err.message;
-        };
-        for (const plan of plans) {
-            // 1. 出差人员 / 申请人
-            if (!plan.applicantName || !plan.applicantName.trim()) {
-                addError({
-                    billId: plan.id,
-                    field: 'applicantName',
-                    label: '出差人员',
-                    message: '出差人员/申请人不能为空',
-                });
-            }
-            // 2. 出差目的 (PURPOSE)
-            if (!plan.purpose || !plan.purpose.trim()) {
-                addError({
-                    billId: plan.id,
-                    field: 'purpose',
-                    label: '出差目的',
-                    message: '出差目的/业务事由不能为空',
-                });
-            }
-            // 3. 项目维表 (主预算归属)
-            if (!plan.projectName || !plan.projectName.trim()) {
-                addError({
-                    billId: plan.id,
-                    field: 'projectName',
-                    label: '预算归属',
-                    message: '预算归属(项目维表)不能为空',
-                });
-            }
-            // 4. BC 专属校验
-            if (plan.type === 'BC') {
-                // 出差目的地 (出張先)
-                if (!plan.destination || !plan.destination.trim()) {
-                    addError({
-                        billId: plan.id,
-                        field: 'destination',
-                        label: '出張先',
-                        message: '出張先(目的地城市)不能为空',
-                    });
-                }
-                // 期間 From ~ To
-                if (!plan.startDate) {
-                    addError({
-                        billId: plan.id,
-                        field: 'startDate',
-                        label: '期间From',
-                        message: '出差起始日期不能为空',
-                    });
-                }
-                if (!plan.endDate) {
-                    addError({
-                        billId: plan.id,
-                        field: 'endDate',
-                        label: '期间To',
-                        message: '出差回程日期不能为空',
-                    });
-                }
-                if (plan.startDate && plan.endDate && plan.startDate > plan.endDate) {
-                    addError({
-                        billId: plan.id,
-                        field: 'startDate',
-                        label: '期间范围',
-                        message: '回程日期不可早于出发日期',
-                    });
-                }
-                // SC 申请单子表校验
-                if (plan.scPlan) {
-                    // 预算总额需 >= 实际报销金额
-                    if (plan.scPlan.totalBudget < plan.totalAmount) {
-                        addError({
-                            billId: plan.id,
-                            field: 'scTotalBudget',
-                            label: '预算合计',
-                            message: `预算合计(¥${plan.scPlan.totalBudget})低于实报金额(¥${plan.totalAmount})，需大于等于实际报销`,
-                            subTable: 'BUDGET',
-                        });
-                    }
-                    // 航段明细检验
-                    if (!plan.scPlan.legs || plan.scPlan.legs.length === 0) {
-                        addError({
-                            billId: plan.id,
-                            field: 'legs_empty',
-                            label: '旅程明细',
-                            message: '旅程(ITINERARY)子表格至少需要包含 1 趟航段明细',
-                            subTable: 'ITINERARY',
-                        });
-                    }
-                    else {
-                        plan.scPlan.legs.forEach((leg, idx) => {
-                            if (!leg.date) {
-                                addError({
-                                    billId: plan.id,
-                                    field: `leg_${idx}_date`,
-                                    label: `航段${idx + 1}日期`,
-                                    message: `航段 ${idx + 1} 日期时间不能为空`,
-                                    subTable: 'ITINERARY',
-                                    rowIndex: idx,
-                                });
-                            }
-                            if (!leg.fromCity || !leg.fromCity.trim()) {
-                                addError({
-                                    billId: plan.id,
-                                    field: `leg_${idx}_fromCity`,
-                                    label: `航段${idx + 1}出发地`,
-                                    message: `航段 ${idx + 1} 出发地不能为空`,
-                                    subTable: 'ITINERARY',
-                                    rowIndex: idx,
-                                });
-                            }
-                            if (!leg.toCity || !leg.toCity.trim()) {
-                                addError({
-                                    billId: plan.id,
-                                    field: `leg_${idx}_toCity`,
-                                    label: `航段${idx + 1}目的地`,
-                                    message: `航段 ${idx + 1} 目的地不能为空`,
-                                    subTable: 'ITINERARY',
-                                    rowIndex: idx,
-                                });
-                            }
-                        });
-                    }
-                }
-            }
-            // 5. 预算归属分摊子表格 (BUDGET ALLOCATION & SPLIT)
-            if (plan.budgetAllocations && plan.budgetAllocations.length > 0) {
-                const ratioSumsByType = new Map();
-                plan.budgetAllocations.forEach((alloc, idx) => {
-                    if (!alloc.projectName || !alloc.projectName.trim()) {
-                        addError({
-                            billId: plan.id,
-                            field: `alloc_${alloc.id}_projectName`,
-                            label: `分摊行${idx + 1}项目`,
-                            message: `费用类型"${alloc.expenseTypeName}"分摊行 ${idx + 1} 的项目归属不能为空`,
-                            subTable: 'ALLOCATION',
-                            rowIndex: idx,
-                        });
-                    }
-                    const cur = ratioSumsByType.get(alloc.expenseTypeName) || 0;
-                    ratioSumsByType.set(alloc.expenseTypeName, cur + Number(alloc.ratioPercent || 0));
-                });
-                ratioSumsByType.forEach((sum, expType) => {
-                    if (Math.abs(sum - 100) > 0.01) {
-                        addError({
-                            billId: plan.id,
-                            field: `alloc_ratio_sum_${expType}`,
-                            label: `${expType}比例合计`,
-                            message: `费用类型"${expType}"的分摊比例合计为 ${sum}%，必须等于 100%`,
-                            subTable: 'ALLOCATION',
-                        });
-                    }
-                });
-            }
-        }
-        return {
-            isValid: errors.length === 0,
-            missingCount: errors.length,
-            errors,
-            errorMapByBillId,
-        };
-    }
-    /**
-     * 动态提取通用城市名（去除站、机场、市等标准后缀，严禁写死静态城市表）
-     */
-    function cleanCityName(raw) {
-        if (!raw)
-            return '';
-        let s = raw.trim();
-        s = s.replace(/(?:站|南站|北站|东站|西站|客运站|火车站|国际机场|机场|航站楼|高铁站)$/, '');
-        if (s.length > 2 && s.endsWith('市')) {
-            s = s.slice(0, -1);
-        }
-        return s.trim();
-    }
-    /**
-     * AI 智能副驾一键补全漏填字段（通用推理，无任何特定人员/客户/城市硬编码）
-     */
-    function autoFillBillPlansWithAi(plans, groups, defaultProjectName, defaultApplicantName) {
-        let filledCount = 0;
-        const updatedPlans = plans.map(plan => {
-            const aiFilled = new Set(plan.aiFilledFields || []);
-            let updated = { ...plan };
-            const associatedGroups = groups.filter(g => plan.expenseRecordIds.includes(g.expenseRecordId));
-            // 1. 补全出差人员
-            if (!updated.applicantName || !updated.applicantName.trim()) {
-                const foundName = defaultApplicantName ||
-                    associatedGroups.find(g => g.applicantName)?.applicantName ||
-                    '';
-                if (foundName) {
-                    updated.applicantName = foundName;
-                    aiFilled.add('applicantName');
-                    filledCount++;
-                }
-            }
-            // 2. 补全目的地城市 (从发票详情与动态字段中智能频率提取)
-            if (updated.type === 'BC' && (!updated.destination || !updated.destination.trim())) {
-                const cityFreq = new Map();
-                for (const g of associatedGroups) {
-                    if (g.dynamicFields?.city) {
-                        const c = cleanCityName(g.dynamicFields.city);
-                        if (c)
-                            cityFreq.set(c, (cityFreq.get(c) || 0) + 3);
-                    }
-                    if (g.dynamicFields?.dynTo) {
-                        const c = cleanCityName(g.dynamicFields.dynTo);
-                        if (c)
-                            cityFreq.set(c, (cityFreq.get(c) || 0) + 2);
-                    }
-                    if (g.invoices) {
-                        for (const inv of g.invoices) {
-                            if (inv.stationGetOff) {
-                                const c = cleanCityName(inv.stationGetOff);
-                                if (c)
-                                    cityFreq.set(c, (cityFreq.get(c) || 0) + 2);
-                            }
-                        }
-                    }
-                }
-                let bestCity = '';
-                let maxCount = 0;
-                cityFreq.forEach((cnt, city) => {
-                    if (cnt > maxCount) {
-                        maxCount = cnt;
-                        bestCity = city;
-                    }
-                });
-                if (bestCity) {
-                    updated.destination = bestCity;
-                    aiFilled.add('destination');
-                    filledCount++;
-                }
-            }
-            // 3. 补全起止日期 (从费用业务日与发票日提取范围)
-            if (updated.type === 'BC' && (!updated.startDate || !updated.endDate)) {
-                const allDates = [];
-                for (const g of associatedGroups) {
-                    if (g.businessDate && /^\d{4}-\d{2}-\d{2}/.test(g.businessDate)) {
-                        allDates.push(g.businessDate.slice(0, 10));
-                    }
-                    if (g.earliestInvoiceDate && /^\d{4}-\d{2}-\d{2}/.test(g.earliestInvoiceDate)) {
-                        allDates.push(g.earliestInvoiceDate.slice(0, 10));
-                    }
-                    if (g.dynamicFields?.dynStartDate && /^\d{4}-\d{2}-\d{2}/.test(g.dynamicFields.dynStartDate)) {
-                        allDates.push(g.dynamicFields.dynStartDate.slice(0, 10));
-                    }
-                    if (g.dynamicFields?.dynEndDate && /^\d{4}-\d{2}-\d{2}/.test(g.dynamicFields.dynEndDate)) {
-                        allDates.push(g.dynamicFields.dynEndDate.slice(0, 10));
-                    }
-                }
-                allDates.sort();
-                if (allDates.length > 0) {
-                    if (!updated.startDate) {
-                        updated.startDate = allDates[0];
-                        aiFilled.add('startDate');
-                        filledCount++;
-                    }
-                    if (!updated.endDate) {
-                        updated.endDate = allDates[allDates.length - 1];
-                        aiFilled.add('endDate');
-                        filledCount++;
-                    }
-                }
-            }
-            // 4. 补全项目维表 (若为空，从费用说明或全局默认中继承)
-            if (!updated.projectName || !updated.projectName.trim()) {
-                let foundProj = defaultProjectName || '';
-                if (!foundProj) {
-                    for (const g of associatedGroups) {
-                        const match = (g.description || g.newDescription || '').match(/(?:\[)?([A-Z0-9]{3,}-[0-9]+[^\]\s]*)/);
-                        if (match) {
-                            foundProj = match[1];
-                            break;
-                        }
-                    }
-                }
-                if (foundProj) {
-                    updated.projectName = foundProj;
-                    aiFilled.add('projectName');
-                    filledCount++;
-                }
-            }
-            // 5. 补全出差目的 (PURPOSE)
-            if (!updated.purpose || !updated.purpose.trim() || updated.purpose.includes('暂无')) {
-                const dest = updated.destination || '出差地';
-                const projStr = updated.projectName ? `${updated.projectName} ` : '';
-                updated.purpose = `赴${dest}开展${projStr}现场业务交流与系统导入技术支持`;
-                aiFilled.add('purpose');
-                filledCount++;
-            }
-            // 6. SC 申请单预算与旅程深度推导 (仅BC)
-            if (updated.type === 'BC') {
-                const dest = updated.destination || '出差地';
-                const start = updated.startDate || '2026-07-20';
-                const end = updated.endDate || '2026-07-25';
-                const sTime = new Date(start).getTime();
-                const eTime = new Date(end).getTime();
-                const days = Math.max(1, Math.round((eTime - sTime) / 86400000) + 1);
-                const nights = Math.max(1, days - 1);
-                // 统计已发生的真实交通、酒店与杂费
-                let actualAirfare = 0;
-                let actualHotel = 0;
-                let actualOther = 0;
-                for (const g of associatedGroups) {
-                    const amt = Number(g.expenseAmount) || 0;
-                    const type = g.expenseTypeName || '';
-                    if (type.includes('飞机') || type.includes('火车') || type.includes('机票') || type.includes('交通')) {
-                        actualAirfare += amt;
-                    }
-                    else if (type.includes('住宿') || type.includes('酒店')) {
-                        actualHotel += amt;
-                    }
-                    else {
-                        actualOther += amt;
-                    }
-                }
-                // 计算合规充裕预算
-                const airfareBudget = Math.round(Math.max(actualAirfare * 1.25, actualAirfare + 500, 1800) * 100) / 100;
-                const hotelBudget = Math.round(Math.max(actualHotel * 1.15, nights * 700, 700) * 100) / 100;
-                const mealAllowance = Math.round(Math.max(days * 250, 250) * 100) / 100;
-                let otherBudget = Math.round(Math.max(actualOther * 1.2, days * 100, 300) * 100) / 100;
-                let totalBudget = computeSCTotal({ airfareBudget, hotelBudget, mealAllowance, otherBudget });
-                // 确保总预算覆盖实报金额
-                if (totalBudget < updated.totalAmount) {
-                    const gap = Math.round((updated.totalAmount - totalBudget + 300) * 100) / 100;
-                    otherBudget = Math.round((otherBudget + gap) * 100) / 100;
-                    totalBudget = computeSCTotal({ airfareBudget, hotelBudget, mealAllowance, otherBudget });
-                }
-                // 智能推导航段 (若为空，生成标准往返闭环)
-                let existingLegs = updated.scPlan?.legs || [];
-                if (existingLegs.length === 0) {
-                    // 尝试从真实发票提取航段起点与终点
-                    let originCity = '上海';
-                    for (const g of associatedGroups) {
-                        if (g.dynamicFields?.dynFrom) {
-                            const oc = cleanCityName(g.dynamicFields.dynFrom);
-                            if (oc && oc !== dest) {
-                                originCity = oc;
-                                break;
-                            }
-                        }
-                        if (g.invoices) {
-                            for (const inv of g.invoices) {
-                                if (inv.stationGetOn) {
-                                    const oc = cleanCityName(inv.stationGetOn);
-                                    if (oc && oc !== dest) {
-                                        originCity = oc;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    // 从关联费用记录中推测大交通工具
-                    const associatedInvoiceTypes = [];
-                    for (const g of associatedGroups) {
-                        if (g.expenseTypeName)
-                            associatedInvoiceTypes.push(g.expenseTypeName);
-                        if (g.newExpenseTypeName)
-                            associatedInvoiceTypes.push(g.newExpenseTypeName);
-                        if (g.invoices) {
-                            for (const inv of g.invoices) {
-                                if (inv.invoiceType)
-                                    associatedInvoiceTypes.push(inv.invoiceType);
-                                if (inv.remarks)
-                                    associatedInvoiceTypes.push(inv.remarks);
-                                if (inv.salesName)
-                                    associatedInvoiceTypes.push(inv.salesName);
-                                if (inv.fileName)
-                                    associatedInvoiceTypes.push(inv.fileName);
-                            }
-                        }
-                    }
-                    const inferredTransport = resolveTransportLabel(updated.scPlan?.flightOrTrain, associatedInvoiceTypes);
-                    existingLegs = [
-                        {
-                            date: `${start}T09:00`,
-                            fromCity: originCity,
-                            toCity: dest,
-                            transport: inferredTransport,
-                            flightOrTrain: inferredTransport ? `${inferredTransport} | 外驻:${updated.applicantName || '出差人'}` : '',
-                            travelerName: updated.applicantName,
-                        },
-                        {
-                            date: `${end}T18:00`,
-                            fromCity: dest,
-                            toCity: originCity,
-                            transport: inferredTransport,
-                            flightOrTrain: inferredTransport ? `${inferredTransport} | 外驻:${updated.applicantName || '出差人'}` : '',
-                            travelerName: updated.applicantName,
-                        }
-                    ];
-                    aiFilled.add('legs');
-                    filledCount++;
-                }
-                const scPlan = {
-                    applicantName: updated.applicantName,
-                    tripType: updated.tripType,
-                    destination: dest,
-                    purpose: updated.purpose,
-                    startDate: start,
-                    endDate: end,
-                    days,
-                    nights,
-                    legs: existingLegs,
-                    airfareBudget,
-                    hotelBudget,
-                    mealAllowance,
-                    otherBudget,
-                    totalBudget,
-                    projectId: updated.projectId,
-                    projectName: updated.projectName,
-                    customerCharge: updated.customerCharge,
-                };
-                updated.scPlan = scPlan;
-                aiFilled.add('scPlan');
-                filledCount++;
-                // 7. 补全出差报告草稿 (若为空)
-                if (!updated.travelReport || !updated.travelReport.trim()) {
-                    updated.travelReport = `## ${dest}出差工作总结报告\n\n- **出差时间**：${start} 至 ${end} (共 ${days} 天)\n- **出差人员**：${updated.applicantName}\n- **主要目的地**：${dest}\n- **归属项目**：${updated.projectName || '未指定'}\n\n### 一、主要任务与工作成果\n1. 赴 ${dest} 据点开展现场系统导入与技术需求对齐，完成了业务场景与系统接口的技术论证；\n2. 会同客户项目组进行联合联调测试，梳理并闭环关键业务用例；\n3. 现场举行系统交接与培训会，收集现场反馈并形成后续迭代待办清单。\n\n### 二、后续跟进计划\n- 推进联调遗留事项整改，完成交付物归档与验收；\n- 持续关注客户运行环境稳定性，提供线上技术支持。`;
-                    aiFilled.add('travelReport');
-                    filledCount++;
-                }
-            }
-            // 8. 同步预算归属分摊表中的项目名称
-            if (updated.projectName && updated.budgetAllocations) {
-                updated.budgetAllocations = updated.budgetAllocations.map(alloc => {
-                    if (!alloc.projectName || !alloc.projectName.trim()) {
-                        aiFilled.add(`alloc_${alloc.id}_projectName`);
-                        filledCount++;
-                        return {
-                            ...alloc,
-                            projectName: updated.projectName,
-                            projectId: updated.projectId,
-                        };
-                    }
-                    return alloc;
-                });
-            }
-            return {
-                ...updated,
-                aiFilledFields: Array.from(aiFilled),
-            };
-        });
-        return { updatedPlans, filledCount };
-    }
-
     // ─── Status Badge ────────────────────────────────────────────
     const StatusBadge = React.memo(({ status, error }) => {
         const cls = `yn-bm-badge yn-bm-badge--${status}`;
@@ -71455,11 +72456,11 @@ textarea::-webkit-resizer {
     // ─── 子表格 1：✈️ 旅程明细表 (ITINERARY) ──────────────────────
     const ItinerarySubTable = React.memo(({ billId, legs, onAddLeg, onRemoveLeg, onUpdateLeg, missingMap, aiFilled, }) => {
         const isLegsEmpty = Boolean(missingMap?.legs_empty);
-        return (jsxRuntimeExports.jsxs("div", { className: "yn-bm-subgrid-box", children: [jsxRuntimeExports.jsxs("div", { className: "yn-bm-subgrid-header", children: [jsxRuntimeExports.jsxs("span", { className: "title", children: ["\u2708\uFE0F \u65C5\u7A0B (ITINERARY) \u5B50\u8868\u683C", aiFilled && jsxRuntimeExports.jsx("span", { className: "yn-bm-ai-sparkle-tag", children: "\u2726 AI \u751F\u6210" })] }), jsxRuntimeExports.jsx("span", { className: "hint", children: isLegsEmpty ? (jsxRuntimeExports.jsx("strong", { style: { color: '#dc2626' }, children: "\u26A0\uFE0F \u65C5\u7A0B\u81F3\u5C11\u9700\u5305\u542B 1 \u8D9F\u822A\u6BB5\u660E\u7EC6\uFF08\u53EF\u70B9\u51FB\u53F3\u4FA7 +\u589E\u52A0\u822A\u6BB5 \u6216\u70B9\u51FB\u9876\u680F AI \u4E00\u952E\u8865\u5168\uFF09" })) : ('※ 出差申请时请务必写明交通明细（如航班、高铁二等座）及费用概算') }), jsxRuntimeExports.jsx("button", { type: "button", className: "yn-bm-btn-table-action", onClick: () => onAddLeg(billId), children: "+ \u589E\u52A0\u822A\u6BB5" })] }), jsxRuntimeExports.jsxs("table", { className: "yn-bm-detail-table", children: [jsxRuntimeExports.jsx("thead", { children: jsxRuntimeExports.jsxs("tr", { children: [jsxRuntimeExports.jsx("th", { style: { width: '45px', textAlign: 'center' }, children: "\u884C\u53F7" }), jsxRuntimeExports.jsxs("th", { style: { width: '190px' }, children: ["DATE (\u65E5\u671F\u65F6\u95F4) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsxs("th", { style: { width: '150px' }, children: ["FROM (\u51FA\u53D1\u5730\u57CE\u5E02) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsxs("th", { style: { width: '150px' }, children: ["TO (\u51FA\u5DEE\u76EE\u7684\u5730\u57CE\u5E02) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsxs("th", { children: ["FLIGHT/TRAIN ETC. (\u822A\u73ED/\u8F66\u6B21\u5907\u6CE8\uFF0C\u5982\u201C\u53BB\u7A0B\u98DE\u673A / \u4E8C\u7B49\u5EA7\u201D) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsx("th", { style: { width: '50px', textAlign: 'center' }, children: "\u64CD\u4F5C" })] }) }), jsxRuntimeExports.jsx("tbody", { children: legs.map((leg, idx) => {
+        return (jsxRuntimeExports.jsxs("div", { className: "yn-bm-subgrid-box", children: [jsxRuntimeExports.jsxs("div", { className: "yn-bm-subgrid-header", children: [jsxRuntimeExports.jsxs("span", { className: "title", children: ["\u2708\uFE0F ", jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-apply", style: { marginRight: '6px' }, children: "[\u7533\u8BF7]" }), " \u65C5\u7A0B (ITINERARY) \u5B50\u8868\u683C", aiFilled && jsxRuntimeExports.jsx("span", { className: "yn-bm-ai-sparkle-tag", children: "\u2726 AI \u751F\u6210" })] }), jsxRuntimeExports.jsx("span", { className: "hint", children: isLegsEmpty ? (jsxRuntimeExports.jsx("strong", { style: { color: '#dc2626' }, children: "\u26A0\uFE0F \u65C5\u7A0B\u81F3\u5C11\u9700\u5305\u542B 1 \u8D9F\u822A\u6BB5\u660E\u7EC6\uFF08\u53EF\u70B9\u51FB\u53F3\u4FA7 +\u589E\u52A0\u822A\u6BB5 \u6216\u70B9\u51FB\u9876\u680F AI \u4E00\u952E\u8865\u5168\uFF09" })) : ('※ 出差申请时请务必写明交通明细（如航班、高铁二等座）及费用概算') }), jsxRuntimeExports.jsx("button", { type: "button", className: "yn-bm-btn-table-action", onClick: () => onAddLeg(billId), children: "+ \u589E\u52A0\u822A\u6BB5" })] }), jsxRuntimeExports.jsxs("table", { className: "yn-bm-detail-table", children: [jsxRuntimeExports.jsx("thead", { children: jsxRuntimeExports.jsxs("tr", { children: [jsxRuntimeExports.jsx("th", { style: { width: '45px', textAlign: 'center' }, children: "\u884C\u53F7" }), jsxRuntimeExports.jsxs("th", { style: { width: '190px' }, children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-apply", children: "[\u7533\u8BF7]" }), " DATE (\u65E5\u671F\u65F6\u95F4) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsxs("th", { style: { width: '150px' }, children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-apply", children: "[\u7533\u8BF7]" }), " FROM (\u51FA\u53D1\u5730\u57CE\u5E02) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsxs("th", { style: { width: '150px' }, children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-apply", children: "[\u7533\u8BF7]" }), " TO (\u51FA\u5DEE\u76EE\u7684\u5730\u57CE\u5E02) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsxs("th", { children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-apply", children: "[\u7533\u8BF7]" }), " FLIGHT/TRAIN ETC. (\u822A\u73ED/\u8F66\u6B21\u5907\u6CE8\uFF0C\u5982\u201C[\u4EBA\u540D|\u5916\u9A7B:\u4EBA\u540D]-[\u98DE\u673A|\u9AD8\u94C1|\u51FA\u79DF\u8F66]-[\u9879\u76EE\u53F7]\u201D) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsx("th", { style: { width: '50px', textAlign: 'center' }, children: "\u64CD\u4F5C" })] }) }), jsxRuntimeExports.jsx("tbody", { children: legs.map((leg, idx) => {
                                 const isDateMissing = Boolean(missingMap?.[`leg_${idx}_date`]);
                                 const isFromMissing = Boolean(missingMap?.[`leg_${idx}_fromCity`]);
                                 const isToMissing = Boolean(missingMap?.[`leg_${idx}_toCity`]);
-                                return (jsxRuntimeExports.jsxs("tr", { children: [jsxRuntimeExports.jsx("td", { style: { textAlign: 'center', fontWeight: 600 }, children: idx + 1 }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsx("input", { type: "datetime-local", className: `yn-bm-cell-input ${isDateMissing ? 'is-missing' : ''}`, value: leg.date ? (leg.date.includes('T') ? leg.date.slice(0, 16) : `${leg.date}T09:00`) : '', "data-bill-id": billId, "data-field": `leg_${idx}_date`, title: isDateMissing ? missingMap?.[`leg_${idx}_date`] : '', onChange: e => onUpdateLeg(billId, idx, 'date', e.target.value) }) }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsx("input", { type: "text", className: `yn-bm-cell-input ${isFromMissing ? 'is-missing' : ''}`, value: leg.fromCity, placeholder: isFromMissing ? "⚠️ 必填出发城市" : "如：上海", "data-bill-id": billId, "data-field": `leg_${idx}_fromCity`, title: isFromMissing ? missingMap?.[`leg_${idx}_fromCity`] : '', onChange: e => onUpdateLeg(billId, idx, 'fromCity', e.target.value) }) }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsx("input", { type: "text", className: `yn-bm-cell-input ${isToMissing ? 'is-missing' : ''}`, value: leg.toCity, placeholder: isToMissing ? "⚠️ 必填目的城市" : "如：天津", "data-bill-id": billId, "data-field": `leg_${idx}_toCity`, title: isToMissing ? missingMap?.[`leg_${idx}_toCity`] : '', onChange: e => onUpdateLeg(billId, idx, 'toCity', e.target.value) }) }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsx("input", { type: "text", className: "yn-bm-cell-input", value: leg.flightOrTrain || leg.transport || '', onChange: e => onUpdateLeg(billId, idx, 'flightOrTrain', e.target.value), placeholder: "\u5982\uFF1ACZ6534 | \u5916\u9A7B:\u674E\u5EFA\u52C7 \u53BB\u7A0B\u98DE\u673A" }) }), jsxRuntimeExports.jsx("td", { style: { textAlign: 'center' }, children: jsxRuntimeExports.jsx("button", { type: "button", className: "yn-bm-btn-delete-row", onClick: () => onRemoveLeg(billId, idx), title: "\u5220\u9664\u8BE5\u822A\u6BB5", children: "\u2715" }) })] }, idx));
+                                return (jsxRuntimeExports.jsxs("tr", { children: [jsxRuntimeExports.jsx("td", { style: { textAlign: 'center', fontWeight: 600 }, children: idx + 1 }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsx("input", { type: "datetime-local", className: `yn-bm-cell-input ${isDateMissing ? 'is-missing' : ''}`, value: normalizeToDatetimeLocal(leg.date), "data-bill-id": billId, "data-field": `leg_${idx}_date`, title: isDateMissing ? missingMap?.[`leg_${idx}_date`] : '', onChange: e => onUpdateLeg(billId, idx, 'date', e.target.value) }) }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsx("input", { type: "text", className: `yn-bm-cell-input ${isFromMissing ? 'is-missing' : ''}`, value: leg.fromCity, placeholder: isFromMissing ? "⚠️ 必填出发城市" : "如：上海", "data-bill-id": billId, "data-field": `leg_${idx}_fromCity`, title: isFromMissing ? missingMap?.[`leg_${idx}_fromCity`] : '', onChange: e => onUpdateLeg(billId, idx, 'fromCity', e.target.value) }) }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsx("input", { type: "text", className: `yn-bm-cell-input ${isToMissing ? 'is-missing' : ''}`, value: leg.toCity, placeholder: isToMissing ? "⚠️ 必填目的城市" : "如：天津", "data-bill-id": billId, "data-field": `leg_${idx}_toCity`, title: isToMissing ? missingMap?.[`leg_${idx}_toCity`] : '', onChange: e => onUpdateLeg(billId, idx, 'toCity', e.target.value) }) }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsx("input", { type: "text", className: "yn-bm-cell-input", value: leg.flightOrTrain || leg.transport || '', onChange: e => onUpdateLeg(billId, idx, 'flightOrTrain', e.target.value), placeholder: "\u5982\uFF1A[\u5916\u9A7B:\u6210\u52C7]-[\u98DE\u673A]-[X2607-001]" }) }), jsxRuntimeExports.jsx("td", { style: { textAlign: 'center' }, children: jsxRuntimeExports.jsx("button", { type: "button", className: "yn-bm-btn-delete-row", onClick: () => onRemoveLeg(billId, idx), title: "\u5220\u9664\u8BE5\u822A\u6BB5", children: "\u2715" }) })] }, idx));
                             }) })] })] }));
     });
     // ─── 子表格 2：💰 4 项预算核算表 (BUDGET ESTIMATION) ──────────
@@ -71467,11 +72468,11 @@ textarea::-webkit-resizer {
         const total = computeSCTotal(sc);
         const isCovered = total >= claimAmount;
         const diff = total - claimAmount;
-        return (jsxRuntimeExports.jsxs("div", { className: "yn-bm-subgrid-box", children: [jsxRuntimeExports.jsxs("div", { className: "yn-bm-subgrid-header", children: [jsxRuntimeExports.jsx("span", { className: "title", children: "\uD83D\uDCB0 \u4E88\u7B97 (BUDGET ESTIMATION) \u6838\u7B97\u8868\u683C" }), jsxRuntimeExports.jsx("span", { className: `diff-pill ${isCovered ? 'diff-ok' : 'diff-warn'}`, children: isCovered ? `✅ 预算全额覆盖实际报销 (留存差额: ${formatCurrency(diff)})` : `⚠️ 预警: 预算合计低于报销实付 ${formatCurrency(-diff)} (需增加预算)` })] }), jsxRuntimeExports.jsxs("table", { className: "yn-bm-detail-table", children: [jsxRuntimeExports.jsx("thead", { children: jsxRuntimeExports.jsxs("tr", { children: [jsxRuntimeExports.jsx("th", { style: { width: '20%' }, children: "\u822A\u7A7A\u904B\u8CC3\uFF08\u4EA4\u901A\u8CBB\uFF09(AIRFARE ETC)" }), jsxRuntimeExports.jsx("th", { style: { width: '20%' }, children: "\u30DB\u30C6\u30EB\u4EE3 (HOTEL FEE)" }), jsxRuntimeExports.jsx("th", { style: { width: '20%' }, children: "\u8AA4\u9910\u88DC\u52A9 (Dining-delay ALLOW.)" }), jsxRuntimeExports.jsx("th", { style: { width: '20%' }, children: "\u305D\u306E\u4ED6 (OTHERS / \u5E02\u5185\u4EA4\u901A\u7B49)" }), jsxRuntimeExports.jsxs("th", { style: { width: '20%', background: isBudgetInsufficient ? '#fef2f2' : '#eff6ff' }, children: ["\u5408\u8A08 (TOTAL - \u9700 \u2265 \u5B9E\u9645\u62A5\u9500) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] })] }) }), jsxRuntimeExports.jsx("tbody", { children: jsxRuntimeExports.jsxs("tr", { children: [jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsxs("div", { className: "yn-bm-currency-cell", children: [jsxRuntimeExports.jsx("span", { className: "prefix", children: "\u00A5" }), jsxRuntimeExports.jsx("input", { type: "number", step: "0.01", className: "yn-bm-cell-input yn-bm-number-input", value: sc.airfareBudget, onChange: e => onSCFieldChange(billId, 'airfareBudget', Number(e.target.value) || 0) })] }) }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsxs("div", { className: "yn-bm-currency-cell", children: [jsxRuntimeExports.jsx("span", { className: "prefix", children: "\u00A5" }), jsxRuntimeExports.jsx("input", { type: "number", step: "0.01", className: "yn-bm-cell-input yn-bm-number-input", value: sc.hotelBudget, onChange: e => onSCFieldChange(billId, 'hotelBudget', Number(e.target.value) || 0) })] }) }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsxs("div", { className: "yn-bm-currency-cell", children: [jsxRuntimeExports.jsx("span", { className: "prefix", children: "\u00A5" }), jsxRuntimeExports.jsx("input", { type: "number", step: "0.01", className: "yn-bm-cell-input yn-bm-number-input", value: sc.mealAllowance, onChange: e => onSCFieldChange(billId, 'mealAllowance', Number(e.target.value) || 0) })] }) }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsxs("div", { className: "yn-bm-currency-cell", children: [jsxRuntimeExports.jsx("span", { className: "prefix", children: "\u00A5" }), jsxRuntimeExports.jsx("input", { type: "number", step: "0.01", className: "yn-bm-cell-input yn-bm-number-input", value: sc.otherBudget, onChange: e => onSCFieldChange(billId, 'otherBudget', Number(e.target.value) || 0) })] }) }), jsxRuntimeExports.jsx("td", { style: { background: isBudgetInsufficient ? '#fef2f2' : '#f8fafc', fontWeight: 800 }, children: jsxRuntimeExports.jsx("span", { className: `yn-bm-budget-total-val ${isBudgetInsufficient ? 'is-budget-insufficient' : ''}`, title: isBudgetInsufficient ? missingMessage : '', children: formatCurrency(total) }) })] }) })] })] }));
+        return (jsxRuntimeExports.jsxs("div", { className: "yn-bm-subgrid-box", children: [jsxRuntimeExports.jsxs("div", { className: "yn-bm-subgrid-header", children: [jsxRuntimeExports.jsxs("span", { className: "title", children: ["\uD83D\uDCB0 ", jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-apply", style: { marginRight: '6px' }, children: "[\u7533\u8BF7]" }), " \u4E88\u7B97 (BUDGET ESTIMATION) \u6838\u7B97\u8868\u683C"] }), jsxRuntimeExports.jsx("span", { className: `diff-pill ${isCovered ? 'diff-ok' : 'diff-warn'}`, children: isCovered ? `✅ 预算全额覆盖实际报销 (留存差额: ${formatCurrency(diff)})` : `⚠️ 预警: 预算合计低于报销实付 ${formatCurrency(-diff)} (需增加预算)` })] }), jsxRuntimeExports.jsxs("table", { className: "yn-bm-detail-table", children: [jsxRuntimeExports.jsx("thead", { children: jsxRuntimeExports.jsxs("tr", { children: [jsxRuntimeExports.jsxs("th", { style: { width: '20%' }, children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-apply", children: "[\u7533\u8BF7]" }), " \u822A\u7A7A\u904B\u8CC3\uFF08\u4EA4\u901A\u8CBB\uFF09(AIRFARE ETC)"] }), jsxRuntimeExports.jsxs("th", { style: { width: '20%' }, children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-apply", children: "[\u7533\u8BF7]" }), " \u30DB\u30C6\u30EB\u4EE3 (HOTEL FEE)"] }), jsxRuntimeExports.jsxs("th", { style: { width: '20%' }, children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-apply", children: "[\u7533\u8BF7]" }), " \u8AA4\u9910\u88DC\u52A9 (Dining-delay ALLOW.)"] }), jsxRuntimeExports.jsxs("th", { style: { width: '20%' }, children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-apply", children: "[\u7533\u8BF7]" }), " \u305D\u306E\u4ED6 (OTHERS / \u5E02\u5185\u4EA4\u901A\u7B49)"] }), jsxRuntimeExports.jsxs("th", { style: { width: '20%', background: isBudgetInsufficient ? '#fef2f2' : '#eff6ff' }, children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-apply", children: "[\u7533\u8BF7]" }), " \u5408\u8A08 (TOTAL - \u9700 \u2265 \u5B9E\u9645\u62A5\u9500) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] })] }) }), jsxRuntimeExports.jsx("tbody", { children: jsxRuntimeExports.jsxs("tr", { children: [jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsxs("div", { className: "yn-bm-currency-cell", children: [jsxRuntimeExports.jsx("span", { className: "prefix", children: "\u00A5" }), jsxRuntimeExports.jsx("input", { type: "number", step: "0.01", className: "yn-bm-cell-input yn-bm-number-input", value: sc.airfareBudget, onChange: e => onSCFieldChange(billId, 'airfareBudget', Number(e.target.value) || 0) })] }) }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsxs("div", { className: "yn-bm-currency-cell", children: [jsxRuntimeExports.jsx("span", { className: "prefix", children: "\u00A5" }), jsxRuntimeExports.jsx("input", { type: "number", step: "0.01", className: "yn-bm-cell-input yn-bm-number-input", value: sc.hotelBudget, onChange: e => onSCFieldChange(billId, 'hotelBudget', Number(e.target.value) || 0) })] }) }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsxs("div", { className: "yn-bm-currency-cell", children: [jsxRuntimeExports.jsx("span", { className: "prefix", children: "\u00A5" }), jsxRuntimeExports.jsx("input", { type: "number", step: "0.01", className: "yn-bm-cell-input yn-bm-number-input", value: sc.mealAllowance, onChange: e => onSCFieldChange(billId, 'mealAllowance', Number(e.target.value) || 0) })] }) }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsxs("div", { className: "yn-bm-currency-cell", children: [jsxRuntimeExports.jsx("span", { className: "prefix", children: "\u00A5" }), jsxRuntimeExports.jsx("input", { type: "number", step: "0.01", className: "yn-bm-cell-input yn-bm-number-input", value: sc.otherBudget, onChange: e => onSCFieldChange(billId, 'otherBudget', Number(e.target.value) || 0) })] }) }), jsxRuntimeExports.jsx("td", { style: { background: isBudgetInsufficient ? '#fef2f2' : '#f8fafc', fontWeight: 800 }, children: jsxRuntimeExports.jsx("span", { className: `yn-bm-budget-total-val ${isBudgetInsufficient ? 'is-budget-insufficient' : ''}`, title: isBudgetInsufficient ? missingMessage : '', children: formatCurrency(total) }) })] }) })] })] }));
     });
     // ─── 子表格 3：📑 费用信息与预算归属分摊表 (BUDGET ALLOCATION & SPLIT) ───
     const BudgetAllocationSubTable = React.memo(({ billId, allocations, onSplit, onRemove, onUpdateField, onSearchProject, missingMap, }) => {
-        return (jsxRuntimeExports.jsxs("div", { className: "yn-bm-subgrid-box", children: [jsxRuntimeExports.jsxs("div", { className: "yn-bm-subgrid-header", children: [jsxRuntimeExports.jsx("span", { className: "title", children: "\uD83D\uDCD1 \u8D39\u7528\u4FE1\u606F\u4E0E\u9884\u7B97\u5F52\u5C5E\u5206\u644A\u8868\u683C (BUDGET ALLOCATION & SPLIT)" }), jsxRuntimeExports.jsx("span", { className: "hint", children: "\u203B \u652F\u6301\u6309\u8D39\u7528\u7C7B\u578B\u5206\u914D\u9879\u76EE\uFF0C\u70B9\u51FB\u3010+ \u62C6\u5206\u3011\u53EF\u5C06\u5355\u9879\u8D39\u7528\u62C6\u4E3A\u591A\u884C\u9884\u7B97\u5F52\u5C5E\uFF08\u5982\u90E8\u5206\u5411\u5BA2\u6237\u8BF7\u6B3E\u3001\u90E8\u5206\u81EA\u8D1F\uFF09" })] }), jsxRuntimeExports.jsxs("table", { className: "yn-bm-detail-table", children: [jsxRuntimeExports.jsx("thead", { children: jsxRuntimeExports.jsxs("tr", { children: [jsxRuntimeExports.jsx("th", { style: { width: '45px', textAlign: 'center' }, children: "\u884C\u53F7" }), jsxRuntimeExports.jsx("th", { style: { width: '130px' }, children: "\u8D39\u7528\u7C7B\u578B" }), jsxRuntimeExports.jsx("th", { style: { width: '110px', textAlign: 'right' }, children: "\u8D39\u7528\u603B\u989D" }), jsxRuntimeExports.jsxs("th", { style: { width: '320px' }, children: ["\u9884\u7B97\u5F52\u5C5E (\u9879\u76EE\u7EF4\u8868) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsx("th", { style: { width: '110px', textAlign: 'right' }, children: "\u5206\u644A\u91D1\u989D" }), jsxRuntimeExports.jsxs("th", { style: { width: '95px', textAlign: 'right' }, children: ["\u5206\u644A\u6BD4\u4F8B ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsx("th", { style: { width: '100px', textAlign: 'center' }, children: "\u662F\u5426\u5411\u5BA2\u6237\u8BF7\u6B3E" }), jsxRuntimeExports.jsx("th", { style: { width: '90px', textAlign: 'center' }, children: "\u64CD\u4F5C" })] }) }), jsxRuntimeExports.jsx("tbody", { children: allocations.map((alloc, idx) => {
+        return (jsxRuntimeExports.jsxs("div", { className: "yn-bm-subgrid-box", children: [jsxRuntimeExports.jsxs("div", { className: "yn-bm-subgrid-header", children: [jsxRuntimeExports.jsxs("span", { className: "title", children: ["\uD83D\uDCD1 ", jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-claim", style: { marginRight: '6px' }, children: "[\u62A5\u9500]" }), " \u8D39\u7528\u4FE1\u606F\u4E0E\u9884\u7B97\u5F52\u5C5E\u5206\u644A\u8868\u683C (BUDGET ALLOCATION & SPLIT)"] }), jsxRuntimeExports.jsx("span", { className: "hint", children: "\u203B \u652F\u6301\u6309\u8D39\u7528\u7C7B\u578B\u5206\u914D\u9879\u76EE\uFF0C\u70B9\u51FB\u3010+ \u62C6\u5206\u3011\u53EF\u5C06\u5355\u9879\u8D39\u7528\u62C6\u4E3A\u591A\u884C\u9884\u7B97\u5F52\u5C5E\uFF08\u5982\u90E8\u5206\u5411\u5BA2\u6237\u8BF7\u6B3E\u3001\u90E8\u5206\u81EA\u8D1F\uFF09" })] }), jsxRuntimeExports.jsxs("table", { className: "yn-bm-detail-table", children: [jsxRuntimeExports.jsx("thead", { children: jsxRuntimeExports.jsxs("tr", { children: [jsxRuntimeExports.jsx("th", { style: { width: '45px', textAlign: 'center' }, children: "\u884C\u53F7" }), jsxRuntimeExports.jsxs("th", { style: { width: '130px' }, children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-claim", children: "[\u62A5\u9500]" }), " \u8D39\u7528\u7C7B\u578B"] }), jsxRuntimeExports.jsxs("th", { style: { width: '110px', textAlign: 'right' }, children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-claim", children: "[\u62A5\u9500]" }), " \u8D39\u7528\u603B\u989D"] }), jsxRuntimeExports.jsxs("th", { style: { width: '320px' }, children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-common", children: "[\u5171\u901A]" }), " \u9884\u7B97\u5F52\u5C5E (\u9879\u76EE\u7EF4\u8868) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsxs("th", { style: { width: '110px', textAlign: 'right' }, children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-claim", children: "[\u62A5\u9500]" }), " \u5206\u644A\u91D1\u989D"] }), jsxRuntimeExports.jsxs("th", { style: { width: '95px', textAlign: 'right' }, children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-claim", children: "[\u62A5\u9500]" }), " \u5206\u644A\u6BD4\u4F8B ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsxs("th", { style: { width: '100px', textAlign: 'center' }, children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-common", children: "[\u5171\u901A]" }), " \u662F\u5426\u5411\u5BA2\u6237\u8BF7\u6B3E"] }), jsxRuntimeExports.jsx("th", { style: { width: '90px', textAlign: 'center' }, children: "\u64CD\u4F5C" })] }) }), jsxRuntimeExports.jsx("tbody", { children: allocations.map((alloc, idx) => {
                                 const isProjectMissing = Boolean(missingMap?.[`alloc_${alloc.id}_projectName`]);
                                 const isRatioSumError = Boolean(missingMap?.[`alloc_ratio_sum_${alloc.expenseTypeName}`]);
                                 return (jsxRuntimeExports.jsxs("tr", { children: [jsxRuntimeExports.jsx("td", { style: { textAlign: 'center', fontWeight: 600 }, children: idx + 1 }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsx("span", { className: "yn-bm-exp-type-badge", children: alloc.expenseTypeName }) }), jsxRuntimeExports.jsx("td", { style: { textAlign: 'right', fontFamily: 'var(--bm-mono)' }, children: formatCurrency(alloc.expenseAmount) }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsx(ProjectSearchInput, { value: alloc.projectName, isMissing: isProjectMissing, missingMessage: missingMap?.[`alloc_${alloc.id}_projectName`], dataBillId: billId, dataField: `alloc_${alloc.id}_projectName`, onChange: (name, vo) => {
@@ -71503,6 +72504,10 @@ textarea::-webkit-resizer {
         const [progressText, setProgressText] = reactExports.useState('');
         const [searchQuery, setSearchQuery] = reactExports.useState('');
         const [activeReportBillId, setActiveReportBillId] = reactExports.useState(null);
+        const [availableSCs, setAvailableSCs] = reactExports.useState([]);
+        const [userReimbursementBills, setUserReimbursementBills] = reactExports.useState([]);
+        const [scModalPlanId, setScModalPlanId] = reactExports.useState(null);
+        const [scFilterKeyword, setScFilterKeyword] = reactExports.useState('');
         // ── 必填与数据完整性校验 (实时) ──
         const validation = reactExports.useMemo(() => validateBillPlans(billPlans), [billPlans]);
         // ── 统计计算 ──
@@ -71532,6 +72537,19 @@ textarea::-webkit-resizer {
                 b.projectName.toLowerCase().includes(q) ||
                 BILL_TYPE_LABELS[b.type].includes(q));
         }, [billPlans, searchQuery]);
+        const targetPlanForScModal = reactExports.useMemo(() => scModalPlanId ? billPlans.find(b => b.id === scModalPlanId) || null : null, [billPlans, scModalPlanId]);
+        const filteredAvailableSCs = reactExports.useMemo(() => {
+            if (!scFilterKeyword.trim())
+                return availableSCs;
+            const kw = scFilterKeyword.trim().toLowerCase();
+            return availableSCs.filter(sc => (sc.billCode || '').toLowerCase().includes(kw) ||
+                (sc.destination || '').toLowerCase().includes(kw) ||
+                (sc.purpose || '').toLowerCase().includes(kw) ||
+                (sc.projectName || '').toLowerCase().includes(kw) ||
+                (sc.approvalStatusText || '').toLowerCase().includes(kw) ||
+                (sc.startDate || '').includes(kw) ||
+                (sc.endDate || '').includes(kw));
+        }, [availableSCs, scFilterKeyword]);
         // ── Handlers ──
         const handleSelect = reactExports.useCallback((id) => {
             setSelectedIds(prev => {
@@ -71634,14 +72652,71 @@ textarea::-webkit-resizer {
             setBillPlans(prev => updateBillPlanField(prev, activeReportBillId, 'travelReport', text));
         }, [activeReportBillId]);
         // ── AI 智能副驾一键补全漏填字段 ──
-        const handleAutoFillWithAi = reactExports.useCallback(() => {
+        const handleAutoFillWithAi = reactExports.useCallback(async () => {
             const { updatedPlans, filledCount } = autoFillBillPlansWithAi(billPlans, rawGroups || [], defaultProjectName, defaultApplicantName);
-            setBillPlans(updatedPlans);
-            setProgressText(`✨ AI 智能副驾已成功补全 ${filledCount} 处要素（出差地、日程、航段、充裕预算与项目归属）`);
+            let finalPlans = updatedPlans;
+            // 异步通过系统维表搜索接口解析并补全项目全称 (格式如 "X2607-001 住友理工集团网络整合调研")
+            if (onSearchProject) {
+                finalPlans = await Promise.all(updatedPlans.map(async (plan) => {
+                    const curProj = (plan.projectName || '').trim();
+                    if (!curProj)
+                        return plan;
+                    const codeMatch = curProj.match(/([A-Z0-9]{3,}-[0-9]+)/);
+                    const query = codeMatch ? codeMatch[1] : curProj;
+                    if (!query)
+                        return plan;
+                    try {
+                        const results = await onSearchProject(query);
+                        if (results && results.length > 0) {
+                            const exact = (codeMatch ? results.find(r => (r.code || '').toUpperCase() === query.toUpperCase()) : null) ||
+                                results.find(r => (r.name || '').includes(query) || (r.code || '').includes(query)) ||
+                                results[0];
+                            if (exact && (exact.name || exact.code)) {
+                                const fullName = exact.code && !exact.name.includes(exact.code)
+                                    ? `${exact.code} ${exact.name}`.trim()
+                                    : (exact.name || exact.code);
+                                const projId = exact.id || plan.projectId || '';
+                                const updatedLegs = ((plan.scPlan?.legs || [])).map(leg => {
+                                    const isExt = leg.travelerName ? (leg.travelerName !== plan.applicantName && !leg.travelerName.includes(plan.applicantName)) : false;
+                                    return {
+                                        ...leg,
+                                        date: normalizeToDatetimeLocal(leg.date, '09:00'),
+                                        flightOrTrain: formatFlightTrainRemark(leg.flightOrTrain || leg.transport || '', leg.travelerName || '', isExt, fullName)
+                                    };
+                                });
+                                const updatedSc = plan.scPlan ? {
+                                    ...plan.scPlan,
+                                    projectName: fullName,
+                                    projectId: projId,
+                                    legs: updatedLegs,
+                                } : undefined;
+                                const updatedAllocations = (plan.budgetAllocations || []).map(alloc => ({
+                                    ...alloc,
+                                    projectName: fullName,
+                                    projectId: projId || alloc.projectId,
+                                }));
+                                return {
+                                    ...plan,
+                                    projectName: fullName,
+                                    projectId: projId,
+                                    scPlan: updatedSc,
+                                    budgetAllocations: updatedAllocations,
+                                };
+                            }
+                        }
+                    }
+                    catch (e) {
+                        console.warn(`[handleAutoFillWithAi] 维表搜索项目 ${query} 失败:`, e);
+                    }
+                    return plan;
+                }));
+            }
+            setBillPlans(finalPlans);
+            setProgressText(`✨ AI 智能副驾已成功补全 ${filledCount} 处要素（出差地、日程、航段、充裕预算与维表项目归属）`);
             // 自动展开所有出差单，方便用户一目了然核对
-            const bcIds = updatedPlans.filter(b => b.type === 'BC').map(b => b.id);
+            const bcIds = finalPlans.filter(b => b.type === 'BC').map(b => b.id);
             setExpandedIds(new Set(bcIds));
-        }, [billPlans, rawGroups, defaultProjectName, defaultApplicantName]);
+        }, [billPlans, rawGroups, defaultProjectName, defaultApplicantName, onSearchProject]);
         // ── 一键聚焦跳转首处漏填项 ──
         const handleFocusFirstMissing = reactExports.useCallback(() => {
             if (validation.errors.length === 0)
@@ -71699,13 +72774,366 @@ textarea::-webkit-resizer {
                 window.removeEventListener('YN_COPILOT_BILL_COMMAND', handleCustomEvent);
             };
         }, [billPlans, validation, handleAutoFillWithAi]);
-        const handleSaveSelected = reactExports.useCallback(async () => {
+        // ── 异步刷新出差申请单台账、审批流与已建报销单状态 ──
+        const refreshSCStatuses = reactExports.useCallback(async () => {
+            const globalState = getInvoicePoolGlobalState();
+            try {
+                const [approvedAccounts, myAppStatusMap, userBcList] = await Promise.all([
+                    fetchApprovedTripApplicationsFromMachineAccountApi(globalState).catch(() => []),
+                    fetchMyApplicationsStatusApi(globalState).catch(() => new Map()),
+                    fetchUserReimbursementBillsListApi(globalState).catch(() => [])
+                ]);
+                setUserReimbursementBills(userBcList);
+                // 汇总全量出差申请单（台账已审批 + 审批流中 + 草稿）
+                const scItems = [];
+                const seenCodes = new Set();
+                // 1. 台账已入账 (最高权威与可用额度)
+                for (const acc of approvedAccounts) {
+                    const code = (acc.billCode || '').trim();
+                    if (!code)
+                        continue;
+                    seenCodes.add(code.toUpperCase());
+                    scItems.push({
+                        billCode: acc.billCode,
+                        machineAccountId: acc.machineAccountId,
+                        machineAccountDefineId: acc.machineAccountDefineId,
+                        destination: acc.destination,
+                        purpose: acc.purpose,
+                        startDate: acc.startDate,
+                        endDate: acc.endDate,
+                        approvalStatus: 'approved',
+                        approvalStatusText: '已审批 (台账就绪)',
+                        balanceAmount: acc.balanceAmount,
+                        budgetSum: acc.balanceAmount,
+                        projectId: acc.projectId || '',
+                        projectName: acc.projectName || '',
+                        applicantDate: acc.applicantDate,
+                    });
+                }
+                // 2. 我的申请单列表中处于审批中或草稿状态的 SC 单据
+                const pendingDetails = [];
+                myAppStatusMap.forEach((statusInfo, code) => {
+                    const normCode = (code || '').trim().toUpperCase();
+                    if (!seenCodes.has(normCode)) {
+                        seenCodes.add(normCode);
+                        const st = statusInfo.status || '';
+                        const isApproved = st === '审批结束' ||
+                            st === '已审批' ||
+                            st === '审批通过' ||
+                            st.includes('结束') ||
+                            st.includes('通过') ||
+                            statusInfo.currentNode === '结束' ||
+                            statusInfo.statusEnum === 'APPROVED';
+                        const isApproving = !isApproved && (st === '审批中' ||
+                            st === 'APPROVING' ||
+                            statusInfo.statusEnum === 'APPROVING' ||
+                            (st.includes('审批') && !st.includes('未') && !st.includes('结束') && !st.includes('驳回')));
+                        const isDraft = st === '未提交' || st === 'UNCOMMITTED' || statusInfo.statusEnum === 'UNCOMMITTED';
+                        let approvalStatusText = st;
+                        let approvalStatus = 'draft';
+                        if (isApproved) {
+                            approvalStatus = 'approved';
+                            approvalStatusText = '已审批 (审批结束)';
+                        }
+                        else if (isApproving) {
+                            approvalStatus = 'approving';
+                            approvalStatusText = statusInfo.currentApprover ? `审批中 (${statusInfo.currentApprover})` : '审批中';
+                        }
+                        else if (isDraft) {
+                            approvalStatus = 'draft';
+                            approvalStatusText = '草稿未提交';
+                        }
+                        const scItem = {
+                            billCode: statusInfo.billCode || code,
+                            billMainId: statusInfo.billMainId,
+                            destination: '',
+                            purpose: statusInfo.billName || '',
+                            approvalStatus,
+                            approvalStatusText,
+                            currentApprover: statusInfo.currentApprover,
+                            currentNode: statusInfo.currentNode,
+                            budgetSum: statusInfo.budgetSum,
+                            applicantDate: statusInfo.applicantDate,
+                        };
+                        scItems.push(scItem);
+                        if (scItem.billMainId) {
+                            pendingDetails.push(scItem);
+                        }
+                    }
+                });
+                // 并发异步补全申请单的真实目的地、事由与预算项目 (解决出差地检索与预算项目显示)
+                if (pendingDetails.length > 0) {
+                    const topPending = pendingDetails.slice(0, 30);
+                    await Promise.all(topPending.map(async (item) => {
+                        try {
+                            const detail = await fetchApplicationDetailApi(item.billMainId, globalState);
+                            if (detail) {
+                                item.destination = detail.destination || item.destination;
+                                item.purpose = detail.purpose || item.purpose;
+                                item.projectName = detail.projectName || item.projectName;
+                                item.projectId = detail.projectId || item.projectId;
+                                item.startDate = detail.startDate || item.startDate;
+                                item.endDate = detail.endDate || item.endDate;
+                                if (detail.legs && detail.legs.length > 0)
+                                    item.legs = detail.legs;
+                                if (detail.purpose)
+                                    item.purpose = detail.purpose;
+                                if (detail.projectName)
+                                    item.projectName = detail.projectName;
+                                if (detail.projectId)
+                                    item.projectId = detail.projectId;
+                                if (detail.startDate)
+                                    item.startDate = detail.startDate;
+                                if (detail.endDate)
+                                    item.endDate = detail.endDate;
+                                if (detail.legs && detail.legs.length > 0)
+                                    item.legs = detail.legs;
+                                if (detail.status === 'APPROVED' || detail.status === '审批通过' || detail.status === '已审批' || detail.status === '审批结束' || detail.status?.includes('结束')) {
+                                    item.approvalStatus = 'approved';
+                                    item.approvalStatusText = '已审批 (审批结束)';
+                                }
+                            }
+                        }
+                        catch (e) {
+                            // ignore single detail error
+                        }
+                    }));
+                }
+                const completedSCs = [...scItems];
+                setAvailableSCs(completedSCs);
+                setBillPlans(prev => prev.map(plan => {
+                    let updated = { ...plan };
+                    if (plan.scPlan) {
+                        const sc = { ...plan.scPlan };
+                        const scCode = (sc.billCode || '').trim().toUpperCase();
+                        // 核心自动对齐策略升级：优先按照【起止时间区间 100% 一致 (From ~ To)】或单号精确关联
+                        const pStart = (plan.startDate || '').split('T')[0].split(' ')[0];
+                        const pEnd = (plan.endDate || '').split('T')[0].split(' ')[0];
+                        const matchedAccount = scItems.find(a => {
+                            const aStart = (a.startDate || '').split('T')[0].split(' ')[0];
+                            const aEnd = (a.endDate || '').split('T')[0].split(' ')[0];
+                            // 1. 单号已存在且精确对齐
+                            if (scCode && a.billCode.trim().toUpperCase() === scCode)
+                                return true;
+                            // 2. 时间区间 From ~ To 100% 一致且已审批通过
+                            if (a.approvalStatus === 'approved' && pStart && pEnd && aStart && aEnd && pStart === aStart && pEnd === aEnd)
+                                return true;
+                            // 3. 目的地一致且审批通过
+                            if (!scCode && a.approvalStatus === 'approved' && a.destination && plan.destination &&
+                                (a.destination.includes(plan.destination) || plan.destination.includes(a.destination))) {
+                                if (pStart && aStart && pStart === aStart)
+                                    return true;
+                                if (!pStart || !aStart)
+                                    return true;
+                            }
+                            return false;
+                        });
+                        if (matchedAccount) {
+                            sc.billCode = matchedAccount.billCode;
+                            sc.billMainId = matchedAccount.billMainId || sc.billMainId;
+                            sc.approvalStatus = matchedAccount.approvalStatus;
+                            sc.approvalStatusText = matchedAccount.approvalStatusText;
+                            sc.machineAccountId = matchedAccount.machineAccountId;
+                            sc.machineAccountBalance = matchedAccount.balanceAmount;
+                            sc.currentApprover = matchedAccount.currentApprover;
+                            sc.currentNode = matchedAccount.currentNode;
+                            if (matchedAccount.legs && matchedAccount.legs.length > 0) {
+                                sc.legs = matchedAccount.legs;
+                            }
+                            // 权威继承出差申请单中的预算归属项目 (核心修复 BUG 2)
+                            if (matchedAccount.projectName) {
+                                sc.projectName = matchedAccount.projectName;
+                                sc.projectId = matchedAccount.projectId || sc.projectId || '';
+                                updated.projectName = matchedAccount.projectName;
+                                updated.projectId = matchedAccount.projectId || updated.projectId || '';
+                                updated.budgetAllocations = (updated.budgetAllocations || []).map(alloc => ({
+                                    ...alloc,
+                                    projectName: matchedAccount.projectName,
+                                    projectId: matchedAccount.projectId || alloc.projectId || ''
+                                }));
+                            }
+                            // 统一同步航段备注格式与标准日期
+                            if (sc.legs && sc.legs.length > 0) {
+                                const pName = sc.projectName || updated.projectName || '';
+                                sc.legs = sc.legs.map(leg => {
+                                    const isExt = leg.travelerName ? (leg.travelerName !== plan.applicantName && !leg.travelerName.includes(plan.applicantName)) : false;
+                                    return {
+                                        ...leg,
+                                        date: normalizeToDatetimeLocal(leg.date, '09:00'),
+                                        flightOrTrain: formatFlightTrainRemark(leg.flightOrTrain || leg.transport || '', leg.travelerName || '', isExt, pName)
+                                    };
+                                });
+                            }
+                        }
+                        else if (scCode) {
+                            const statusInfo = myAppStatusMap.get(scCode);
+                            if (statusInfo) {
+                                const st = statusInfo.status || '';
+                                const isApproved = st === '审批结束' ||
+                                    st === '已审批' ||
+                                    st === '审批通过' ||
+                                    st.includes('结束') ||
+                                    st.includes('通过') ||
+                                    statusInfo.currentNode === '结束' ||
+                                    statusInfo.statusEnum === 'APPROVED';
+                                const isApproving = !isApproved && (st === '审批中' ||
+                                    st === 'APPROVING' ||
+                                    statusInfo.statusEnum === 'APPROVING' ||
+                                    (st.includes('审批') && !st.includes('未') && !st.includes('结束') && !st.includes('驳回')));
+                                const isDraft = st === '未提交' || st === 'UNCOMMITTED' || statusInfo.statusEnum === 'UNCOMMITTED';
+                                if (isApproved) {
+                                    sc.approvalStatus = 'approved';
+                                    sc.approvalStatusText = '已审批 (审批结束)';
+                                }
+                                else if (isApproving) {
+                                    sc.approvalStatus = 'approving';
+                                    sc.approvalStatusText = statusInfo.currentApprover ? `审批中 (${statusInfo.currentApprover})` : '审批中';
+                                    sc.currentApprover = statusInfo.currentApprover;
+                                    sc.currentNode = statusInfo.currentNode;
+                                }
+                                else {
+                                    sc.approvalStatus = 'draft';
+                                    sc.approvalStatusText = isDraft ? '草稿未提交' : st;
+                                }
+                            }
+                        }
+                        updated.scPlan = sc;
+                    }
+                    // 关联与检测已建报销单 (核心修复 BUG 1)
+                    const planDest = (plan.destination || '').trim();
+                    const matchedBc = userBcList.find(bc => (updated.scPlan?.billCode && bc.billName.includes(updated.scPlan.billCode)) ||
+                        (planDest && bc.billName.includes(planDest)));
+                    if (matchedBc) {
+                        updated.existingBcBillCode = matchedBc.billCode;
+                        updated.existingBcBillMainId = matchedBc.billMainId;
+                        updated.existingBcStatus = matchedBc.status;
+                    }
+                    return updated;
+                }));
+            }
+            catch (e) {
+                console.warn('[BillManagementDashboard] 刷新申请单状态失败:', e);
+            }
+        }, []);
+        reactExports.useEffect(() => {
+            refreshSCStatuses();
+        }, [refreshSCStatuses]);
+        // ── 交互选择并关联出差申请单 (SC) ──
+        const handleLinkSC = reactExports.useCallback(async (targetPlanId, item) => {
+            let effectiveProjectName = item.projectName || '';
+            let effectiveProjectId = item.projectId || '';
+            let effectiveLegs = item.legs || [];
+            // 若当前选中的申请单尚未拉取到预算项目或行程（例如在审批中），实时抓取完整单据详情
+            if ((!effectiveProjectName || effectiveLegs.length === 0) && item.billMainId) {
+                try {
+                    const globalState = getInvoicePoolGlobalState();
+                    const detail = await fetchApplicationDetailApi(item.billMainId, globalState);
+                    if (detail?.projectName) {
+                        effectiveProjectName = detail.projectName;
+                        effectiveProjectId = detail.projectId || '';
+                    }
+                    if (detail?.legs && detail.legs.length > 0) {
+                        effectiveLegs = detail.legs;
+                    }
+                }
+                catch (e) {
+                    console.warn('[handleLinkSC] 提取申请单详情失败:', e);
+                }
+            }
+            setBillPlans(prev => prev.map(p => {
+                if (p.id !== targetPlanId)
+                    return p;
+                const currentSc = p.scPlan || {
+                    applicantName: p.applicantName,
+                    tripType: '境内出張',
+                    destination: p.destination,
+                    purpose: p.purpose,
+                    startDate: p.startDate,
+                    endDate: p.endDate,
+                    days: 1,
+                    nights: 0,
+                    legs: [],
+                    airfareBudget: 0,
+                    hotelBudget: 0,
+                    mealAllowance: 0,
+                    otherBudget: 0,
+                    totalBudget: p.totalAmount,
+                    projectId: '',
+                    projectName: '',
+                    customerCharge: false,
+                };
+                const newSc = {
+                    ...currentSc,
+                    billCode: item.billCode,
+                    billMainId: item.billMainId || currentSc.billMainId,
+                    machineAccountId: item.machineAccountId,
+                    machineAccountBalance: item.balanceAmount,
+                    approvalStatus: item.approvalStatus,
+                    approvalStatusText: item.approvalStatusText,
+                    currentApprover: item.currentApprover,
+                    currentNode: item.currentNode,
+                    legs: (effectiveLegs.length > 0 ? effectiveLegs : currentSc.legs).map(leg => {
+                        const isExt = leg.travelerName ? (leg.travelerName !== p.applicantName && !leg.travelerName.includes(p.applicantName)) : false;
+                        const pName = effectiveProjectName || currentSc.projectName || p.projectName || '';
+                        return {
+                            ...leg,
+                            date: normalizeToDatetimeLocal(leg.date, '09:00'),
+                            flightOrTrain: formatFlightTrainRemark(leg.flightOrTrain || leg.transport || '', leg.travelerName || '', isExt, pName)
+                        };
+                    }),
+                    projectName: effectiveProjectName || currentSc.projectName,
+                    projectId: effectiveProjectId || currentSc.projectId,
+                };
+                const updatedAllocations = (p.budgetAllocations || []).map(alloc => ({
+                    ...alloc,
+                    projectName: effectiveProjectName || alloc.projectName,
+                    projectId: effectiveProjectId || alloc.projectId,
+                }));
+                return {
+                    ...p,
+                    scPlan: newSc,
+                    projectName: effectiveProjectName || p.projectName,
+                    projectId: effectiveProjectId || p.projectId,
+                    budgetAllocations: updatedAllocations,
+                };
+            }));
+            setScModalPlanId(null);
+            setProgressText(`✅ 已成功关联出差申请单 ${item.billCode}${effectiveProjectName ? `，预算归属已同步更新为: ${effectiveProjectName}` : ''}`);
+        }, []);
+        // ── 解除出差申请单关联 ──
+        const handleUnlinkSC = reactExports.useCallback((targetPlanId) => {
+            setBillPlans(prev => prev.map(p => {
+                if (p.id !== targetPlanId || !p.scPlan)
+                    return p;
+                return {
+                    ...p,
+                    scPlan: {
+                        ...p.scPlan,
+                        billCode: undefined,
+                        billMainId: undefined,
+                        machineAccountId: undefined,
+                        machineAccountBalance: undefined,
+                        approvalStatus: undefined,
+                        approvalStatusText: undefined,
+                    }
+                };
+            }));
+            setProgressText('已解除该出差行程与申请单的关联');
+        }, []);
+        const handleSaveSelected = reactExports.useCallback(async (mode = 'ALL') => {
             const selected = billPlans.filter(b => selectedIds.has(b.id));
             if (selected.length === 0)
                 return;
-            // 检查所选单据中是否有漏填必填项
+            if (mode === 'SC_ONLY') {
+                const scTargets = selected.filter(b => Boolean(b.scPlan));
+                if (scTargets.length === 0) {
+                    alert('⚠️ 所选单据中没有需要立项申请的出差单(SC)。');
+                    return;
+                }
+            }
+            // 检查所选单据中是否有漏填必填项 (生成 SC 时只检查出差地与日程，生成 BC 时严格检查)
             const selectedErrors = validation.errors.filter(e => selectedIds.has(e.billId));
-            if (selectedErrors.length > 0) {
+            if (selectedErrors.length > 0 && mode !== 'SC_ONLY') {
                 const confirmMsg = `⚠️ 检出所选单据仍有 ${selectedErrors.length} 处必填项未填写/不合规（已用红框高亮）：\n` +
                     selectedErrors.slice(0, 3).map(e => `• ${e.message}`).join('\n') +
                     (selectedErrors.length > 3 ? `\n...等共 ${selectedErrors.length} 处` : '') +
@@ -71716,16 +73144,21 @@ textarea::-webkit-resizer {
                 }
             }
             setIsProcessing(true);
-            setProgressText(`正在极速持久化 ${selected.length} 张单据草稿 (commit: false)...`);
+            const actionDesc = mode === 'SC_ONLY'
+                ? `正在生成选中的出差申请单草稿 (SC)...`
+                : `正在检测申请单台账状态并持久化报销单草稿 (BC)...`;
+            setProgressText(actionDesc);
             try {
                 setBillPlans(prev => prev.map(p => selectedIds.has(p.id) ? { ...p, status: 'saving' } : p));
-                await onSaveDrafts(selected);
+                await onSaveDrafts(selected, mode);
                 setBillPlans(prev => prev.map(p => selectedIds.has(p.id) ? { ...p, status: 'saved', errorMessage: '' } : p));
-                setProgressText(`✅ 已成功持久化 ${selected.length} 张单据草稿入库`);
+                setProgressText(mode === 'SC_ONLY'
+                    ? `✅ 已成功生成出差申请单草稿，请前往【我的申请】核对并提交审批`
+                    : `✅ 已成功持久化 ${selected.length} 张单据草稿入库`);
             }
             catch (err) {
                 setBillPlans(prev => prev.map(p => selectedIds.has(p.id) ? { ...p, status: 'error', errorMessage: err?.message || '保存失败' } : p));
-                setProgressText(`❌ 保存失败: ${err?.message || '接口异常'}`);
+                setProgressText(`❌ 操作拦截/失败: ${err?.message || '接口异常'}`);
             }
             finally {
                 setIsProcessing(false);
@@ -71735,7 +73168,7 @@ textarea::-webkit-resizer {
             return billPlans.find(b => b.id === activeReportBillId);
         }, [billPlans, activeReportBillId]);
         const isAllSelected = selectedIds.size === filteredPlans.length && filteredPlans.length > 0;
-        return (jsxRuntimeExports.jsxs("div", { className: "yn-bm-fullscreen-workspace", children: [jsxRuntimeExports.jsxs("div", { className: "yn-bm-workspace-topbar", children: [jsxRuntimeExports.jsxs("div", { className: "yn-bm-topbar-left", children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-workspace-title", children: "\uD83D\uDCCB \u62A5\u9500\u5355\u4E0E\u7533\u8BF7\u5355\u7BA1\u7406\u5DE5\u4F5C\u53F0 (\u7EAF\u8868\u683C\u6A21\u5F0F)" }), jsxRuntimeExports.jsxs("span", { className: "yn-bm-top-stat", children: ["\u5171 ", stats.totalBills, " \u5F20\u5355\u636E (", jsxRuntimeExports.jsxs("span", { className: "yn-bm-tag yn-bm-tag--bc", children: [stats.bcCount, " \u5F20\u51FA\u5DEE\u5355"] }), ' + ', jsxRuntimeExports.jsxs("span", { className: "yn-bm-tag yn-bm-tag--bj", children: [stats.bjCount, " \u5F20\u7ECF\u8D39\u5355"] }), ")"] }), validation.missingCount > 0 ? (jsxRuntimeExports.jsxs("button", { type: "button", className: "yn-bm-health-badge is-warning", onClick: handleFocusFirstMissing, title: "\u70B9\u51FB\u81EA\u52A8\u805A\u7126\u5B9A\u4F4D\u9996\u5904\u6F0F\u586B\u9879", children: ["\u26A0\uFE0F \u68C0\u51FA ", validation.missingCount, " \u5904\u5F85\u8865\u5FC5\u586B (\u70B9\u51FB\u5B9A\u4F4D)"] })) : (jsxRuntimeExports.jsx("span", { className: "yn-bm-health-badge is-ok", title: "\u6240\u6709\u5355\u636E\u5FC5\u586B\u8981\u7D20\u5747\u5DF2\u9F50\u5907\uFF0C\u53EF\u5B89\u5168\u4FDD\u5B58\u8349\u7A3F", children: "\u2705 \u5FC5\u586B\u9879\u5DF2\u9F50\u5907 \u00B7 \u53EF\u968F\u65F6\u5165\u5E93" }))] }), jsxRuntimeExports.jsx("div", { className: "yn-bm-topbar-center", children: jsxRuntimeExports.jsx("input", { type: "text", className: "yn-bm-cell-input yn-bm-search-input", placeholder: "\u641C\u7D22\u76EE\u7684\u5730 / \u51FA\u5DEE\u76EE\u7684 / \u9879\u76EE\u540D\u79F0...", value: searchQuery, onChange: e => setSearchQuery(e.target.value) }) }), jsxRuntimeExports.jsxs("div", { className: "yn-bm-topbar-right", children: [jsxRuntimeExports.jsx("button", { type: "button", className: "yn-bm-btn yn-bm-btn--ai-hero yn-bm-btn--sm", onClick: handleAutoFillWithAi, title: "\u6839\u636E\u53D1\u7968\u51ED\u8BC1\u4E0E\u6392\u671F\u81EA\u52A8\u63A8\u5BFC\u51FA\u5DEE\u76EE\u7684\u5730\u3001\u822A\u6BB5\u3001\u5408\u89C4\u9884\u7B97\u53CA\u9879\u76EE\u5F52\u5C5E", children: "\u2728 AI \u667A\u80FD\u526F\u9A7E\u4E00\u952E\u8865\u5168\u6F0F\u586B" }), jsxRuntimeExports.jsx("button", { type: "button", className: "yn-bm-btn yn-bm-btn--secondary yn-bm-btn--sm", onClick: handleExpandAll, title: "\u5C55\u5F00\u6216\u6298\u53E0\u5168\u90E8\u660E\u7EC6\u5B50\u8868\u683C", children: expandedIds.size > 0 ? '⊟ 折叠全部子表格' : '⊞ 平铺全部子表格' })] })] }), jsxRuntimeExports.jsx("div", { className: "yn-bm-table-scroll-wrap", children: filteredPlans.length === 0 ? (jsxRuntimeExports.jsxs("div", { className: "yn-bm-empty", children: [jsxRuntimeExports.jsx("span", { className: "icon", children: "\uD83D\uDCC2" }), jsxRuntimeExports.jsx("span", { className: "text", children: "\u6682\u65E0\u5F85\u5EFA\u5355\u636E" }), jsxRuntimeExports.jsx("span", { className: "sub", children: "\u8BF7\u5148\u5728\u3010\uD83D\uDCB3 \u8D39\u7528\u4FE1\u606F\u660E\u7EC6\u3011Tab \u4E2D\u6574\u7406\u8D39\u7528\u5E76\u805A\u7C7B Trip" })] })) : (jsxRuntimeExports.jsxs("table", { className: "yn-bm-spread-table", children: [jsxRuntimeExports.jsx("thead", { children: jsxRuntimeExports.jsxs("tr", { children: [jsxRuntimeExports.jsx("th", { style: { width: '38px', textAlign: 'center' }, children: jsxRuntimeExports.jsx("input", { type: "checkbox", checked: isAllSelected, onChange: handleSelectAll, className: "yn-bm-checkbox" }) }), jsxRuntimeExports.jsx("th", { style: { width: '30px' } }), jsxRuntimeExports.jsx("th", { style: { width: '125px' }, children: "\u5355\u636E\u7C7B\u578B" }), jsxRuntimeExports.jsx("th", { style: { width: '90px' }, children: "\u51FA\u5DEE\u7C7B\u578B" }), jsxRuntimeExports.jsxs("th", { style: { width: '95px' }, children: ["\u51FA\u5DEE\u4EBA\u5458 ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsxs("th", { style: { width: '100px' }, children: ["\u51FA\u5F35\u5148 (\u57CE\u5E02) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsxs("th", { style: { width: '360px' }, children: ["\u51FA\u5F35\u76EE\u7684 (PURPOSE) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsxs("th", { style: { width: '215px' }, children: ["\u671F\u9593 (From ~ To) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsxs("th", { style: { width: '290px' }, children: ["\u9884\u7B97\u5F52\u5C5E (\u9879\u76EE\u7EF4\u8868) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsx("th", { style: { width: '85px', textAlign: 'center' }, children: "\u5411\u5BA2\u6237\u8BF7\u6B3E" }), jsxRuntimeExports.jsxs("th", { style: { width: '120px', textAlign: 'right' }, children: ["\u9884\u7B97\u5408\u8BA1 (SC) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsx("th", { style: { width: '110px', textAlign: 'right' }, children: "\u5B9E\u62A5\u5B9E\u9500\u91D1\u989D" }), jsxRuntimeExports.jsx("th", { style: { width: '95px', textAlign: 'center' }, children: "\u51FA\u5DEE\u603B\u7ED3\u62A5\u544A" }), jsxRuntimeExports.jsx("th", { style: { width: '95px', textAlign: 'center' }, children: "\u72B6\u6001" })] }) }), jsxRuntimeExports.jsx("tbody", { children: filteredPlans.map(plan => {
+        return (jsxRuntimeExports.jsxs("div", { className: "yn-bm-fullscreen-workspace", children: [jsxRuntimeExports.jsxs("div", { className: "yn-bm-workspace-topbar", children: [jsxRuntimeExports.jsxs("div", { className: "yn-bm-topbar-left", children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-workspace-title", children: "\uD83D\uDCCB \u62A5\u9500\u5355\u4E0E\u7533\u8BF7\u5355\u7BA1\u7406\u5DE5\u4F5C\u53F0 (\u7EAF\u8868\u683C\u6A21\u5F0F)" }), jsxRuntimeExports.jsxs("span", { className: "yn-bm-top-stat", children: ["\u5171 ", stats.totalBills, " \u5F20\u5355\u636E (", jsxRuntimeExports.jsxs("span", { className: "yn-bm-tag yn-bm-tag--bc", children: [stats.bcCount, " \u5F20\u51FA\u5DEE\u5355"] }), ' + ', jsxRuntimeExports.jsxs("span", { className: "yn-bm-tag yn-bm-tag--bj", children: [stats.bjCount, " \u5F20\u7ECF\u8D39\u5355"] }), ")"] }), jsxRuntimeExports.jsxs("div", { className: "yn-bm-header-legend", title: "\u5B57\u6BB5\u5C5E\u6027\u5F52\u5C5E\u8BF4\u660E\uFF1A\u5171\u901A\u5B57\u6BB5\u540C\u65F6\u4F5C\u7528\u4E8E\u7533\u8BF7\u4E0E\u62A5\u9500\uFF1B\u7533\u8BF7\u4E13\u5C5E\u5BF9\u5E94 SC \u51FA\u5DEE\u7533\u8BF7\uFF1B\u62A5\u9500\u4E13\u5C5E\u5BF9\u5E94 BC/BJ \u62A5\u9500\u5355", children: [jsxRuntimeExports.jsxs("span", { children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-common", children: "[\u5171\u901A]" }), "\u5171\u901A"] }), jsxRuntimeExports.jsxs("span", { children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-apply", children: "[\u7533\u8BF7]" }), "\u7533\u8BF7\u4E13\u5C5E"] }), jsxRuntimeExports.jsxs("span", { children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-claim", children: "[\u62A5\u9500]" }), "\u62A5\u9500\u4E13\u5C5E"] })] }), validation.missingCount > 0 ? (jsxRuntimeExports.jsxs("button", { type: "button", className: "yn-bm-health-badge is-warning", onClick: handleFocusFirstMissing, title: "\u70B9\u51FB\u81EA\u52A8\u805A\u7126\u5B9A\u4F4D\u9996\u5904\u6F0F\u586B\u9879", children: ["\u26A0\uFE0F \u68C0\u51FA ", validation.missingCount, " \u5904\u5F85\u8865\u5FC5\u586B (\u70B9\u51FB\u5B9A\u4F4D)"] })) : (jsxRuntimeExports.jsx("span", { className: "yn-bm-health-badge is-ok", title: "\u6240\u6709\u5355\u636E\u5FC5\u586B\u8981\u7D20\u5747\u5DF2\u9F50\u5907\uFF0C\u53EF\u5B89\u5168\u4FDD\u5B58\u8349\u7A3F", children: "\u2705 \u5FC5\u586B\u9879\u5DF2\u9F50\u5907 \u00B7 \u53EF\u968F\u65F6\u5165\u5E93" }))] }), jsxRuntimeExports.jsx("div", { className: "yn-bm-topbar-center", children: jsxRuntimeExports.jsx("input", { type: "text", className: "yn-bm-cell-input yn-bm-search-input", placeholder: "\u641C\u7D22\u76EE\u7684\u5730 / \u51FA\u5DEE\u76EE\u7684 / \u9879\u76EE\u540D\u79F0...", value: searchQuery, onChange: e => setSearchQuery(e.target.value) }) }), jsxRuntimeExports.jsxs("div", { className: "yn-bm-topbar-right", children: [jsxRuntimeExports.jsx("button", { type: "button", className: "yn-bm-btn yn-bm-btn--secondary yn-bm-btn--sm", onClick: refreshSCStatuses, title: "\u67E5\u8BE2\u6700\u65B0\u51FA\u5DEE\u7533\u8BF7\u5355\u5BA1\u6279\u6D41\u72B6\u6001\u4E0E\u51FA\u5DEE\u53F0\u8D26\u5165\u5E93\u60C5\u51B5", children: "\uD83D\uDD04 \u5237\u65B0\u5BA1\u6279\u72B6\u6001" }), jsxRuntimeExports.jsx("button", { type: "button", className: "yn-bm-btn yn-bm-btn--ai-hero yn-bm-btn--sm", onClick: handleAutoFillWithAi, title: "\u6839\u636E\u53D1\u7968\u51ED\u8BC1\u4E0E\u6392\u671F\u81EA\u52A8\u63A8\u5BFC\u51FA\u5DEE\u76EE\u7684\u5730\u3001\u822A\u6BB5\u3001\u5408\u89C4\u9884\u7B97\u53CA\u9879\u76EE\u5F52\u5C5E", children: "\u2728 AI \u667A\u80FD\u526F\u9A7E\u4E00\u952E\u8865\u5168\u6F0F\u586B" }), jsxRuntimeExports.jsx("button", { type: "button", className: "yn-bm-btn yn-bm-btn--secondary yn-bm-btn--sm", onClick: handleExpandAll, title: "\u5C55\u5F00\u6216\u6298\u53E0\u5168\u90E8\u660E\u7EC6\u5B50\u8868\u683C", children: expandedIds.size > 0 ? '⊟ 折叠全部子表格' : '⊞ 平铺全部子表格' })] })] }), jsxRuntimeExports.jsx("div", { className: "yn-bm-table-scroll-wrap", children: filteredPlans.length === 0 ? (jsxRuntimeExports.jsxs("div", { className: "yn-bm-empty", children: [jsxRuntimeExports.jsx("span", { className: "icon", children: "\uD83D\uDCC2" }), jsxRuntimeExports.jsx("span", { className: "text", children: "\u6682\u65E0\u5F85\u5EFA\u5355\u636E" }), jsxRuntimeExports.jsx("span", { className: "sub", children: "\u8BF7\u5148\u5728\u3010\uD83D\uDCB3 \u8D39\u7528\u4FE1\u606F\u660E\u7EC6\u3011Tab \u4E2D\u6574\u7406\u8D39\u7528\u5E76\u805A\u7C7B Trip" })] })) : (jsxRuntimeExports.jsxs("table", { className: "yn-bm-spread-table", children: [jsxRuntimeExports.jsx("thead", { children: jsxRuntimeExports.jsxs("tr", { children: [jsxRuntimeExports.jsx("th", { style: { width: '38px', textAlign: 'center' }, children: jsxRuntimeExports.jsx("input", { type: "checkbox", checked: isAllSelected, onChange: handleSelectAll, className: "yn-bm-checkbox" }) }), jsxRuntimeExports.jsx("th", { style: { width: '30px' } }), jsxRuntimeExports.jsxs("th", { style: { width: '135px' }, children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-claim", children: "[\u62A5\u9500]" }), " \u5355\u636E\u7C7B\u578B"] }), jsxRuntimeExports.jsxs("th", { style: { width: '95px' }, children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-common", children: "[\u5171\u901A]" }), " \u51FA\u5DEE\u7C7B\u578B"] }), jsxRuntimeExports.jsxs("th", { style: { width: '105px' }, children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-common", children: "[\u5171\u901A]" }), " \u51FA\u5DEE\u4EBA\u5458 ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsxs("th", { style: { width: '115px' }, children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-common", children: "[\u5171\u901A]" }), " \u51FA\u5F35\u5148 (\u57CE\u5E02) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsxs("th", { style: { width: '360px' }, children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-common", children: "[\u5171\u901A]" }), " \u51FA\u5F35\u76EE\u7684 (PURPOSE) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsxs("th", { style: { width: '225px' }, children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-common", children: "[\u5171\u901A]" }), " \u671F\u9593 (From ~ To) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsxs("th", { style: { width: '155px' }, children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-apply", children: "[\u7533\u8BF7]" }), " \u51FA\u5DEE\u7533\u8BF7\u5355 (SC) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsxs("th", { style: { width: '290px' }, children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-common", children: "[\u5171\u901A]" }), " \u9884\u7B97\u5F52\u5C5E (\u9879\u76EE\u7EF4\u8868) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsxs("th", { style: { width: '95px', textAlign: 'center' }, children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-common", children: "[\u5171\u901A]" }), " \u5411\u5BA2\u6237\u8BF7\u6B3E"] }), jsxRuntimeExports.jsxs("th", { style: { width: '130px', textAlign: 'right' }, children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-apply", children: "[\u7533\u8BF7]" }), " \u9884\u7B97\u5408\u8BA1 (SC) ", jsxRuntimeExports.jsx("span", { className: "yn-bm-req-star", children: "*" })] }), jsxRuntimeExports.jsxs("th", { style: { width: '115px', textAlign: 'right' }, children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-claim", children: "[\u62A5\u9500]" }), " \u5B9E\u62A5\u5B9E\u9500\u91D1\u989D"] }), jsxRuntimeExports.jsxs("th", { style: { width: '105px', textAlign: 'center' }, children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-claim", children: "[\u62A5\u9500]" }), " \u51FA\u5DEE\u603B\u7ED3\u62A5\u544A"] }), jsxRuntimeExports.jsxs("th", { style: { width: '95px', textAlign: 'center' }, children: [jsxRuntimeExports.jsx("span", { className: "yn-bm-badge-claim", children: "[\u62A5\u9500]" }), " \u72B6\u6001"] })] }) }), jsxRuntimeExports.jsx("tbody", { children: filteredPlans.map(plan => {
                                     const isSelected = selectedIds.has(plan.id);
                                     const isExpanded = expandedIds.has(plan.id);
                                     const isBC = plan.type === 'BC';
@@ -71780,14 +73213,55 @@ textarea::-webkit-resizer {
                                                                         handleFieldChange(plan.id, 'endDate', e.target.value);
                                                                         if (sc)
                                                                             handleSCFieldChange(plan.id, 'endDate', e.target.value);
-                                                                    } })] })) : (jsxRuntimeExports.jsx("span", { className: "yn-bm-muted", children: "\u2014" })) }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsx(ProjectSearchInput, { value: plan.projectName, isMissing: isProjectMissing, missingMessage: missingMap.projectName, isAiFilled: isProjectAi, dataBillId: plan.id, dataField: "projectName", onChange: (name, vo) => {
+                                                                    } })] })) : (jsxRuntimeExports.jsx("span", { className: "yn-bm-muted", children: "\u2014" })) }), jsxRuntimeExports.jsx("td", { children: sc ? (jsxRuntimeExports.jsxs("div", { style: { display: 'flex', flexDirection: 'column', gap: '3px' }, children: [sc.billCode ? (jsxRuntimeExports.jsxs("a", { href: sc.billMainId ? `#/billWrite?billMainId=${sc.billMainId}` : `#/billWrite?billCode=${sc.billCode}`, target: "_blank", rel: "noreferrer", style: { fontFamily: 'monospace', fontWeight: 700, fontSize: '12px', color: '#2563eb', textDecoration: 'underline' }, title: "\u5728\u65B0\u6807\u7B7E\u9875\u4E2D\u6253\u5F00\u51FA\u5DEE\u7533\u8BF7\u5355", children: [sc.billCode, " \u2197"] })) : (jsxRuntimeExports.jsx("span", { style: { fontFamily: 'monospace', fontWeight: 600, fontSize: '11px', color: '#94a3b8' }, children: "\u5F85\u7B2C1\u6B65\u751F\u6210" })), sc.approvalStatus === 'approved' ? (jsxRuntimeExports.jsx("span", { className: "yn-bm-badge yn-bm-badge--saved", style: { fontSize: '10px', padding: '1px 5px', width: 'fit-content' }, title: `✅ 已审批通过并入库出差申请台账${sc.machineAccountBalance ? ` (可用额度: ¥${sc.machineAccountBalance})` : ''}，可安全生成报销单`, children: "\u2705 \u5DF2\u5BA1\u6279 (\u53F0\u8D26\u5C31\u7EEA)" })) : sc.approvalStatus === 'approving' ? (jsxRuntimeExports.jsxs("span", { className: "yn-bm-badge yn-bm-badge--saving yn-bm-badge-pulse", style: { fontSize: '10px', padding: '1px 5px', width: 'fit-content', background: '#fef3c7', color: '#b45309' }, title: `⏳ 正在审批流中，尚未入库台账，无法关联报销单${sc.currentApprover ? ` (当前审批人: ${sc.currentApprover})` : ''}`, children: ["\u23F3 \u5BA1\u6279\u4E2D ", sc.currentApprover ? `(${sc.currentApprover})` : '(未入账)'] })) : sc.approvalStatus === 'draft' || sc.billCode ? (jsxRuntimeExports.jsx("span", { className: "yn-bm-badge", style: { fontSize: '10px', padding: '1px 5px', width: 'fit-content', background: '#f1f5f9', color: '#475569' }, title: "\uD83D\uDCDD \u7533\u8BF7\u5355\u8349\u7A3F\u5DF2\u4FDD\u5B58\uFF0C\u8BF7\u5728\u3010\u6211\u7684\u7533\u8BF7\u3011\u4E2D\u590D\u6838\u5E76\u63D0\u4EA4\u5BA1\u6279", children: "\uD83D\uDCDD \u8349\u7A3F\u672A\u63D0\u4EA4" })) : (jsxRuntimeExports.jsx("span", { style: { fontSize: '10px', color: '#94a3b8' }, children: "\u672A\u521B\u5EFA\u7533\u8BF7\u5355" })), jsxRuntimeExports.jsxs("div", { style: { display: 'flex', gap: '6px', alignItems: 'center', marginTop: '2px' }, children: [jsxRuntimeExports.jsx("button", { type: "button", className: "yn-bm-btn-link", onClick: () => {
+                                                                                setScModalPlanId(plan.id);
+                                                                                setScFilterKeyword('');
+                                                                            }, style: { fontSize: '11px', color: '#2563eb', padding: 0, textDecoration: 'underline', cursor: 'pointer', background: 'none', border: 'none' }, title: "\u4ECE\u51FA\u5DEE\u53F0\u8D26\u4E0E\u6211\u7684\u7533\u8BF7\u4E2D\u9009\u62E9\u6216\u5207\u6362\u5173\u8054\u7533\u8BF7\u5355", children: sc.billCode ? '🔄 切换' : '🔍 关联已有' }), sc.billCode && (jsxRuntimeExports.jsx("button", { type: "button", className: "yn-bm-btn-link", onClick: () => handleUnlinkSC(plan.id), style: { fontSize: '11px', color: '#ef4444', padding: 0, cursor: 'pointer', background: 'none', border: 'none' }, title: "\u89E3\u9664\u4E0E\u6B64\u7533\u8BF7\u5355\u7684\u5173\u8054", children: "\u2715 \u89E3\u7ED1" }))] })] })) : (jsxRuntimeExports.jsx("span", { className: "yn-bm-muted", children: "\u2014" })) }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsx(ProjectSearchInput, { value: plan.projectName, isMissing: isProjectMissing, missingMessage: missingMap.projectName, isAiFilled: isProjectAi, dataBillId: plan.id, dataField: "projectName", onChange: (name, vo) => {
                                                                 handleFieldChange(plan.id, 'projectName', name);
                                                                 if (vo?.id)
                                                                     handleFieldChange(plan.id, 'projectId', vo.id);
-                                                            }, onSearch: onSearchProject }) }), jsxRuntimeExports.jsx("td", { style: { textAlign: 'center' }, children: jsxRuntimeExports.jsx(ToggleSwitch, { checked: plan.customerCharge, onChange: v => handleFieldChange(plan.id, 'customerCharge', v) }) }), jsxRuntimeExports.jsx("td", { style: { textAlign: 'right' }, children: sc ? (jsxRuntimeExports.jsx("span", { className: `yn-bm-budget-total-col ${isBudgetInsufficient ? 'is-budget-insufficient' : ''}`, "data-bill-id": plan.id, "data-field": "scTotalBudget", title: isBudgetInsufficient ? missingMap.scTotalBudget : '预算合计 (需 ≥ 实际报销)', children: formatCurrency(sc.totalBudget) })) : (jsxRuntimeExports.jsx("span", { className: "yn-bm-muted", children: "\u2014" })) }), jsxRuntimeExports.jsx("td", { style: { textAlign: 'right' }, children: jsxRuntimeExports.jsx("span", { className: "yn-bm-currency-val", children: formatCurrency(plan.totalAmount) }) }), jsxRuntimeExports.jsx("td", { style: { textAlign: 'center' }, children: isBC ? (jsxRuntimeExports.jsx("button", { type: "button", className: `yn-bm-report-pill ${plan.travelReport ? 'has-content' : ''}`, onClick: () => setActiveReportBillId(plan.id), children: plan.travelReport ? `✅ 已填 (${plan.travelReport.length}字)` : '📝 撰写' })) : (jsxRuntimeExports.jsx("span", { className: "yn-bm-muted", children: "\u2014" })) }), jsxRuntimeExports.jsx("td", { style: { textAlign: 'center' }, children: jsxRuntimeExports.jsx(StatusBadge, { status: plan.status, error: plan.errorMessage }) })] }), isExpanded && (jsxRuntimeExports.jsx("tr", { className: "yn-bm-subtables-row", children: jsxRuntimeExports.jsx("td", { colSpan: 14, className: "yn-bm-subtables-cell", children: jsxRuntimeExports.jsxs("div", { className: "yn-bm-subtables-container", children: [isBC && sc && (jsxRuntimeExports.jsx(ItinerarySubTable, { billId: plan.id, legs: sc.legs || [], onAddLeg: handleAddLeg, onRemoveLeg: handleRemoveLeg, onUpdateLeg: handleUpdateLeg, missingMap: missingMap, aiFilled: plan.aiFilledFields?.includes('legs') })), isBC && sc && (jsxRuntimeExports.jsx(BudgetEstimationSubTable, { billId: plan.id, sc: sc, claimAmount: plan.totalAmount, onSCFieldChange: handleSCFieldChange, isBudgetInsufficient: isBudgetInsufficient, missingMessage: missingMap.scTotalBudget })), jsxRuntimeExports.jsx(BudgetAllocationSubTable, { billId: plan.id, allocations: plan.budgetAllocations || [], onSplit: handleSplitAllocation, onRemove: handleRemoveAllocation, onUpdateField: handleUpdateAllocationField, onSearchProject: onSearchProject, missingMap: missingMap })] }) }) }))] }, plan.id));
-                                }) })] })) }), jsxRuntimeExports.jsxs("div", { className: "yn-bm-workspace-footer", children: [jsxRuntimeExports.jsxs("div", { className: "yn-bm-footer-summary", children: [jsxRuntimeExports.jsxs("span", { className: "pill", children: ["\u5DF2\u9009 ", jsxRuntimeExports.jsx("strong", { children: stats.selectedCount }), " \u5F20\u5355\u636E"] }), jsxRuntimeExports.jsxs("span", { className: "pill", children: ["\u5173\u8054 ", jsxRuntimeExports.jsx("strong", { children: stats.totalExpenses }), " \u7B14\u8D39\u7528"] }), jsxRuntimeExports.jsxs("span", { className: "pill", children: ["\u7968\u636E ", jsxRuntimeExports.jsx("strong", { children: stats.totalInvoices }), " \u5F20\u53D1\u7968"] }), jsxRuntimeExports.jsxs("span", { className: "pill pill-primary", children: ["\u5B9E\u62A5\u5B9E\u9500\u5408\u8BA1: ", jsxRuntimeExports.jsx("strong", { children: formatCurrency(stats.totalAmount) })] }), stats.scTotalBudget > 0 && (jsxRuntimeExports.jsxs("span", { className: "pill pill-sc", children: ["SC \u9884\u7B97\u603B\u8BA1: ", jsxRuntimeExports.jsx("strong", { children: formatCurrency(stats.scTotalBudget) })] }))] }), jsxRuntimeExports.jsxs("div", { className: "yn-bm-footer-actions", children: [progressText && (jsxRuntimeExports.jsx("span", { className: "yn-bm-progress-msg", children: progressText })), jsxRuntimeExports.jsx("button", { type: "button", className: "yn-bm-btn yn-bm-btn--primary yn-bm-btn--lg", onClick: handleSaveSelected, disabled: isProcessing || stats.selectedCount === 0, children: isProcessing
-                                        ? '⏳ 正在保存入库...'
-                                        : `💾 批量持久化已选 ${stats.selectedCount} 张草稿入库 (commit: false)` })] })] }), jsxRuntimeExports.jsx(TravelReportDrawer, { isOpen: Boolean(activeReportBillId), title: activeReportPlan?.title || '出差工作报告', content: activeReportPlan?.travelReport || '', onClose: () => setActiveReportBillId(null), onSave: handleSaveReport })] }));
+                                                            }, onSearch: onSearchProject }) }), jsxRuntimeExports.jsx("td", { style: { textAlign: 'center' }, children: jsxRuntimeExports.jsx(ToggleSwitch, { checked: plan.customerCharge, onChange: v => handleFieldChange(plan.id, 'customerCharge', v) }) }), jsxRuntimeExports.jsx("td", { style: { textAlign: 'right' }, children: sc ? (jsxRuntimeExports.jsx("span", { className: `yn-bm-budget-total-col ${isBudgetInsufficient ? 'is-budget-insufficient' : ''}`, "data-bill-id": plan.id, "data-field": "scTotalBudget", title: isBudgetInsufficient ? missingMap.scTotalBudget : '预算合计 (需 ≥ 实际报销)', children: formatCurrency(sc.totalBudget) })) : (jsxRuntimeExports.jsx("span", { className: "yn-bm-muted", children: "\u2014" })) }), jsxRuntimeExports.jsx("td", { style: { textAlign: 'right' }, children: jsxRuntimeExports.jsx("span", { className: "yn-bm-currency-val", children: formatCurrency(plan.totalAmount) }) }), jsxRuntimeExports.jsx("td", { style: { textAlign: 'center' }, children: isBC ? (jsxRuntimeExports.jsx("button", { type: "button", className: `yn-bm-report-pill ${plan.travelReport ? 'has-content' : ''}`, onClick: () => setActiveReportBillId(plan.id), children: plan.travelReport ? `✅ 已填 (${plan.travelReport.length}字)` : '📝 撰写' })) : (jsxRuntimeExports.jsx("span", { className: "yn-bm-muted", children: "\u2014" })) }), jsxRuntimeExports.jsxs("td", { style: { textAlign: 'center' }, children: [jsxRuntimeExports.jsx(StatusBadge, { status: plan.status, error: plan.errorMessage }), plan.existingBcBillCode && (jsxRuntimeExports.jsxs("div", { style: { marginTop: '4px', display: 'flex', flexDirection: 'column', gap: '2px', alignItems: 'center' }, children: [jsxRuntimeExports.jsxs("a", { href: `#/billWrite?billMainId=${plan.existingBcBillMainId}`, target: "_blank", rel: "noreferrer", style: { fontFamily: 'monospace', fontWeight: 600, fontSize: '11px', color: '#2563eb', textDecoration: 'underline' }, title: "\u5728\u65B0\u6807\u7B7E\u9875\u67E5\u770B\u5DF2\u521B\u5EFA\u7684\u62A5\u9500\u5355\u8BE6\u60C5", children: ["BC: ", plan.existingBcBillCode, " \u2197"] }), jsxRuntimeExports.jsx("span", { className: "yn-bm-badge", style: { fontSize: '9px', padding: '1px 5px', background: '#e0f2fe', color: '#0369a1', width: 'fit-content' }, children: plan.existingBcStatus || '已建报销单' })] }))] })] }), isExpanded && (jsxRuntimeExports.jsx("tr", { className: "yn-bm-subtables-row", children: jsxRuntimeExports.jsx("td", { colSpan: 15, className: "yn-bm-subtables-cell", children: jsxRuntimeExports.jsxs("div", { className: "yn-bm-subtables-container", children: [isBC && sc && (jsxRuntimeExports.jsx(ItinerarySubTable, { billId: plan.id, legs: sc.legs || [], onAddLeg: handleAddLeg, onRemoveLeg: handleRemoveLeg, onUpdateLeg: handleUpdateLeg, missingMap: missingMap, aiFilled: plan.aiFilledFields?.includes('legs') })), isBC && sc && (jsxRuntimeExports.jsx(BudgetEstimationSubTable, { billId: plan.id, sc: sc, claimAmount: plan.totalAmount, onSCFieldChange: handleSCFieldChange, isBudgetInsufficient: isBudgetInsufficient, missingMessage: missingMap.scTotalBudget })), jsxRuntimeExports.jsx(BudgetAllocationSubTable, { billId: plan.id, allocations: plan.budgetAllocations || [], onSplit: handleSplitAllocation, onRemove: handleRemoveAllocation, onUpdateField: handleUpdateAllocationField, onSearchProject: onSearchProject, missingMap: missingMap })] }) }) }))] }, plan.id));
+                                }) })] })) }), jsxRuntimeExports.jsxs("div", { className: "yn-bm-workspace-footer", children: [jsxRuntimeExports.jsxs("div", { className: "yn-bm-footer-summary", children: [jsxRuntimeExports.jsxs("span", { className: "pill", children: ["\u5DF2\u9009 ", jsxRuntimeExports.jsx("strong", { children: stats.selectedCount }), " \u5F20\u5355\u636E"] }), jsxRuntimeExports.jsxs("span", { className: "pill", children: ["\u5173\u8054 ", jsxRuntimeExports.jsx("strong", { children: stats.totalExpenses }), " \u7B14\u8D39\u7528"] }), jsxRuntimeExports.jsxs("span", { className: "pill", children: ["\u7968\u636E ", jsxRuntimeExports.jsx("strong", { children: stats.totalInvoices }), " \u5F20\u53D1\u7968"] }), jsxRuntimeExports.jsxs("span", { className: "pill pill-primary", children: ["\u5B9E\u62A5\u5B9E\u9500\u5408\u8BA1: ", jsxRuntimeExports.jsx("strong", { children: formatCurrency(stats.totalAmount) })] }), stats.scTotalBudget > 0 && (jsxRuntimeExports.jsxs("span", { className: "pill pill-sc", children: ["SC \u9884\u7B97\u603B\u8BA1: ", jsxRuntimeExports.jsx("strong", { children: formatCurrency(stats.scTotalBudget) })] }))] }), jsxRuntimeExports.jsxs("div", { className: "yn-bm-footer-actions", children: [progressText && (jsxRuntimeExports.jsx("span", { className: "yn-bm-progress-msg", children: progressText })), jsxRuntimeExports.jsx("button", { type: "button", className: "yn-bm-btn yn-bm-btn--secondary yn-bm-btn--lg", onClick: () => handleSaveSelected('SC_ONLY'), disabled: isProcessing || stats.selectedCount === 0, title: "\u7B2C 1 \u6B65\uFF1A\u4E3A\u6240\u9009\u884C\u7A0B\u751F\u6210\u51FA\u5DEE\u7533\u8BF7\u5355(SC)\u8349\u7A3F\u3002\u751F\u6210\u540E\u8BF7\u524D\u5F80\u3010\u6211\u7684\u7533\u8BF7\u3011\u6838\u5BF9\u5E76\u63D0\u4EA4\u5BA1\u6279\u3002\u5BA1\u6279\u901A\u8FC7\u540E\u65B9\u53EF\u751F\u6210\u62A5\u9500\u5355\u3002", style: { borderColor: '#f59e0b', color: '#b45309', fontWeight: 600, background: '#fffbeb' }, children: "\uD83D\uDCDD \u2460 \u4EC5\u751F\u6210\u51FA\u5DEE\u7533\u8BF7\u5355 (SC)" }), jsxRuntimeExports.jsx("button", { type: "button", className: "yn-bm-btn yn-bm-btn--primary yn-bm-btn--lg", onClick: () => handleSaveSelected('BC_ONLY'), disabled: isProcessing || stats.selectedCount === 0, title: "\u7B2C 2 \u6B65\uFF1A\u68C0\u6D4B\u7533\u8BF7\u5355\u5BA1\u6279\u72B6\u6001\uFF0C\u5173\u8054\u5DF2\u5165\u5E93\u53F0\u8D26\u751F\u6210\u51FA\u5DEE\u8D39\u7528\u62A5\u9500\u5355(BC)\uFF0C\u81EA\u52A8\u5B8C\u6210\u9884\u7B97\u5F52\u5C5E\u5173\u8054\u3002", children: isProcessing
+                                        ? '⏳ 正在处理中...'
+                                        : `💾 ② 生成费用报销单 (BC，需申请单已审批)` })] })] }), jsxRuntimeExports.jsx(TravelReportDrawer, { isOpen: Boolean(activeReportBillId), title: activeReportPlan?.title || '出差工作报告', content: activeReportPlan?.travelReport || '', onClose: () => setActiveReportBillId(null), onSave: handleSaveReport }), scModalPlanId && (jsxRuntimeExports.jsx("div", { className: "yn-bm-modal-overlay", style: {
+                        position: 'fixed',
+                        inset: 0,
+                        backgroundColor: 'rgba(15, 23, 42, 0.65)',
+                        backdropFilter: 'blur(4px)',
+                        zIndex: 999999,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        padding: '24px'
+                    }, onClick: () => setScModalPlanId(null), children: jsxRuntimeExports.jsxs("div", { className: "yn-bm-modal-card", style: {
+                            background: '#ffffff',
+                            borderRadius: '12px',
+                            width: '920px',
+                            maxWidth: '96vw',
+                            maxHeight: '85vh',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
+                            border: '1px solid #e2e8f0',
+                            overflow: 'hidden'
+                        }, onClick: e => e.stopPropagation(), children: [jsxRuntimeExports.jsxs("div", { style: {
+                                    padding: '16px 20px',
+                                    borderBottom: '1px solid #e2e8f0',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'space-between',
+                                    background: '#f8fafc'
+                                }, children: [jsxRuntimeExports.jsxs("div", { children: [jsxRuntimeExports.jsx("h3", { style: { margin: 0, fontSize: '16px', fontWeight: 700, color: '#0f172a' }, children: "\uD83D\uDD0D \u9009\u62E9\u5E76\u5173\u8054\u51FA\u5DEE\u7533\u8BF7\u5355 (SC)" }), jsxRuntimeExports.jsxs("p", { style: { margin: '4px 0 0 0', fontSize: '12px', color: '#64748b' }, children: ["\u5F53\u524D\u884C\u7A0B\uFF1A", jsxRuntimeExports.jsx("strong", { children: targetPlanForScModal?.title || targetPlanForScModal?.destination || '出差' }), " \u00B7 \u5173\u8054\u540E\u5C06\u81EA\u52A8\u5C06\u7533\u8BF7\u5355\u6838\u51C6\u7684\u9884\u7B97\u5F52\u5C5E\uFF08\u9879\u76EE\u4EE3\u7801/\u540D\u79F0\uFF09\u540C\u6B65\u7EE7\u627F\u81F3\u6240\u6709\u8D39\u7528\u5206\u644A\u9879\u3002"] })] }), jsxRuntimeExports.jsx("button", { type: "button", onClick: () => setScModalPlanId(null), style: {
+                                            background: 'transparent',
+                                            border: 'none',
+                                            fontSize: '20px',
+                                            cursor: 'pointer',
+                                            color: '#94a3b8',
+                                            padding: '4px 8px'
+                                        }, children: "\u2715" })] }), jsxRuntimeExports.jsxs("div", { style: { padding: '12px 20px', borderBottom: '1px solid #f1f5f9', display: 'flex', gap: '12px', alignItems: 'center', background: '#ffffff' }, children: [jsxRuntimeExports.jsx("input", { type: "text", className: "yn-bm-cell-input", placeholder: "\uD83D\uDD0D \u8F93\u5165\u5355\u53F7 / \u51FA\u5DEE\u5730 / \u76EE\u7684 / \u9884\u7B97\u9879\u76EE\u4EE3\u7801\u5FEB\u901F\u8FC7\u6EE4...", value: scFilterKeyword, onChange: e => setScFilterKeyword(e.target.value), style: { flex: 1, padding: '7px 12px', fontSize: '13px' }, autoFocus: true }), jsxRuntimeExports.jsx("button", { type: "button", className: "yn-bm-btn yn-bm-btn--secondary yn-bm-btn--sm", onClick: refreshSCStatuses, title: "\u4ECE\u5143\u5E74\u4E91\u91CD\u65B0\u67E5\u8BE2\u6211\u7684\u7533\u8BF7\u4E0E\u51FA\u5DEE\u53F0\u8D26", children: "\uD83D\uDD04 \u5237\u65B0\u7533\u8BF7\u5355" })] }), jsxRuntimeExports.jsx("div", { style: { flex: 1, overflowY: 'auto', padding: '0 20px 16px' }, children: filteredAvailableSCs.length === 0 ? (jsxRuntimeExports.jsxs("div", { style: { textAlign: 'center', padding: '40px 0', color: '#94a3b8' }, children: [jsxRuntimeExports.jsx("div", { style: { fontSize: '32px', marginBottom: '8px' }, children: "\uD83D\uDCED" }), jsxRuntimeExports.jsx("div", { style: { fontSize: '14px', fontWeight: 600 }, children: "\u672A\u68C0\u7D22\u5230\u7B26\u5408\u6761\u4EF6\u7684\u51FA\u5DEE\u7533\u8BF7\u5355" }), jsxRuntimeExports.jsx("div", { style: { fontSize: '12px', marginTop: '4px' }, children: "\u8BF7\u786E\u8BA4\u7533\u8BF7\u5355\u662F\u5426\u5DF2\u5728\u3010\u6211\u7684\u7533\u8BF7\u3011\u4E2D\u4FDD\u5B58\u6216\u63D0\u4EA4" })] })) : (jsxRuntimeExports.jsxs("table", { className: "yn-bm-spread-table", style: { width: '100%', marginTop: '12px' }, children: [jsxRuntimeExports.jsx("thead", { children: jsxRuntimeExports.jsxs("tr", { style: { background: '#f8fafc' }, children: [jsxRuntimeExports.jsx("th", { style: { width: '140px' }, children: "\u7533\u8BF7\u5355\u53F7" }), jsxRuntimeExports.jsx("th", { style: { width: '150px' }, children: "\u51FA\u5DEE\u5730 / \u4E8B\u7531" }), jsxRuntimeExports.jsx("th", { style: { width: '120px' }, children: "\u5BA1\u6279\u72B6\u6001" }), jsxRuntimeExports.jsx("th", { style: { width: '240px' }, children: "\u9884\u7B97\u5F52\u5C5E\u9879\u76EE" }), jsxRuntimeExports.jsx("th", { style: { width: '110px', textAlign: 'right' }, children: "\u53EF\u7528\u989D\u5EA6/\u9884\u7B97" }), jsxRuntimeExports.jsx("th", { style: { width: '90px', textAlign: 'center' }, children: "\u64CD\u4F5C" })] }) }), jsxRuntimeExports.jsx("tbody", { children: filteredAvailableSCs.map(item => {
+                                                const isLinked = targetPlanForScModal?.scPlan?.billCode?.trim().toUpperCase() === item.billCode.trim().toUpperCase();
+                                                return (jsxRuntimeExports.jsxs("tr", { style: { background: isLinked ? '#f0fdf4' : undefined }, children: [jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsxs("a", { href: item.billMainId ? `#/billWrite?billMainId=${item.billMainId}` : `#/billWrite?billCode=${item.billCode}`, target: "_blank", rel: "noreferrer", style: { fontFamily: 'monospace', fontWeight: 700, color: '#2563eb', textDecoration: 'underline' }, title: "\u67E5\u770B\u7533\u8BF7\u5355\u539F\u59CB\u6570\u636E", children: [item.billCode, " \u2197"] }) }), jsxRuntimeExports.jsxs("td", { children: [jsxRuntimeExports.jsx("div", { style: { fontWeight: 600, color: '#1e293b' }, children: item.destination || '出差' }), item.purpose && (jsxRuntimeExports.jsx("div", { style: { fontSize: '11px', color: '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '200px' }, title: item.purpose, children: item.purpose }))] }), jsxRuntimeExports.jsx("td", { children: item.approvalStatus === 'approved' ? (jsxRuntimeExports.jsx("span", { className: "yn-bm-badge yn-bm-badge--saved", style: { fontSize: '10px' }, children: "\u2705 \u5DF2\u5BA1\u6279 (\u53F0\u8D26\u5C31\u7EEA)" })) : item.approvalStatus === 'approving' ? (jsxRuntimeExports.jsxs("span", { className: "yn-bm-badge", style: { fontSize: '10px', background: '#fef3c7', color: '#b45309' }, children: ["\u23F3 ", item.approvalStatusText] })) : (jsxRuntimeExports.jsxs("span", { className: "yn-bm-badge", style: { fontSize: '10px', background: '#f1f5f9', color: '#475569' }, children: ["\uD83D\uDCDD ", item.approvalStatusText] })) }), jsxRuntimeExports.jsx("td", { children: jsxRuntimeExports.jsx("span", { style: { fontWeight: item.projectName ? 600 : 400, color: item.projectName ? '#1e293b' : '#94a3b8', fontSize: '12px' }, children: item.projectName || '— (保存后由系统带出)' }) }), jsxRuntimeExports.jsxs("td", { style: { textAlign: 'right', fontFamily: 'var(--bm-mono)', fontWeight: 600 }, children: ["\u00A5", formatCurrency(item.balanceAmount ?? item.budgetSum ?? 0)] }), jsxRuntimeExports.jsx("td", { style: { textAlign: 'center' }, children: isLinked ? (jsxRuntimeExports.jsx("span", { style: { color: '#059669', fontWeight: 600, fontSize: '12px' }, children: "\u2713 \u5F53\u524D\u5173\u8054" })) : (jsxRuntimeExports.jsx("button", { type: "button", className: "yn-bm-btn yn-bm-btn--primary yn-bm-btn--xs", onClick: () => handleLinkSC(scModalPlanId, item), style: { padding: '3px 8px', fontSize: '11px' }, children: "\u9009\u62E9\u5E76\u5173\u8054" })) })] }, item.billCode));
+                                            }) })] })) }), jsxRuntimeExports.jsx("div", { style: { padding: '12px 20px', borderTop: '1px solid #e2e8f0', background: '#f8fafc', display: 'flex', justifyContent: 'flex-end' }, children: jsxRuntimeExports.jsx("button", { type: "button", className: "yn-bm-btn yn-bm-btn--secondary", onClick: () => setScModalPlanId(null), children: "\u5173\u95ED" }) })] }) }))] }));
     }
 
     /**
@@ -71915,6 +73389,7 @@ ${legsText}
     }
 
     const BILL_DEFINE_IDS = {
+        TRIP_APPLICATION_SC: '0355cf627fede1653e55bb00bc610001', // 出差申请单 (SC)
         TRIP_CLAIM_BC: '035a50ee6d3de1653e55bb00bc610001', // 出差费用报销单 (BC)
         GENERAL_CLAIM_BJ: '035cd1b4d46de1653e55bb00bc610000' // 经费报销单 (BJ)
     };
@@ -72600,7 +74075,8 @@ ${legsText}
             };
             const [rows, typeTree] = await Promise.all([
                 fetchExpenseRecordsWithInvoiceDetails(globalState, undefined, // 弹窗全量展示所有费用记录，呈现完整数据全貌，杜绝漏项
-                updateProgress, win),
+                updateProgress, win, [] // 全量拉取全部状态（包含未报销、报销中、已报销），为用户呈现完整费用档案
+                ),
                 fetchExpenseTypeTreeApi(globalState, win).catch(() => [])
             ]);
             if (isCancelled)
@@ -72629,32 +74105,29 @@ ${legsText}
             modalState.sortKey = 'earliestInvoiceDate';
             modalState.sortAsc = true;
             sortGroups(modalState.groups, modalState.sortKey, modalState.sortAsc);
-            // 4. 初始化勾选状态：若外部传入了预选记录（如用户在宿主页面手动勾选了部分行），则精准勾选预选行；否则默认全选
+            // 4. 初始化勾选状态：若外部传入了预选记录（如用户在宿主页面手动勾选了部分行），则精准勾选预选行；否则默认全选可编辑行 (已报销记录严格不默认勾选)
+            const selectableGroups = modalState.groups.filter(g => normalizeExpenseStatus(g.status) !== '已报销');
             if (preselectedIds && preselectedIds.length > 0) {
                 const preSet = new Set(preselectedIds);
-                const matchedIds = modalState.groups
+                const matchedIds = selectableGroups
                     .filter(g => preSet.has(g.expenseRecordId))
                     .map(g => g.expenseRecordId);
                 if (matchedIds.length > 0) {
                     modalState.selectedRecordIds = new Set(matchedIds);
                 }
                 else {
-                    modalState.selectedRecordIds = new Set(modalState.groups.map(g => g.expenseRecordId));
+                    modalState.selectedRecordIds = new Set(selectableGroups.map(g => g.expenseRecordId));
                 }
             }
             else {
-                modalState.selectedRecordIds = new Set(modalState.groups.map(g => g.expenseRecordId));
+                modalState.selectedRecordIds = new Set(selectableGroups.map(g => g.expenseRecordId));
             }
-            // 5. 从已有费用说明中智能预填人名与项目号
+            // 5. 从已有费用说明中智能预填人名 (不提取全局项目号，防止单据间项目污染)
             for (const g of modalState.groups) {
                 if (g.description) {
                     const proxyMatch = g.description.match(/\[(?:外驻[:\+]?|外驻)([^\^\]]+)\]/);
                     if (proxyMatch && !modalState.proxyPersonName) {
                         modalState.proxyPersonName = proxyMatch[1].trim();
-                    }
-                    const prjMatch = g.description.match(/(X\d{4}-\d{3}|[A-Z0-9]{2,8}-\d{3,4}|PRJ-[A-Z0-9\-]+)/);
-                    if (prjMatch && !modalState.projectName) {
-                        modalState.projectName = prjMatch[1].trim();
                     }
                 }
             }
@@ -72892,8 +74365,14 @@ ${legsText}
      */
     function getFilteredGroups(state) {
         return state.groups.filter(g => {
-            // 1. 预警、待补必填项与保存失败项过滤
+            // 1. 状态、预警、待补必填项与保存失败项过滤
             if (state.filterMode === 'SAVE_ERROR' && (!state.saveErrors || !state.saveErrors.has(g.expenseRecordId)))
+                return false;
+            if (state.filterMode === 'UNREIMBURSED' && normalizeExpenseStatus(g.status) !== '未报销')
+                return false;
+            if (state.filterMode === 'REIMBURSING' && normalizeExpenseStatus(g.status) !== '报销中')
+                return false;
+            if (state.filterMode === 'REIMBURSED' && normalizeExpenseStatus(g.status) !== '已报销')
                 return false;
             if (state.filterMode === 'WARN' && !g.hasWarn)
                 return false;
@@ -73047,7 +74526,7 @@ ${legsText}
                         trafficBuffer: 0,
                         totalAmount: 0,
                         legs,
-                        projectName: projectName || modalState.projectName,
+                        projectName: ct.projectName || projectName || '',
                         status: '就绪'
                     },
                     trafficFee: 0,
@@ -73312,7 +74791,14 @@ ${legsText}
                 trafficBuffer,
                 totalAmount,
                 legs,
-                projectName: projectName || modalState.projectName,
+                projectName: (() => {
+                    for (const it of cluster) {
+                        const m = (it.group.description || it.group.newDescription || '').match(/(?:\[)?(X\d{4}-\d{3}|[A-Z0-9]{2,8}-\d{3,4}|PRJ-[A-Z0-9\-]+)/);
+                        if (m)
+                            return m[1].trim();
+                    }
+                    return projectName || '';
+                })(),
                 status: '就绪'
             };
             // 绑定给该聚类的每一笔费用
@@ -73665,6 +75151,9 @@ ${legsText}
      * 判断费用分组是否缺失专属必填字段 (未完成/空)
      */
     function isGroupMissingRequired(group) {
+        if (normalizeExpenseStatus(group.status) === '已报销') {
+            return false;
+        }
         const typeName = (group.newExpenseTypeName || group.expenseTypeName || '').trim();
         if (!typeName || typeName === 'None' || typeName === '未识别' || !group.expenseTypeId) {
             return true;
@@ -74305,6 +75794,9 @@ ${legsText}
      */
     function renderTopBarHtml(filteredGroups) {
         const totalGroups = modalState.groups.length;
+        const unreimbursedCount = modalState.groups.filter(g => normalizeExpenseStatus(g.status) === '未报销').length;
+        const reimbursingCount = modalState.groups.filter(g => normalizeExpenseStatus(g.status) === '报销中').length;
+        const reimbursedCount = modalState.groups.filter(g => normalizeExpenseStatus(g.status) === '已报销').length;
         const warnCount = modalState.groups.filter(g => g.hasWarn).length;
         const missingRequiredCount = modalState.groups.filter(g => isGroupMissingRequired(g)).length;
         const saveErrorCount = modalState.saveErrors ? modalState.saveErrors.size : 0;
@@ -74353,6 +75845,9 @@ ${legsText}
                         <select id="yn-bem-filter-mode" class="yn-bem-select" style="font-size:11px; padding:2px 6px; margin-left:2px;">
                             ${saveErrorCount > 0 ? `<option value="SAVE_ERROR" ${modalState.filterMode === 'SAVE_ERROR' ? 'selected' : ''}>❌ 保存失败 (${saveErrorCount})</option>` : ''}
                             <option value="ALL" ${modalState.filterMode === 'ALL' ? 'selected' : ''}>全部 (${totalGroups})</option>
+                            <option value="UNREIMBURSED" ${modalState.filterMode === 'UNREIMBURSED' ? 'selected' : ''}>未报销 (${unreimbursedCount})</option>
+                            <option value="REIMBURSING" ${modalState.filterMode === 'REIMBURSING' ? 'selected' : ''}>报销中 (${reimbursingCount})</option>
+                            <option value="REIMBURSED" ${modalState.filterMode === 'REIMBURSED' ? 'selected' : ''}>已报销 (${reimbursedCount})</option>
                             <option value="MISSING_REQUIRED" ${modalState.filterMode === 'MISSING_REQUIRED' ? 'selected' : ''}>待补必填 (${missingRequiredCount})</option>
                             <option value="WARN" ${modalState.filterMode === 'WARN' ? 'selected' : ''}>预警 (${warnCount})</option>
                             <option value="OK" ${modalState.filterMode === 'OK' ? 'selected' : ''}>正常 (${totalGroups - warnCount - missingRequiredCount})</option>
@@ -75865,10 +77360,10 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
      * 携带已选条目胶囊、注入技能提示词并自动获得焦点
      */
     function openAiAssistantWithSkill(container, skillId) {
-        // 1. 若当前未勾选任何条目，自动全选当前筛选视图下的全部条目
+        // 1. 若当前未勾选任何条目，自动全选当前筛选视图下的全部可编辑条目 (排除已报销)
         if (modalState.selectedRecordIds.size === 0) {
             const filtered = getFilteredGroups(modalState);
-            filtered.forEach(g => modalState.selectedRecordIds.add(g.expenseRecordId));
+            filtered.filter(g => normalizeExpenseStatus(g.status) !== '已报销').forEach(g => modalState.selectedRecordIds.add(g.expenseRecordId));
             updateAllCheckboxStates(container);
             updateStatsAndFooter(container);
         }
@@ -75976,126 +77471,8 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
         /**
          * 动态提取行程全部出差人员及全员大交通往返行程 (零硬编码，严格遵循 Anti-Hardcoding 铁律)
          */
-        const extractTripTravelersAndLegs = (plan, expenses) => {
-            const rawApplicant = plan.applicantName || modalState.proxyPersonName || modalState.currentEmployeeName || '当前社员';
-            const mainApplicant = rawApplicant.replace(/（.*）|\(.*\)/g, '').trim();
-            const travelerSet = new Set();
-            if (mainApplicant) {
-                travelerSet.add(mainApplicant);
-            }
-            // 1. 从 travelReport 中动态提取出差人员名单 (如 "出差人员：陈浩、成勇、李建勇" 或 "调研人员为陈浩、成勇、李建勇")
-            if (plan.travelReport) {
-                const reportMatch = plan.travelReport.match(/(?:调研人员为|出差人员[：:]\s*|同行人员[：:]\s*|同行者[：:]\s*)([^\n。\r]+)/);
-                if (reportMatch && reportMatch[1]) {
-                    const rawNames = reportMatch[1].split(/[、,，\s]+/);
-                    for (const name of rawNames) {
-                        const clean = name.replace(/（.*）|\(.*\)/g, '').replace(/[*#-]/g, '').trim();
-                        if (clean && clean.length >= 2 && clean.length <= 10 && !['人员', '同行', '等', '至', '到'].includes(clean)) {
-                            travelerSet.add(clean);
-                        }
-                    }
-                }
-            }
-            // 2. 从关联费用记录的备注中动态提取外驻出行人 ([外驻:姓名])
-            if (Array.isArray(expenses)) {
-                for (const exp of expenses) {
-                    if (plan.expenseRecordIds.includes(exp.expenseRecordId)) {
-                        const textsToCheck = [
-                            exp.newDescription,
-                            exp.description,
-                            exp.remarks,
-                            ...(exp.invoices || []).map((inv) => inv.remarks || inv.description || '')
-                        ].filter(Boolean);
-                        for (const text of textsToCheck) {
-                            const externalMatches = text.matchAll(/\[外驻[:：]([^\]]+)\]/g);
-                            for (const m of externalMatches) {
-                                const clean = (m[1] || '').replace(/（.*）|\(.*\)/g, '').trim();
-                                if (clean && clean.length >= 2 && clean.length <= 10) {
-                                    travelerSet.add(clean);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            const allTravelers = Array.from(travelerSet);
-            const companionsList = allTravelers.filter(t => t !== mainApplicant);
-            const companions = companionsList.join('、');
-            // 3. 构建包含所有人员的大交通行程 (ITINERARY legs)
-            const legs = [];
-            const destCity = plan.destination || '目的地';
-            const originCity = '上海';
-            // 从该 Trip 关联的所有费用记录及发票中推测大交通工具类型
-            const tripInvoiceTypes = [];
-            if (Array.isArray(expenses)) {
-                for (const exp of expenses) {
-                    if (plan.expenseRecordIds.includes(exp.expenseRecordId)) {
-                        if (exp.expenseTypeName)
-                            tripInvoiceTypes.push(exp.expenseTypeName);
-                        if (exp.newExpenseTypeName)
-                            tripInvoiceTypes.push(exp.newExpenseTypeName);
-                        for (const inv of (exp.invoices || [])) {
-                            if (inv.invoiceType)
-                                tripInvoiceTypes.push(inv.invoiceType);
-                            if (inv.remarks)
-                                tripInvoiceTypes.push(inv.remarks);
-                            if (inv.salesName)
-                                tripInvoiceTypes.push(inv.salesName);
-                            if (inv.fileName)
-                                tripInvoiceTypes.push(inv.fileName);
-                        }
-                    }
-                }
-            }
-            const tripTransportDefault = resolveTransportLabel(plan.scPlan?.flightOrTrain, tripInvoiceTypes);
-            // 若原有 scPlan.legs 中已有具体航班/车次信息，按人员归类
-            const existingLegs = plan.scPlan?.legs || [];
-            for (const t of allTravelers) {
-                const tLegs = existingLegs.filter(l => {
-                    const legTraveler = (l.travelerName || '').replace(/（.*）|\(.*\)/g, '').trim();
-                    return legTraveler === t || (!legTraveler && t === mainApplicant);
-                });
-                if (tLegs.length > 0) {
-                    tLegs.forEach(l => {
-                        const legTransport = resolveTransportLabel(l.flightOrTrain || l.transport, tripInvoiceTypes) || tripTransportDefault;
-                        legs.push({
-                            date: l.date || plan.startDate,
-                            fromCity: (!l.fromCity || l.fromCity === '出发地') ? originCity : l.fromCity,
-                            toCity: (!l.toCity || l.toCity === '返回地') ? destCity : l.toCity,
-                            transport: legTransport,
-                            flightOrTrain: l.flightOrTrain || legTransport,
-                            travelerName: t
-                        });
-                    });
-                }
-                else {
-                    // 为该人员自动补齐去程与返程对称大交通
-                    legs.push({
-                        date: plan.startDate,
-                        fromCity: originCity,
-                        toCity: destCity,
-                        transport: tripTransportDefault,
-                        flightOrTrain: tripTransportDefault,
-                        travelerName: t
-                    });
-                    legs.push({
-                        date: plan.endDate,
-                        fromCity: destCity,
-                        toCity: originCity,
-                        transport: tripTransportDefault,
-                        flightOrTrain: tripTransportDefault,
-                        travelerName: t
-                    });
-                }
-            }
-            // 按日期与出行人正序排序
-            legs.sort((a, b) => {
-                const timeDiff = new Date(a.date.replace(/-/g, '/')).getTime() - new Date(b.date.replace(/-/g, '/')).getTime();
-                if (timeDiff !== 0)
-                    return timeDiff;
-                return (a.travelerName || '').localeCompare(b.travelerName || '');
-            });
-            return { allTravelers, companions, legs };
+        const extractTripTravelersAndLegs$1 = (plan, expenses) => {
+            return extractTripTravelersAndLegs(plan, expenses, modalState.proxyPersonName || modalState.currentEmployeeName);
         };
         /**
          * 精确提取行程起止时间至 hh:mm (若无则 default 出发 09:00, 归宅 23:59)
@@ -76171,14 +77548,14 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
                 endTripDate: `${baseEndDate}T${finalEndTime}`
             };
         };
-        const handleSaveDrafts = async (plans) => {
+        const handleSaveDrafts = async (plans, mode = 'ALL') => {
             const globalState = getInvoicePoolGlobalState();
             const resultsSummary = [];
             // 【硬阻断 Gate 守卫】：检查所有包含 SC 计划的 Trips，若存在未决/空大交通，刚性拦截阻止生成草稿
             for (let pIdx = 0; pIdx < plans.length; pIdx++) {
                 const plan = plans[pIdx];
                 if (plan.type === 'BC' && plan.scPlan) {
-                    const { legs } = extractTripTravelersAndLegs(plan, modalState.groups);
+                    const { legs } = extractTripTravelersAndLegs$1(plan, modalState.groups);
                     const invalidLeg = legs.find(l => !l.transport || !l.transport.trim() || l.transport.trim() === '待定' || l.transport.trim() === '未知');
                     if (invalidLeg) {
                         const msg = `❌ 安全拦截：第 ${pIdx + 1} 个出差计划「${plan.title}」的大交通未决（${invalidLeg.date} ${invalidLeg.fromCity} ➔ ${invalidLeg.toCity}：出行人 ${invalidLeg.travelerName || '当前用户'}），缺少明确航班或车次信息！\n请先在行程或发票中明确大交通后再一键生成申请单草稿。`;
@@ -76233,23 +77610,23 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
             catch (e) {
                 AutopilotLogger.warn(`[DraftCheck] 查询已有草稿失败: ${e.message}`);
             }
-            let bcDraftIdx = 0;
-            let scDraftIdx = 0;
-            for (let pIdx = 0; pIdx < plans.length; pIdx++) {
-                const plan = plans[pIdx];
-                if (plan.type === 'BC') {
-                    const { allTravelers, legs } = extractTripTravelersAndLegs(plan, modalState.groups);
-                    const { startTripDate, endTripDate } = extractTripStartAndEndTime(plan, modalState.groups);
-                    // 1. 若包含 SC 申请单预算计划，先创建/更新出差申请单 (SC)
-                    let scBillCode = plan.scPlan?.billCode || '';
-                    let scBillMainId = plan.scPlan?.billMainId || '';
-                    // 若内存无单号，尝试从已有未提交申请单草稿中按顺序对齐
-                    if (!scBillMainId && scDraftIdx < existingScDrafts.length) {
-                        scBillMainId = existingScDrafts[scDraftIdx].billMainId;
-                        scBillCode = existingScDrafts[scDraftIdx].billCode;
-                        scDraftIdx++;
-                    }
-                    if (plan.scPlan) {
+            // =========================================================================
+            // 分支 A: 【① 仅生成出差申请单 (SC_ONLY)】
+            // =========================================================================
+            if (mode === 'SC_ONLY') {
+                let scDraftIdx = 0;
+                for (let pIdx = 0; pIdx < plans.length; pIdx++) {
+                    const plan = plans[pIdx];
+                    if (plan.type === 'BC' && plan.scPlan) {
+                        const { allTravelers, legs } = extractTripTravelersAndLegs$1(plan, modalState.groups);
+                        const { startTripDate, endTripDate } = extractTripStartAndEndTime(plan, modalState.groups);
+                        let scBillCode = plan.scPlan?.billCode || '';
+                        let scBillMainId = plan.scPlan?.billMainId || '';
+                        if (!scBillMainId && scDraftIdx < existingScDrafts.length) {
+                            scBillMainId = existingScDrafts[scDraftIdx].billMainId;
+                            scBillCode = existingScDrafts[scDraftIdx].billCode;
+                            scDraftIdx++;
+                        }
                         const sc = plan.scPlan;
                         const projId = sc.projectId || plan.projectId;
                         const projName = sc.projectName || plan.projectName || modalState.projectName;
@@ -76274,8 +77651,8 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
                             otherFee: sc.otherBudget,
                             trafficBuffer: 0,
                             totalAmount: sc.totalBudget,
-                            travelers: allTravelers, // BUG 3: 涵盖全部出差人员
-                            legs: legs, // BUG 3: 涵盖全员大交通往返行程
+                            travelers: allTravelers,
+                            legs: legs,
                             projectVO,
                             projectName: projName,
                             billMainId: scBillMainId || undefined,
@@ -76291,13 +77668,207 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
                             }
                             plan.scPlan.billCode = scBillCode;
                             plan.scPlan.billMainId = scBillMainId;
+                            plan.scPlan.approvalStatus = 'draft';
+                            plan.scPlan.approvalStatusText = '草稿未提交';
                             resultsSummary.push(`出差申请单: ${scBillCode}`);
                         }
                         else {
                             throw new Error(`创建/更新出差申请单 (${plan.title}) 失败: ${scRes.message || '接口异常'}`);
                         }
                     }
-                    // 2. 创建或更新出差费用报销单 (BC)
+                }
+                showToast('success', `🎉 已成功生成/更新 ${resultsSummary.length} 张出差申请单草稿！\n💡 请前往系统【我的申请】核对并提交审批。\n审批通过入库台账后，再执行【② 生成费用报销单】。`, 8000);
+                refreshTableView(container);
+                return;
+            }
+            // =========================================================================
+            // 分支 B: 【② 生成费用报销单 (BC_ONLY / ALL)】
+            // 核心刚性闭环守卫：检测申请单审批状态，只有已审批入库台账的申请单才允许生成报销单
+            // =========================================================================
+            const [approvedAccounts, myAppStatusMap] = await Promise.all([
+                fetchApprovedTripApplicationsFromMachineAccountApi(globalState).catch(err => {
+                    AutopilotLogger.warn(`[handleSaveDrafts] 获取出差台账失败: ${err.message}`);
+                    return [];
+                }),
+                fetchMyApplicationsStatusApi(globalState).catch(err => {
+                    AutopilotLogger.warn(`[handleSaveDrafts] 获取申请单审批状态失败: ${err.message}`);
+                    return new Map();
+                })
+            ]);
+            // 遍历选中的 BC 单据，执行审批状态校验
+            const unapprovedBills = [];
+            const planAccountMap = new Map();
+            for (const plan of plans) {
+                if (plan.type === 'BC' && plan.scPlan) {
+                    const sc = plan.scPlan;
+                    const scCode = (sc.billCode || '').trim();
+                    // 在出差申请台账中匹配已审批的单据
+                    // 核心对齐升级：若系统中已存在已审批通过的申请单，优先按时间区间一致 (startDate ~ endDate) 或单号精确匹配
+                    const planStart = (plan.startDate || '').split('T')[0];
+                    const planEnd = (plan.endDate || '').split('T')[0];
+                    const matched = approvedAccounts.find(a => {
+                        const aStart = (a.startDate || '').split('T')[0];
+                        const aEnd = (a.endDate || '').split('T')[0];
+                        // 1. 单号精确对齐
+                        if (scCode && a.billCode.trim().toUpperCase() === scCode.toUpperCase())
+                            return true;
+                        // 2. 时间区间 100% 一致
+                        if (planStart && planEnd && aStart && aEnd && planStart === aStart && planEnd === aEnd)
+                            return true;
+                        // 3. 目的地与时间宽松对齐
+                        if (a.destination && plan.destination && (a.destination.includes(plan.destination) || plan.destination.includes(a.destination))) {
+                            if (planStart && aStart && planStart === aStart)
+                                return true;
+                            if (!scCode && (!aStart || !planStart))
+                                return true;
+                        }
+                        return false;
+                    });
+                    if (matched) {
+                        sc.approvalStatus = 'approved';
+                        sc.approvalStatusText = '已审批 (台账就绪)';
+                        sc.machineAccountId = matched.machineAccountId;
+                        sc.machineAccountBalance = matched.balanceAmount;
+                        if (!sc.billCode)
+                            sc.billCode = matched.billCode;
+                        if (matched.projectName && (!plan.projectName || plan.projectName.length < 15)) {
+                            plan.projectName = matched.projectName;
+                            sc.projectName = matched.projectName;
+                        }
+                        if (matched.projectId && !plan.projectId) {
+                            plan.projectId = matched.projectId;
+                            sc.projectId = matched.projectId;
+                        }
+                        planAccountMap.set(plan.id, matched);
+                    }
+                    else {
+                        const statusInfo = scCode ? myAppStatusMap.get(scCode) : undefined;
+                        const st = statusInfo?.status || '未提交';
+                        const isApproved = st === '审批结束' ||
+                            st === '已审批' ||
+                            st === '审批通过' ||
+                            st.includes('结束') ||
+                            st.includes('通过') ||
+                            statusInfo?.currentNode === '结束' ||
+                            statusInfo?.statusEnum === 'APPROVED';
+                        const isApproving = !isApproved && (st === '审批中' ||
+                            st === 'APPROVING' ||
+                            statusInfo?.statusEnum === 'APPROVING' ||
+                            (st.includes('审批') && !st.includes('未') && !st.includes('结束') && !st.includes('驳回')));
+                        st === '未提交' || st === 'UNCOMMITTED' || statusInfo?.statusEnum === 'UNCOMMITTED';
+                        if (isApproved) {
+                            sc.approvalStatus = 'approved';
+                            sc.approvalStatusText = '已审批 (审批结束)';
+                            const targetMainId = sc.billMainId || statusInfo?.billMainId || '';
+                            let projName = sc.projectName || plan.projectName || '';
+                            let projId = sc.projectId || plan.projectId || '';
+                            if (targetMainId && (!projName || projName.length < 15 || !projId)) {
+                                try {
+                                    const detail = await fetchApplicationDetailApi(targetMainId, globalState);
+                                    if (detail) {
+                                        if (detail.projectName) {
+                                            projName = detail.projectName;
+                                            plan.projectName = detail.projectName;
+                                            sc.projectName = detail.projectName;
+                                        }
+                                        if (detail.projectId) {
+                                            projId = detail.projectId;
+                                            plan.projectId = detail.projectId;
+                                            sc.projectId = detail.projectId;
+                                        }
+                                    }
+                                }
+                                catch (e) { }
+                            }
+                            // 核心提取：从 statusInfo 或 sc 中提取真实的台账 machineAccountId
+                            const resolvedMachId = sc.machineAccountId || statusInfo?.machineAccountId || targetMainId;
+                            const fallbackAcc = {
+                                billCode: sc.billCode || scCode,
+                                billMainId: targetMainId,
+                                machineAccountId: resolvedMachId,
+                                machineAccountDefineId: '3299661bb34111e8846f7b262b3e5000',
+                                balanceAmount: sc.machineAccountBalance || statusInfo?.budgetSum || 0,
+                                balanceAmountObj: { amount: sc.machineAccountBalance || statusInfo?.budgetSum || 0, currency: '1' },
+                                budgetDim: [],
+                                customerCharge: false,
+                                destination: plan.destination,
+                                purpose: plan.purpose,
+                                startDate: plan.startDate,
+                                endDate: plan.endDate,
+                                projectId: projId,
+                                projectName: projName,
+                                rawRow: null
+                            };
+                            planAccountMap.set(plan.id, fallbackAcc);
+                        }
+                        else if (isApproving) {
+                            sc.approvalStatus = 'approving';
+                            sc.approvalStatusText = statusInfo?.currentApprover ? `审批中 (${statusInfo.currentApprover})` : '审批中';
+                            sc.currentApprover = statusInfo?.currentApprover;
+                            sc.currentNode = statusInfo?.currentNode;
+                            unapprovedBills.push({
+                                planTitle: plan.title,
+                                dest: plan.destination,
+                                scCode: scCode || '未创建',
+                                statusDesc: `审批中${sc.currentApprover ? ` (当前审批人: ${sc.currentApprover})` : ''}`
+                            });
+                        }
+                        else {
+                            sc.approvalStatus = 'draft';
+                            sc.approvalStatusText = '草稿未提交';
+                            unapprovedBills.push({
+                                planTitle: plan.title,
+                                dest: plan.destination,
+                                scCode: scCode || '未创建',
+                                statusDesc: scCode ? '草稿未提交审批' : '尚未创建出差申请单'
+                            });
+                        }
+                    }
+                }
+            }
+            // 【刚性阻断 Guard】：若存在未审批通过的申请单，拦截报错并提示用户
+            if (unapprovedBills.length > 0) {
+                const lines = unapprovedBills.slice(0, 5).map((u, idx) => `${idx + 1}. 【${u.dest}出差】: 申请单 ${u.scCode} 处于「${u.statusDesc}」，尚未入库出差台账`);
+                const blockMsg = `❌ 报销单生成拦截：出差申请单尚未审批通过，无法关联出差台账！\n\n` +
+                    lines.join('\n') +
+                    `\n\n💡 业务规则：\n` +
+                    `元年系统规定报销单必须关联【已审批入库】的出差申请单，才能正确联动预算归属。\n` +
+                    `请先执行【① 仅生成出差申请单 (SC)】并在【我的申请】中完成提交审批；审批通过后再执行本操作。`;
+                showToast('error', blockMsg, 9000);
+                throw new Error(blockMsg);
+            }
+            // =========================================================================
+            // 正式持久化生成报销单 (BC & BJ)
+            // =========================================================================
+            let bcDraftIdx = 0;
+            for (let pIdx = 0; pIdx < plans.length; pIdx++) {
+                const plan = plans[pIdx];
+                if (plan.type === 'BC') {
+                    const { startTripDate, endTripDate } = extractTripStartAndEndTime(plan, modalState.groups);
+                    const matchedAccount = planAccountMap.get(plan.id);
+                    // 核心业务增强：为正社员自动添加【误餐补助】费用明细记录 (无发票)
+                    const hasMealAllowance = modalState.groups.some(g => plan.expenseRecordIds.includes(g.expenseRecordId) &&
+                        ((g.expenseTypeName || '').includes('误餐') || g.expenseTypeId === '0356c51e601de1653e55bb00bc610000'));
+                    if (!hasMealAllowance) {
+                        try {
+                            const mealRecordId = await createMealAllowanceExpenseRecordApi({
+                                applicantId: globalState.applicantId || globalState.currentUser?.userId,
+                                applicantName: plan.applicantName || modalState.proxyPersonName || modalState.currentEmployeeName,
+                                startDate: startTripDate,
+                                endDate: endTripDate,
+                                destinationCity: plan.destination,
+                                projectName: plan.projectName || plan.scPlan?.projectName || modalState.projectName,
+                                description: `[${plan.applicantName || modalState.proxyPersonName || modalState.currentEmployeeName || '正社员'}]-[${plan.projectName || modalState.projectName || '差旅出差'}]`
+                            }, globalState, window);
+                            if (mealRecordId && !plan.expenseRecordIds.includes(mealRecordId)) {
+                                plan.expenseRecordIds.push(mealRecordId);
+                                AutopilotLogger.info(`[handleSaveDrafts] 已自动为正社员创建误餐补助明细 ${mealRecordId} 并挂载至 ${plan.title}`);
+                            }
+                        }
+                        catch (mealErr) {
+                            AutopilotLogger.warn(`[handleSaveDrafts] 自动创建误餐补助明细失败 (降级忽略): ${mealErr.message}`);
+                        }
+                    }
                     if (plan.expenseRecordIds.length > 0) {
                         let bcBillMainId = plan.billMainId || '';
                         if (!bcBillMainId && bcDraftIdx < existingBcDrafts.length) {
@@ -76306,10 +77877,36 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
                         }
                         let bcBillData;
                         if (bcBillMainId) {
-                            // 幂等就地更新已有报销单草稿
+                            // 检查已有草稿是否包含了所有当前的费用记录 (尤其是新创建的误餐补助明细)
                             const res = await fetchBillDataAndTemplateApi(bcBillMainId, globalState);
                             bcBillData = res.billData;
-                            bcBillData.operationType = 'UPDATE';
+                            const existingClaimRows = bcBillData?.area?.rowDatas?.[0]?.subAreaDatas?.[BUDGET_CONSTANTS.claimSubAreaId]?.rowDatas || [];
+                            const existingRecordIds = new Set(existingClaimRows.map((r) => r.datas?.EXPENSE_RECORD_ID?.value || r.datas?.EXPENSE_RECORD_ID?.title || ''));
+                            const missingRecordIds = plan.expenseRecordIds.filter(id => !existingRecordIds.has(id));
+                            if (missingRecordIds.length > 0) {
+                                // 已有草稿缺失了部分费用行（例如误餐补助明细未被收录进该草稿单据）
+                                // 优雅安全重构：删除老旧不完整草稿（费用自动退回未报销池），重新调用官方模板接口全量生成包含误餐补助的单据
+                                AutopilotLogger.info(`[handleSaveDrafts] 草稿 ${bcBillMainId} 缺失 ${missingRecordIds.length} 笔费用(含误餐补助)，重新构建全量模板...`);
+                                try {
+                                    await deleteBillByBillMainIdsApi([bcBillMainId], globalState, 'BILL');
+                                    const bcRes = await createBillDataAndTemplateByExpenseIdListApi(BILL_DEFINE_IDS.TRIP_CLAIM_BC, plan.expenseRecordIds, globalState);
+                                    if (bcRes?.billData) {
+                                        bcBillData = bcRes.billData;
+                                        bcBillData.operationType = 'ADD';
+                                        bcBillMainId = '';
+                                    }
+                                    else {
+                                        bcBillData.operationType = 'UPDATE';
+                                    }
+                                }
+                                catch (recreateErr) {
+                                    AutopilotLogger.warn(`[handleSaveDrafts] 自动重构草稿失败，降级保持 UPDATE: ${recreateErr.message}`);
+                                    bcBillData.operationType = 'UPDATE';
+                                }
+                            }
+                            else {
+                                bcBillData.operationType = 'UPDATE';
+                            }
                         }
                         else {
                             // 从费用记录初始化新报销单草稿
@@ -76322,13 +77919,13 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
                         }
                         if (!bcBillData.appId)
                             bcBillData.appId = globalState?.appId || 'e3d5e4787ff911e88b1997bee3518b4d';
-                        // BUG 1 修复：回填主表区 (MAIN) 必填表头字段
+                        // 回填主表区 (MAIN) 必填表头字段
                         const mainRow = bcBillData.area.rowDatas[0];
-                        if (scBillCode) {
+                        if (matchedAccount) {
                             ensureRowField(mainRow, 'F_CCSQD', {
-                                title: scBillCode,
-                                machineAccountId: scBillMainId,
-                                machineAccountDefineId: '3299661bb34111e8846f7b262b3e5000'
+                                title: matchedAccount.billCode,
+                                machineAccountId: matchedAccount.machineAccountId,
+                                machineAccountDefineId: matchedAccount.machineAccountDefineId || '3299661bb34111e8846f7b262b3e5000'
                             }, 'MACHINE_ACCOUNT');
                         }
                         ensureRowField(mainRow, 'F_CCLX', { value: '03560c40cb4de1653e55bb00bc610000', title: { zh_CN: '境内出張' } }, 'RADIO');
@@ -76336,7 +77933,7 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
                         ensureRowField(mainRow, 'DESCRIPTION', plan.purpose || `出差${plan.destination}业务交流及现场技术支持`, 'MTEXT');
                         ensureRowField(mainRow, 'START_TRIP_DATE', startTripDate, 'DATE');
                         ensureRowField(mainRow, 'END_TRIP_DATE', endTripDate, 'DATE');
-                        // BUG 2 修复：回填出差报告子表区 (T_BILL_AREA_BGQ_DEF_001, 035af6b91fdde1653e55bb00bc610000)
+                        // 回填出差报告子表区 (T_BILL_AREA_BGQ_DEF_001)
                         const bgqAreaId = '035af6b91fdde1653e55bb00bc610000';
                         if (!mainRow.subAreaDatas)
                             mainRow.subAreaDatas = {};
@@ -76372,18 +77969,35 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
                         ensureRowField(bgqRow, 'F_YJ', reportSubject, 'STEXT');
                         ensureRowField(bgqRow, 'F_BG', reportSubject, 'MTEXT');
                         ensureRowField(bgqRow, 'F_BGNR', reportContent, 'MTEXT');
-                        // 3. 触发蝴蝶效应计算费用归属与预算维度 (BUDGET_DIM / DIM_PROJECT / DIM_ACCOUNT) 并批量克隆
+                        // 主表 relationWriteBack 台账回填 (若有原生台账行数据，触发官方联动)
+                        if (matchedAccount?.rawRow) {
+                            try {
+                                const rwbRes = await relationWriteBackApi('59b6f7cec84e441db2fea4a63700a175', '03976cebfeec42ef00eb2e736fda0000', mainRow.rowId, [matchedAccount.rawRow], bcBillData, '', undefined, globalState);
+                                if (rwbRes?.billData) {
+                                    bcBillData = rwbRes.billData;
+                                }
+                            }
+                            catch (rwbErr) {
+                                AutopilotLogger.warn(`[handleSaveDrafts] 主表 relationWriteBack 台账回填异常 (降级为直接注入): ${rwbErr.message}`);
+                            }
+                        }
+                        // 触发蝴蝶效应计算费用归属与预算维度 (BUDGET_DIM / DIM_PROJECT / DIM_ACCOUNT) 并批量克隆
                         try {
                             let targetProjId = plan.projectId || plan.scPlan?.projectId;
                             let targetProjTitle = plan.projectName || plan.scPlan?.projectName || modalState.projectName || '';
-                            // 若没有详细的项目维表 ID，动态搜索项目维表
                             if (!targetProjId || targetProjId.length < 20 || targetProjId.startsWith('X2') || targetProjId.startsWith('PRJ')) {
-                                const query = targetProjTitle || targetProjId || 'X2607-001';
-                                const projList = await searchProjectList(query, globalState, window);
-                                if (projList && projList.length > 0) {
-                                    const match = projList.find(p => p.code === targetProjId || p.name.includes(targetProjTitle)) || projList[0];
-                                    targetProjId = match.id;
-                                    targetProjTitle = `${match.code} ${match.name}(${match.code})`;
+                                const query = targetProjTitle || targetProjId || '';
+                                if (query) {
+                                    const projList = await searchProjectList(query, globalState, window);
+                                    if (projList && projList.length > 0) {
+                                        const match = (targetProjId ? projList.find(p => p.code === targetProjId) : null) ||
+                                            projList.find(p => p.name.includes(targetProjTitle) || (targetProjTitle && p.name.includes(targetProjTitle))) ||
+                                            projList[0];
+                                        targetProjId = match.id;
+                                        targetProjTitle = match.code && !match.name.includes(match.code)
+                                            ? `${match.code} ${match.name}`
+                                            : match.name;
+                                    }
                                 }
                             }
                             const claimSubArea = mainRow.subAreaDatas?.[BUDGET_CONSTANTS.claimSubAreaId];
@@ -76401,7 +78015,7 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
                                         const res2 = await changeBillFieldValueApi(BUDGET_CONSTANTS.fields.project.fieldCode, BUDGET_CONSTANTS.fields.project.fieldName, BUDGET_CONSTANTS.fields.project.fieldId, { value: targetProjId, title: { zh_CN: targetProjTitle } }, rowId0, sceneVO2, globalState);
                                         if (res2) {
                                             bcBillData = res2;
-                                            // 3) 确保设置是否向客户请款 (F_KHFD) 并内存批量克隆首行预算维度至所有同质费用行 (30倍极速入库)
+                                            // 3) 确保设置向客户请款 (F_KHFD)、申请台账 (APPLY_BILL_CODE) 与预算维度 (BUDGET_DIM) 并极速批量克隆
                                             const updatedClaimRows = bcBillData.area?.rowDatas?.[0]?.subAreaDatas?.[BUDGET_CONSTANTS.claimSubAreaId]?.rowDatas;
                                             if (updatedClaimRows && updatedClaimRows.length > 0) {
                                                 const b0 = updatedClaimRows[0].subAreaDatas?.[BUDGET_CONSTANTS.boAreaId]?.rowDatas?.[0];
@@ -76413,10 +78027,57 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
                                                             title: { zh_CN: '是(YES)' }
                                                         }
                                                     };
+                                                    if (matchedAccount) {
+                                                        const applyBillCodeValue = {
+                                                            balance: matchedAccount.balanceAmountObj || {
+                                                                amount: matchedAccount.balanceAmount,
+                                                                currency: '1',
+                                                                currencyCode: 'CNY'
+                                                            },
+                                                            businessTable: 'BO_FSSC_SC_CCSQD_MAIN',
+                                                            dest: matchedAccount.destination,
+                                                            dimValues: matchedAccount.budgetDim || [],
+                                                            machineAccountDefineId: matchedAccount.machineAccountDefineId || '3299661bb34111e8846f7b262b3e5000',
+                                                            machineAccountId: matchedAccount.machineAccountId,
+                                                            pointId: '03976cebfeec42ef00eb2e736fda0000',
+                                                            title: matchedAccount.billCode
+                                                        };
+                                                        b0.datas.APPLY_BILL_CODE = {
+                                                            dataType: 'MACHINE_ACCOUNT',
+                                                            value: applyBillCodeValue
+                                                        };
+                                                        b0.datas.APPLY_BILL_CODE_EXT = {
+                                                            dataType: 'STEXT',
+                                                            value: JSON.stringify({ machineAccountDefineId: matchedAccount.machineAccountDefineId || '3299661bb34111e8846f7b262b3e5000', title: matchedAccount.billCode })
+                                                        };
+                                                        b0.datas.F_WFBM_01 = {
+                                                            dataType: 'STEXT',
+                                                            value: matchedAccount.billCode
+                                                        };
+                                                        // 费用主行回写单号关联字段 F_CCSQDH
+                                                        updatedClaimRows.forEach(cr => {
+                                                            if (cr.datas) {
+                                                                cr.datas.F_CCSQDH = { dataType: 'STEXT', value: matchedAccount.billCode };
+                                                            }
+                                                        });
+                                                        if (matchedAccount.budgetDim && matchedAccount.budgetDim.length > 0) {
+                                                            b0.datas.BUDGET_DIM = {
+                                                                dataType: 'COMPLEX',
+                                                                value: matchedAccount.budgetDim
+                                                            };
+                                                        }
+                                                        b0.datas.F_KYJE = {
+                                                            dataType: 'AMOUNT',
+                                                            value: matchedAccount.balanceAmountObj || {
+                                                                amount: matchedAccount.balanceAmount,
+                                                                currency: '1'
+                                                            }
+                                                        };
+                                                    }
                                                 }
                                                 const refDatas = b0?.datas;
                                                 if (refDatas) {
-                                                    const CLONE_FIELDS = ['DIM_ACCOUNT', 'DIM_PROJECT', 'DIM_COST_CENTER', 'F_BM', 'F_KHFD', 'BUDGET_DIM'];
+                                                    const CLONE_FIELDS = ['DIM_ACCOUNT', 'DIM_PROJECT', 'DIM_COST_CENTER', 'F_BM', 'F_KHFD', 'BUDGET_DIM', 'APPLY_BILL_CODE', 'F_KYJE', 'F_WFBM_01', 'APPLY_BILL_CODE_EXT'];
                                                     for (let i = 1; i < updatedClaimRows.length; i++) {
                                                         const targetBRow = updatedClaimRows[i].subAreaDatas?.[BUDGET_CONSTANTS.boAreaId]?.rowDatas?.[0];
                                                         if (targetBRow && targetBRow.datas) {
@@ -76441,11 +78102,11 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
                         const curMainRow = bcBillData.area.rowDatas[0];
                         ensureRowField(curMainRow, 'START_TRIP_DATE', startTripDate, 'DATE');
                         ensureRowField(curMainRow, 'END_TRIP_DATE', endTripDate, 'DATE');
-                        if (scBillCode) {
+                        if (matchedAccount) {
                             ensureRowField(curMainRow, 'F_CCSQD', {
-                                title: scBillCode,
-                                machineAccountId: scBillMainId,
-                                machineAccountDefineId: '3299661bb34111e8846f7b262b3e5000'
+                                title: matchedAccount.billCode,
+                                machineAccountId: matchedAccount.machineAccountId,
+                                machineAccountDefineId: matchedAccount.machineAccountDefineId || '3299661bb34111e8846f7b262b3e5000'
                             }, 'MACHINE_ACCOUNT');
                         }
                         ensureRowField(curMainRow, 'F_CCLX', { value: '03560c40cb4de1653e55bb00bc610000', title: { zh_CN: '境内出張' } }, 'RADIO');
@@ -77168,6 +78829,9 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
         const quickWrap = container.querySelector('.yn-bem-quick-select-wrap');
         if (quickWrap) {
             const totalGroups = modalState.groups.length;
+            const unreimbursedCount = modalState.groups.filter(g => normalizeExpenseStatus(g.status) === '未报销').length;
+            const reimbursingCount = modalState.groups.filter(g => normalizeExpenseStatus(g.status) === '报销中').length;
+            const reimbursedCount = modalState.groups.filter(g => normalizeExpenseStatus(g.status) === '已报销').length;
             const warnCount = modalState.groups.filter(g => g.hasWarn).length;
             const missingRequiredCount = modalState.groups.filter(g => isGroupMissingRequired(g)).length;
             const saveErrorCount = modalState.saveErrors ? modalState.saveErrors.size : 0;
@@ -77182,6 +78846,9 @@ ${trip.billCode ? `- **关联系统申请单号 (SC)**：${trip.billCode}` : ''}
             <select id="yn-bem-filter-mode" class="yn-bem-select" style="font-size:11px; padding:2px 6px; margin-left:2px;">
                 ${saveErrorCount > 0 ? `<option value="SAVE_ERROR" ${modalState.filterMode === 'SAVE_ERROR' ? 'selected' : ''}>❌ 保存失败 (${saveErrorCount})</option>` : ''}
                 <option value="ALL" ${modalState.filterMode === 'ALL' ? 'selected' : ''}>全部 (${totalGroups})</option>
+                <option value="UNREIMBURSED" ${modalState.filterMode === 'UNREIMBURSED' ? 'selected' : ''}>未报销 (${unreimbursedCount})</option>
+                <option value="REIMBURSING" ${modalState.filterMode === 'REIMBURSING' ? 'selected' : ''}>报销中 (${reimbursingCount})</option>
+                <option value="REIMBURSED" ${modalState.filterMode === 'REIMBURSED' ? 'selected' : ''}>已报销 (${reimbursedCount})</option>
                 <option value="MISSING_REQUIRED" ${modalState.filterMode === 'MISSING_REQUIRED' ? 'selected' : ''}>待补必填 (${missingRequiredCount})</option>
                 <option value="WARN" ${modalState.filterMode === 'WARN' ? 'selected' : ''}>预警 (${warnCount})</option>
                 <option value="OK" ${modalState.filterMode === 'OK' ? 'selected' : ''}>正常 (${totalGroups - warnCount - missingRequiredCount})</option>
@@ -78334,6 +80001,8 @@ ${contextDataMarkdown}
         const executeSaveSelected = async () => {
             const updates = [];
             modalState.groups.forEach(group => {
+                if (normalizeExpenseStatus(group.status) === '已报销')
+                    return;
                 if (modalState.selectedRecordIds.has(group.expenseRecordId)) {
                     const hasDescChange = group.newDescription !== undefined && group.newDescription !== group.description;
                     const hasDateChange = group.newBusinessDate !== undefined && group.newBusinessDate !== group.businessDate;
@@ -78588,7 +80257,7 @@ ${contextDataMarkdown}
                 return;
             if (target.closest('#yn-bem-qa-select-all')) {
                 const filtered = getFilteredGroups(modalState);
-                modalState.selectedRecordIds = new Set(filtered.map(g => g.expenseRecordId));
+                modalState.selectedRecordIds = new Set(filtered.filter(g => normalizeExpenseStatus(g.status) !== '已报销').map(g => g.expenseRecordId));
                 refreshTableView(container, 'CHECKBOXES');
                 return;
             }
@@ -78603,7 +80272,7 @@ ${contextDataMarkdown}
                     if (modalState.selectedRecordIds.has(g.expenseRecordId)) {
                         modalState.selectedRecordIds.delete(g.expenseRecordId);
                     }
-                    else {
+                    else if (normalizeExpenseStatus(g.status) !== '已报销') {
                         modalState.selectedRecordIds.add(g.expenseRecordId);
                     }
                 });
@@ -78836,7 +80505,7 @@ ${contextDataMarkdown}
                 const cb = target;
                 const filtered = getFilteredGroups(modalState);
                 if (cb.checked) {
-                    filtered.forEach(g => modalState.selectedRecordIds.add(g.expenseRecordId));
+                    filtered.filter(g => normalizeExpenseStatus(g.status) !== '已报销').forEach(g => modalState.selectedRecordIds.add(g.expenseRecordId));
                 }
                 else {
                     filtered.forEach(g => modalState.selectedRecordIds.delete(g.expenseRecordId));

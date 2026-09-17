@@ -35,15 +35,47 @@ import {
     updateBudgetAllocationField,
     validateBillPlans,
     autoFillBillPlansWithAi,
+    normalizeToDatetimeLocal,
+    formatFlightTrainRemark,
 } from '../services/billPlanService';
 import { ExpenseRecordGroup } from './batchEditExpenseModal';
+import {
+    fetchApprovedTripApplicationsFromMachineAccountApi,
+    fetchMyApplicationsStatusApi,
+    fetchUserReimbursementBillsListApi,
+    fetchApplicationDetailApi,
+    ApprovedMachineAccountItem,
+    UserReimbursementBillSummary
+} from '../services/billService';
+import { getInvoicePoolGlobalState } from '../services/invoicePoolDomService';
+
+export interface AvailableSCItem {
+    billCode: string;
+    billMainId?: string;
+    machineAccountId?: string;
+    machineAccountDefineId?: string;
+    destination: string;
+    purpose?: string;
+    startDate?: string;
+    endDate?: string;
+    approvalStatus: 'approved' | 'approving' | 'draft';
+    approvalStatusText: string;
+    currentApprover?: string;
+    currentNode?: string;
+    balanceAmount?: number;
+    budgetSum?: number;
+    projectId?: string;
+    projectName?: string;
+    applicantDate?: string;
+    legs?: TripLeg[];
+}
 
 // ─── Props ───────────────────────────────────────────────────
 
 export interface BillManagementDashboardProps {
     initialState: BillManagementState;
     onClose?: () => void;
-    onSaveDrafts: (plans: BillPlan[]) => Promise<void>;
+    onSaveDrafts: (plans: BillPlan[], mode?: 'SC_ONLY' | 'BC_ONLY' | 'ALL') => Promise<void>;
     onSearchProject: (query: string) => Promise<Array<{ id: string; name: string; code: string }>>;
     rawGroups?: ExpenseRecordGroup[];
     defaultProjectName?: string;
@@ -232,7 +264,7 @@ const ItinerarySubTable = React.memo(({
         <div className="yn-bm-subgrid-box">
             <div className="yn-bm-subgrid-header">
                 <span className="title">
-                    ✈️ 旅程 (ITINERARY) 子表格
+                    ✈️ <span className="yn-bm-badge-apply" style={{ marginRight: '6px' }}>[申请]</span> 旅程 (ITINERARY) 子表格
                     {aiFilled && <span className="yn-bm-ai-sparkle-tag">✦ AI 生成</span>}
                 </span>
                 <span className="hint">
@@ -255,16 +287,16 @@ const ItinerarySubTable = React.memo(({
                     <tr>
                         <th style={{ width: '45px', textAlign: 'center' }}>行号</th>
                         <th style={{ width: '190px' }}>
-                            DATE (日期时间) <span className="yn-bm-req-star">*</span>
+                            <span className="yn-bm-badge-apply">[申请]</span> DATE (日期时间) <span className="yn-bm-req-star">*</span>
                         </th>
                         <th style={{ width: '150px' }}>
-                            FROM (出发地城市) <span className="yn-bm-req-star">*</span>
+                            <span className="yn-bm-badge-apply">[申请]</span> FROM (出发地城市) <span className="yn-bm-req-star">*</span>
                         </th>
                         <th style={{ width: '150px' }}>
-                            TO (出差目的地城市) <span className="yn-bm-req-star">*</span>
+                            <span className="yn-bm-badge-apply">[申请]</span> TO (出差目的地城市) <span className="yn-bm-req-star">*</span>
                         </th>
                         <th>
-                            FLIGHT/TRAIN ETC. (航班/车次备注，如“去程飞机 / 二等座”) <span className="yn-bm-req-star">*</span>
+                            <span className="yn-bm-badge-apply">[申请]</span> FLIGHT/TRAIN ETC. (航班/车次备注，如“[人名|外驻:人名]-[飞机|高铁|出租车]-[项目号]”) <span className="yn-bm-req-star">*</span>
                         </th>
                         <th style={{ width: '50px', textAlign: 'center' }}>操作</th>
                     </tr>
@@ -282,7 +314,7 @@ const ItinerarySubTable = React.memo(({
                                     <input
                                         type="datetime-local"
                                         className={`yn-bm-cell-input ${isDateMissing ? 'is-missing' : ''}`}
-                                        value={leg.date ? (leg.date.includes('T') ? leg.date.slice(0, 16) : `${leg.date}T09:00`) : ''}
+                                        value={normalizeToDatetimeLocal(leg.date)}
                                         data-bill-id={billId}
                                         data-field={`leg_${idx}_date`}
                                         title={isDateMissing ? missingMap?.[`leg_${idx}_date`] : ''}
@@ -319,7 +351,7 @@ const ItinerarySubTable = React.memo(({
                                         className="yn-bm-cell-input"
                                         value={leg.flightOrTrain || leg.transport || ''}
                                         onChange={e => onUpdateLeg(billId, idx, 'flightOrTrain', e.target.value)}
-                                        placeholder="如：CZ6534 | 外驻:李建勇 去程飞机"
+                                        placeholder="如：[外驻:成勇]-[飞机]-[X2607-001]"
                                     />
                                 </td>
                                 <td style={{ textAlign: 'center' }}>
@@ -365,7 +397,7 @@ const BudgetEstimationSubTable = React.memo(({
     return (
         <div className="yn-bm-subgrid-box">
             <div className="yn-bm-subgrid-header">
-                <span className="title">💰 予算 (BUDGET ESTIMATION) 核算表格</span>
+                <span className="title">💰 <span className="yn-bm-badge-apply" style={{ marginRight: '6px' }}>[申请]</span> 予算 (BUDGET ESTIMATION) 核算表格</span>
                 <span className={`diff-pill ${isCovered ? 'diff-ok' : 'diff-warn'}`}>
                     {isCovered ? `✅ 预算全额覆盖实际报销 (留存差额: ${formatCurrency(diff)})` : `⚠️ 预警: 预算合计低于报销实付 ${formatCurrency(-diff)} (需增加预算)`}
                 </span>
@@ -373,12 +405,20 @@ const BudgetEstimationSubTable = React.memo(({
             <table className="yn-bm-detail-table">
                 <thead>
                     <tr>
-                        <th style={{ width: '20%' }}>航空運賃（交通費）(AIRFARE ETC)</th>
-                        <th style={{ width: '20%' }}>ホテル代 (HOTEL FEE)</th>
-                        <th style={{ width: '20%' }}>誤餐補助 (Dining-delay ALLOW.)</th>
-                        <th style={{ width: '20%' }}>その他 (OTHERS / 市内交通等)</th>
+                        <th style={{ width: '20%' }}>
+                            <span className="yn-bm-badge-apply">[申请]</span> 航空運賃（交通費）(AIRFARE ETC)
+                        </th>
+                        <th style={{ width: '20%' }}>
+                            <span className="yn-bm-badge-apply">[申请]</span> ホテル代 (HOTEL FEE)
+                        </th>
+                        <th style={{ width: '20%' }}>
+                            <span className="yn-bm-badge-apply">[申请]</span> 誤餐補助 (Dining-delay ALLOW.)
+                        </th>
+                        <th style={{ width: '20%' }}>
+                            <span className="yn-bm-badge-apply">[申请]</span> その他 (OTHERS / 市内交通等)
+                        </th>
                         <th style={{ width: '20%', background: isBudgetInsufficient ? '#fef2f2' : '#eff6ff' }}>
-                            合計 (TOTAL - 需 ≥ 实际报销) <span className="yn-bm-req-star">*</span>
+                            <span className="yn-bm-badge-apply">[申请]</span> 合計 (TOTAL - 需 ≥ 实际报销) <span className="yn-bm-req-star">*</span>
                         </th>
                     </tr>
                 </thead>
@@ -469,23 +509,31 @@ const BudgetAllocationSubTable = React.memo(({
     return (
         <div className="yn-bm-subgrid-box">
             <div className="yn-bm-subgrid-header">
-                <span className="title">📑 费用信息与预算归属分摊表格 (BUDGET ALLOCATION & SPLIT)</span>
+                <span className="title">📑 <span className="yn-bm-badge-claim" style={{ marginRight: '6px' }}>[报销]</span> 费用信息与预算归属分摊表格 (BUDGET ALLOCATION & SPLIT)</span>
                 <span className="hint">※ 支持按费用类型分配项目，点击【+ 拆分】可将单项费用拆为多行预算归属（如部分向客户请款、部分自负）</span>
             </div>
             <table className="yn-bm-detail-table">
                 <thead>
                     <tr>
                         <th style={{ width: '45px', textAlign: 'center' }}>行号</th>
-                        <th style={{ width: '130px' }}>费用类型</th>
-                        <th style={{ width: '110px', textAlign: 'right' }}>费用总额</th>
+                        <th style={{ width: '130px' }}>
+                            <span className="yn-bm-badge-claim">[报销]</span> 费用类型
+                        </th>
+                        <th style={{ width: '110px', textAlign: 'right' }}>
+                            <span className="yn-bm-badge-claim">[报销]</span> 费用总额
+                        </th>
                         <th style={{ width: '320px' }}>
-                            预算归属 (项目维表) <span className="yn-bm-req-star">*</span>
+                            <span className="yn-bm-badge-common">[共通]</span> 预算归属 (项目维表) <span className="yn-bm-req-star">*</span>
                         </th>
-                        <th style={{ width: '110px', textAlign: 'right' }}>分摊金额</th>
+                        <th style={{ width: '110px', textAlign: 'right' }}>
+                            <span className="yn-bm-badge-claim">[报销]</span> 分摊金额
+                        </th>
                         <th style={{ width: '95px', textAlign: 'right' }}>
-                            分摊比例 <span className="yn-bm-req-star">*</span>
+                            <span className="yn-bm-badge-claim">[报销]</span> 分摊比例 <span className="yn-bm-req-star">*</span>
                         </th>
-                        <th style={{ width: '100px', textAlign: 'center' }}>是否向客户请款</th>
+                        <th style={{ width: '100px', textAlign: 'center' }}>
+                            <span className="yn-bm-badge-common">[共通]</span> 是否向客户请款
+                        </th>
                         <th style={{ width: '90px', textAlign: 'center' }}>操作</th>
                     </tr>
                 </thead>
@@ -661,6 +709,10 @@ export function BillManagementDashboard({
     const [searchQuery, setSearchQuery] = useState('');
 
     const [activeReportBillId, setActiveReportBillId] = useState<string | null>(null);
+    const [availableSCs, setAvailableSCs] = useState<AvailableSCItem[]>([]);
+    const [userReimbursementBills, setUserReimbursementBills] = useState<UserReimbursementBillSummary[]>([]);
+    const [scModalPlanId, setScModalPlanId] = useState<string | null>(null);
+    const [scFilterKeyword, setScFilterKeyword] = useState<string>('');
 
     // ── 必填与数据完整性校验 (实时) ──
     const validation = useMemo(() => validateBillPlans(billPlans), [billPlans]);
@@ -694,6 +746,25 @@ export function BillManagementDashboard({
             BILL_TYPE_LABELS[b.type].includes(q)
         );
     }, [billPlans, searchQuery]);
+
+    const targetPlanForScModal = useMemo(() =>
+        scModalPlanId ? billPlans.find(b => b.id === scModalPlanId) || null : null,
+        [billPlans, scModalPlanId]
+    );
+
+    const filteredAvailableSCs = useMemo(() => {
+        if (!scFilterKeyword.trim()) return availableSCs;
+        const kw = scFilterKeyword.trim().toLowerCase();
+        return availableSCs.filter(sc =>
+            (sc.billCode || '').toLowerCase().includes(kw) ||
+            (sc.destination || '').toLowerCase().includes(kw) ||
+            (sc.purpose || '').toLowerCase().includes(kw) ||
+            (sc.projectName || '').toLowerCase().includes(kw) ||
+            (sc.approvalStatusText || '').toLowerCase().includes(kw) ||
+            (sc.startDate || '').includes(kw) ||
+            (sc.endDate || '').includes(kw)
+        );
+    }, [availableSCs, scFilterKeyword]);
 
     // ── Handlers ──
     const handleSelect = useCallback((id: string) => {
@@ -800,19 +871,82 @@ export function BillManagementDashboard({
     }, [activeReportBillId]);
 
     // ── AI 智能副驾一键补全漏填字段 ──
-    const handleAutoFillWithAi = useCallback(() => {
+    const handleAutoFillWithAi = useCallback(async () => {
         const { updatedPlans, filledCount } = autoFillBillPlansWithAi(
             billPlans,
             rawGroups || [],
             defaultProjectName,
             defaultApplicantName
         );
-        setBillPlans(updatedPlans);
-        setProgressText(`✨ AI 智能副驾已成功补全 ${filledCount} 处要素（出差地、日程、航段、充裕预算与项目归属）`);
+
+        let finalPlans = updatedPlans;
+
+        // 异步通过系统维表搜索接口解析并补全项目全称 (格式如 "X2607-001 住友理工集团网络整合调研")
+        if (onSearchProject) {
+            finalPlans = await Promise.all(updatedPlans.map(async plan => {
+                const curProj = (plan.projectName || '').trim();
+                if (!curProj) return plan;
+
+                const codeMatch = curProj.match(/([A-Z0-9]{3,}-[0-9]+)/);
+                const query = codeMatch ? codeMatch[1] : curProj;
+                if (!query) return plan;
+
+                try {
+                    const results = await onSearchProject(query);
+                    if (results && results.length > 0) {
+                        const exact = (codeMatch ? results.find(r => (r.code || '').toUpperCase() === query.toUpperCase()) : null) ||
+                            results.find(r => (r.name || '').includes(query) || (r.code || '').includes(query)) ||
+                            results[0];
+                        if (exact && (exact.name || exact.code)) {
+                            const fullName = exact.code && !exact.name.includes(exact.code)
+                                ? `${exact.code} ${exact.name}`.trim()
+                                : (exact.name || exact.code);
+                            const projId = exact.id || plan.projectId || '';
+
+                            const updatedLegs = ((plan.scPlan?.legs || [])).map(leg => {
+                                const isExt = leg.travelerName ? (leg.travelerName !== plan.applicantName && !leg.travelerName.includes(plan.applicantName)) : false;
+                                return {
+                                    ...leg,
+                                    date: normalizeToDatetimeLocal(leg.date, '09:00'),
+                                    flightOrTrain: formatFlightTrainRemark(leg.flightOrTrain || leg.transport || '', leg.travelerName || '', isExt, fullName)
+                                };
+                            });
+
+                            const updatedSc = plan.scPlan ? {
+                                ...plan.scPlan,
+                                projectName: fullName,
+                                projectId: projId,
+                                legs: updatedLegs,
+                            } : undefined;
+
+                            const updatedAllocations = (plan.budgetAllocations || []).map(alloc => ({
+                                ...alloc,
+                                projectName: fullName,
+                                projectId: projId || alloc.projectId,
+                            }));
+
+                            return {
+                                ...plan,
+                                projectName: fullName,
+                                projectId: projId,
+                                scPlan: updatedSc,
+                                budgetAllocations: updatedAllocations,
+                            };
+                        }
+                    }
+                } catch (e) {
+                    console.warn(`[handleAutoFillWithAi] 维表搜索项目 ${query} 失败:`, e);
+                }
+                return plan;
+            }));
+        }
+
+        setBillPlans(finalPlans);
+        setProgressText(`✨ AI 智能副驾已成功补全 ${filledCount} 处要素（出差地、日程、航段、充裕预算与维表项目归属）`);
         // 自动展开所有出差单，方便用户一目了然核对
-        const bcIds = updatedPlans.filter(b => b.type === 'BC').map(b => b.id);
+        const bcIds = finalPlans.filter(b => b.type === 'BC').map(b => b.id);
         setExpandedIds(new Set(bcIds));
-    }, [billPlans, rawGroups, defaultProjectName, defaultApplicantName]);
+    }, [billPlans, rawGroups, defaultProjectName, defaultApplicantName, onSearchProject]);
 
     // ── 一键聚焦跳转首处漏填项 ──
     const handleFocusFirstMissing = useCallback(() => {
@@ -871,13 +1005,378 @@ export function BillManagementDashboard({
         };
     }, [billPlans, validation, handleAutoFillWithAi]);
 
-    const handleSaveSelected = useCallback(async () => {
+    // ── 异步刷新出差申请单台账、审批流与已建报销单状态 ──
+    const refreshSCStatuses = useCallback(async () => {
+        const globalState = getInvoicePoolGlobalState();
+        try {
+            const [approvedAccounts, myAppStatusMap, userBcList] = await Promise.all([
+                fetchApprovedTripApplicationsFromMachineAccountApi(globalState).catch(() => [] as ApprovedMachineAccountItem[]),
+                fetchMyApplicationsStatusApi(globalState).catch(() => new Map<string, any>()),
+                fetchUserReimbursementBillsListApi(globalState).catch(() => [] as UserReimbursementBillSummary[])
+            ]);
+
+            setUserReimbursementBills(userBcList);
+
+            // 汇总全量出差申请单（台账已审批 + 审批流中 + 草稿）
+            const scItems: AvailableSCItem[] = [];
+            const seenCodes = new Set<string>();
+
+            // 1. 台账已入账 (最高权威与可用额度)
+            for (const acc of approvedAccounts) {
+                const code = (acc.billCode || '').trim();
+                if (!code) continue;
+                seenCodes.add(code.toUpperCase());
+                scItems.push({
+                    billCode: acc.billCode,
+                    machineAccountId: acc.machineAccountId,
+                    machineAccountDefineId: acc.machineAccountDefineId,
+                    destination: acc.destination,
+                    purpose: acc.purpose,
+                    startDate: acc.startDate,
+                    endDate: acc.endDate,
+                    approvalStatus: 'approved',
+                    approvalStatusText: '已审批 (台账就绪)',
+                    balanceAmount: acc.balanceAmount,
+                    budgetSum: acc.balanceAmount,
+                    projectId: acc.projectId || '',
+                    projectName: acc.projectName || '',
+                    applicantDate: acc.applicantDate,
+                });
+            }
+
+            // 2. 我的申请单列表中处于审批中或草稿状态的 SC 单据
+            const pendingDetails: AvailableSCItem[] = [];
+            myAppStatusMap.forEach((statusInfo, code) => {
+                const normCode = (code || '').trim().toUpperCase();
+                if (!seenCodes.has(normCode)) {
+                    seenCodes.add(normCode);
+                    const st = statusInfo.status || '';
+                    const isApproved =
+                        st === '审批结束' ||
+                        st === '已审批' ||
+                        st === '审批通过' ||
+                        st.includes('结束') ||
+                        st.includes('通过') ||
+                        statusInfo.currentNode === '结束' ||
+                        statusInfo.statusEnum === 'APPROVED';
+                    const isApproving = !isApproved && (
+                        st === '审批中' ||
+                        st === 'APPROVING' ||
+                        statusInfo.statusEnum === 'APPROVING' ||
+                        (st.includes('审批') && !st.includes('未') && !st.includes('结束') && !st.includes('驳回'))
+                    );
+                    const isDraft = st === '未提交' || st === 'UNCOMMITTED' || statusInfo.statusEnum === 'UNCOMMITTED';
+
+                    let approvalStatusText = st;
+                    let approvalStatus: 'approved' | 'approving' | 'draft' = 'draft';
+                    if (isApproved) {
+                        approvalStatus = 'approved';
+                        approvalStatusText = '已审批 (审批结束)';
+                    } else if (isApproving) {
+                        approvalStatus = 'approving';
+                        approvalStatusText = statusInfo.currentApprover ? `审批中 (${statusInfo.currentApprover})` : '审批中';
+                    } else if (isDraft) {
+                        approvalStatus = 'draft';
+                        approvalStatusText = '草稿未提交';
+                    }
+
+                    const scItem: AvailableSCItem = {
+                        billCode: statusInfo.billCode || code,
+                        billMainId: statusInfo.billMainId,
+                        destination: '',
+                        purpose: statusInfo.billName || '',
+                        approvalStatus,
+                        approvalStatusText,
+                        currentApprover: statusInfo.currentApprover,
+                        currentNode: statusInfo.currentNode,
+                        budgetSum: statusInfo.budgetSum,
+                        applicantDate: statusInfo.applicantDate,
+                    };
+                    scItems.push(scItem);
+                    if (scItem.billMainId) {
+                        pendingDetails.push(scItem);
+                    }
+                }
+            });
+
+            // 并发异步补全申请单的真实目的地、事由与预算项目 (解决出差地检索与预算项目显示)
+            if (pendingDetails.length > 0) {
+                const topPending = pendingDetails.slice(0, 30);
+                await Promise.all(topPending.map(async item => {
+                    try {
+                        const detail = await fetchApplicationDetailApi(item.billMainId!, globalState);
+                        if (detail) {
+                            item.destination = detail.destination || item.destination;
+                            item.purpose = detail.purpose || item.purpose;
+                            item.projectName = detail.projectName || item.projectName;
+                            item.projectId = detail.projectId || item.projectId;
+                            item.startDate = detail.startDate || item.startDate;
+                            item.endDate = detail.endDate || item.endDate;
+                            if (detail.legs && detail.legs.length > 0) item.legs = detail.legs;
+                            if (detail.purpose) item.purpose = detail.purpose;
+                            if (detail.projectName) item.projectName = detail.projectName;
+                            if (detail.projectId) item.projectId = detail.projectId;
+                            if (detail.startDate) item.startDate = detail.startDate;
+                            if (detail.endDate) item.endDate = detail.endDate;
+                            if (detail.legs && detail.legs.length > 0) item.legs = detail.legs;
+                            if (detail.status === 'APPROVED' || detail.status === '审批通过' || detail.status === '已审批' || detail.status === '审批结束' || detail.status?.includes('结束')) {
+                                item.approvalStatus = 'approved';
+                                item.approvalStatusText = '已审批 (审批结束)';
+                            }
+                        }
+                    } catch (e) {
+                        // ignore single detail error
+                    }
+                }));
+            }
+
+            const completedSCs = [...scItems];
+            setAvailableSCs(completedSCs);
+
+            setBillPlans(prev => prev.map(plan => {
+                let updated = { ...plan };
+                if (plan.scPlan) {
+                    const sc = { ...plan.scPlan };
+                    const scCode = (sc.billCode || '').trim().toUpperCase();
+
+                    // 核心自动对齐策略升级：优先按照【起止时间区间 100% 一致 (From ~ To)】或单号精确关联
+                    const pStart = (plan.startDate || '').split('T')[0].split(' ')[0];
+                    const pEnd = (plan.endDate || '').split('T')[0].split(' ')[0];
+                    const matchedAccount = scItems.find(a => {
+                        const aStart = (a.startDate || '').split('T')[0].split(' ')[0];
+                        const aEnd = (a.endDate || '').split('T')[0].split(' ')[0];
+                        // 1. 单号已存在且精确对齐
+                        if (scCode && a.billCode.trim().toUpperCase() === scCode) return true;
+                        // 2. 时间区间 From ~ To 100% 一致且已审批通过
+                        if (a.approvalStatus === 'approved' && pStart && pEnd && aStart && aEnd && pStart === aStart && pEnd === aEnd) return true;
+                        // 3. 目的地一致且审批通过
+                        if (!scCode && a.approvalStatus === 'approved' && a.destination && plan.destination &&
+                            (a.destination.includes(plan.destination) || plan.destination.includes(a.destination))) {
+                            if (pStart && aStart && pStart === aStart) return true;
+                            if (!pStart || !aStart) return true;
+                        }
+                        return false;
+                    });
+
+                    if (matchedAccount) {
+                        sc.billCode = matchedAccount.billCode;
+                        sc.billMainId = matchedAccount.billMainId || sc.billMainId;
+                        sc.approvalStatus = matchedAccount.approvalStatus;
+                        sc.approvalStatusText = matchedAccount.approvalStatusText;
+                        sc.machineAccountId = matchedAccount.machineAccountId;
+                        sc.machineAccountBalance = matchedAccount.balanceAmount;
+                        sc.currentApprover = matchedAccount.currentApprover;
+                        sc.currentNode = matchedAccount.currentNode;
+                        if (matchedAccount.legs && matchedAccount.legs.length > 0) {
+                            sc.legs = matchedAccount.legs;
+                        }
+
+                        // 权威继承出差申请单中的预算归属项目 (核心修复 BUG 2)
+                        if (matchedAccount.projectName) {
+                            sc.projectName = matchedAccount.projectName;
+                            sc.projectId = matchedAccount.projectId || sc.projectId || '';
+                            updated.projectName = matchedAccount.projectName;
+                            updated.projectId = matchedAccount.projectId || updated.projectId || '';
+                            updated.budgetAllocations = (updated.budgetAllocations || []).map(alloc => ({
+                                ...alloc,
+                                projectName: matchedAccount.projectName!,
+                                projectId: matchedAccount.projectId || alloc.projectId || ''
+                            }));
+                        }
+
+                        // 统一同步航段备注格式与标准日期
+                        if (sc.legs && sc.legs.length > 0) {
+                            const pName = sc.projectName || updated.projectName || '';
+                            sc.legs = sc.legs.map(leg => {
+                                const isExt = leg.travelerName ? (leg.travelerName !== plan.applicantName && !leg.travelerName.includes(plan.applicantName)) : false;
+                                return {
+                                    ...leg,
+                                    date: normalizeToDatetimeLocal(leg.date, '09:00'),
+                                    flightOrTrain: formatFlightTrainRemark(leg.flightOrTrain || leg.transport || '', leg.travelerName || '', isExt, pName)
+                                };
+                            });
+                        }
+                    } else if (scCode) {
+                        const statusInfo = myAppStatusMap.get(scCode);
+                        if (statusInfo) {
+                            const st = statusInfo.status || '';
+                            const isApproved =
+                                st === '审批结束' ||
+                                st === '已审批' ||
+                                st === '审批通过' ||
+                                st.includes('结束') ||
+                                st.includes('通过') ||
+                                statusInfo.currentNode === '结束' ||
+                                statusInfo.statusEnum === 'APPROVED';
+                            const isApproving = !isApproved && (
+                                st === '审批中' ||
+                                st === 'APPROVING' ||
+                                statusInfo.statusEnum === 'APPROVING' ||
+                                (st.includes('审批') && !st.includes('未') && !st.includes('结束') && !st.includes('驳回'))
+                            );
+                            const isDraft = st === '未提交' || st === 'UNCOMMITTED' || statusInfo.statusEnum === 'UNCOMMITTED';
+                            if (isApproved) {
+                                sc.approvalStatus = 'approved';
+                                sc.approvalStatusText = '已审批 (审批结束)';
+                            } else if (isApproving) {
+                                sc.approvalStatus = 'approving';
+                                sc.approvalStatusText = statusInfo.currentApprover ? `审批中 (${statusInfo.currentApprover})` : '审批中';
+                                sc.currentApprover = statusInfo.currentApprover;
+                                sc.currentNode = statusInfo.currentNode;
+                            } else {
+                                sc.approvalStatus = 'draft';
+                                sc.approvalStatusText = isDraft ? '草稿未提交' : st;
+                            }
+                        }
+                    }
+                    updated.scPlan = sc;
+                }
+
+                // 关联与检测已建报销单 (核心修复 BUG 1)
+                const planDest = (plan.destination || '').trim();
+                const matchedBc = userBcList.find(bc =>
+                    (updated.scPlan?.billCode && bc.billName.includes(updated.scPlan.billCode)) ||
+                    (planDest && bc.billName.includes(planDest))
+                );
+                if (matchedBc) {
+                    updated.existingBcBillCode = matchedBc.billCode;
+                    updated.existingBcBillMainId = matchedBc.billMainId;
+                    updated.existingBcStatus = matchedBc.status;
+                }
+
+                return updated;
+            }));
+        } catch (e: any) {
+            console.warn('[BillManagementDashboard] 刷新申请单状态失败:', e);
+        }
+    }, []);
+
+    useEffect(() => {
+        refreshSCStatuses();
+    }, [refreshSCStatuses]);
+
+    // ── 交互选择并关联出差申请单 (SC) ──
+    const handleLinkSC = useCallback(async (targetPlanId: string, item: AvailableSCItem) => {
+        let effectiveProjectName = item.projectName || '';
+        let effectiveProjectId = item.projectId || '';
+        let effectiveLegs: TripLeg[] = item.legs || [];
+
+        // 若当前选中的申请单尚未拉取到预算项目或行程（例如在审批中），实时抓取完整单据详情
+        if ((!effectiveProjectName || effectiveLegs.length === 0) && item.billMainId) {
+            try {
+                const globalState = getInvoicePoolGlobalState();
+                const detail = await fetchApplicationDetailApi(item.billMainId, globalState);
+                if (detail?.projectName) {
+                    effectiveProjectName = detail.projectName;
+                    effectiveProjectId = detail.projectId || '';
+                }
+                if (detail?.legs && detail.legs.length > 0) {
+                    effectiveLegs = detail.legs;
+                }
+            } catch (e) {
+                console.warn('[handleLinkSC] 提取申请单详情失败:', e);
+            }
+        }
+
+        setBillPlans(prev => prev.map(p => {
+            if (p.id !== targetPlanId) return p;
+            const currentSc = p.scPlan || {
+                applicantName: p.applicantName,
+                tripType: '境内出張',
+                destination: p.destination,
+                purpose: p.purpose,
+                startDate: p.startDate,
+                endDate: p.endDate,
+                days: 1,
+                nights: 0,
+                legs: [],
+                airfareBudget: 0,
+                hotelBudget: 0,
+                mealAllowance: 0,
+                otherBudget: 0,
+                totalBudget: p.totalAmount,
+                projectId: '',
+                projectName: '',
+                customerCharge: false,
+            };
+
+            const newSc: SCPlan = {
+                ...currentSc,
+                billCode: item.billCode,
+                billMainId: item.billMainId || currentSc.billMainId,
+                machineAccountId: item.machineAccountId,
+                machineAccountBalance: item.balanceAmount,
+                approvalStatus: item.approvalStatus,
+                approvalStatusText: item.approvalStatusText,
+                currentApprover: item.currentApprover,
+                currentNode: item.currentNode,
+                legs: (effectiveLegs.length > 0 ? effectiveLegs : currentSc.legs).map(leg => {
+                    const isExt = leg.travelerName ? (leg.travelerName !== p.applicantName && !leg.travelerName.includes(p.applicantName)) : false;
+                    const pName = effectiveProjectName || currentSc.projectName || p.projectName || '';
+                    return {
+                        ...leg,
+                        date: normalizeToDatetimeLocal(leg.date, '09:00'),
+                        flightOrTrain: formatFlightTrainRemark(leg.flightOrTrain || leg.transport || '', leg.travelerName || '', isExt, pName)
+                    };
+                }),
+                projectName: effectiveProjectName || currentSc.projectName,
+                projectId: effectiveProjectId || currentSc.projectId,
+            };
+
+            const updatedAllocations = (p.budgetAllocations || []).map(alloc => ({
+                ...alloc,
+                projectName: effectiveProjectName || alloc.projectName,
+                projectId: effectiveProjectId || alloc.projectId,
+            }));
+
+            return {
+                ...p,
+                scPlan: newSc,
+                projectName: effectiveProjectName || p.projectName,
+                projectId: effectiveProjectId || p.projectId,
+                budgetAllocations: updatedAllocations,
+            };
+        }));
+
+        setScModalPlanId(null);
+        setProgressText(`✅ 已成功关联出差申请单 ${item.billCode}${effectiveProjectName ? `，预算归属已同步更新为: ${effectiveProjectName}` : ''}`);
+    }, []);
+
+    // ── 解除出差申请单关联 ──
+    const handleUnlinkSC = useCallback((targetPlanId: string) => {
+        setBillPlans(prev => prev.map(p => {
+            if (p.id !== targetPlanId || !p.scPlan) return p;
+            return {
+                ...p,
+                scPlan: {
+                    ...p.scPlan,
+                    billCode: undefined,
+                    billMainId: undefined,
+                    machineAccountId: undefined,
+                    machineAccountBalance: undefined,
+                    approvalStatus: undefined,
+                    approvalStatusText: undefined,
+                }
+            };
+        }));
+        setProgressText('已解除该出差行程与申请单的关联');
+    }, []);
+
+    const handleSaveSelected = useCallback(async (mode: 'SC_ONLY' | 'BC_ONLY' | 'ALL' = 'ALL') => {
         const selected = billPlans.filter(b => selectedIds.has(b.id));
         if (selected.length === 0) return;
 
-        // 检查所选单据中是否有漏填必填项
+        if (mode === 'SC_ONLY') {
+            const scTargets = selected.filter(b => Boolean(b.scPlan));
+            if (scTargets.length === 0) {
+                alert('⚠️ 所选单据中没有需要立项申请的出差单(SC)。');
+                return;
+            }
+        }
+
+        // 检查所选单据中是否有漏填必填项 (生成 SC 时只检查出差地与日程，生成 BC 时严格检查)
         const selectedErrors = validation.errors.filter(e => selectedIds.has(e.billId));
-        if (selectedErrors.length > 0) {
+        if (selectedErrors.length > 0 && mode !== 'SC_ONLY') {
             const confirmMsg = `⚠️ 检出所选单据仍有 ${selectedErrors.length} 处必填项未填写/不合规（已用红框高亮）：\n` +
                 selectedErrors.slice(0, 3).map(e => `• ${e.message}`).join('\n') +
                 (selectedErrors.length > 3 ? `\n...等共 ${selectedErrors.length} 处` : '') +
@@ -889,24 +1388,29 @@ export function BillManagementDashboard({
         }
 
         setIsProcessing(true);
-        setProgressText(`正在极速持久化 ${selected.length} 张单据草稿 (commit: false)...`);
+        const actionDesc = mode === 'SC_ONLY'
+            ? `正在生成选中的出差申请单草稿 (SC)...`
+            : `正在检测申请单台账状态并持久化报销单草稿 (BC)...`;
+        setProgressText(actionDesc);
 
         try {
             setBillPlans(prev => prev.map(p =>
                 selectedIds.has(p.id) ? { ...p, status: 'saving' as const } : p
             ));
 
-            await onSaveDrafts(selected);
+            await onSaveDrafts(selected, mode);
 
             setBillPlans(prev => prev.map(p =>
                 selectedIds.has(p.id) ? { ...p, status: 'saved' as const, errorMessage: '' } : p
             ));
-            setProgressText(`✅ 已成功持久化 ${selected.length} 张单据草稿入库`);
+            setProgressText(mode === 'SC_ONLY'
+                ? `✅ 已成功生成出差申请单草稿，请前往【我的申请】核对并提交审批`
+                : `✅ 已成功持久化 ${selected.length} 张单据草稿入库`);
         } catch (err: any) {
             setBillPlans(prev => prev.map(p =>
                 selectedIds.has(p.id) ? { ...p, status: 'error' as const, errorMessage: err?.message || '保存失败' } : p
             ));
-            setProgressText(`❌ 保存失败: ${err?.message || '接口异常'}`);
+            setProgressText(`❌ 操作拦截/失败: ${err?.message || '接口异常'}`);
         } finally {
             setIsProcessing(false);
         }
@@ -931,6 +1435,11 @@ export function BillManagementDashboard({
                         <span className="yn-bm-tag yn-bm-tag--bj">{stats.bjCount} 张经费单</span>
                         )
                     </span>
+                    <div className="yn-bm-header-legend" title="字段属性归属说明：共通字段同时作用于申请与报销；申请专属对应 SC 出差申请；报销专属对应 BC/BJ 报销单">
+                        <span><span className="yn-bm-badge-common">[共通]</span>共通</span>
+                        <span><span className="yn-bm-badge-apply">[申请]</span>申请专属</span>
+                        <span><span className="yn-bm-badge-claim">[报销]</span>报销专属</span>
+                    </div>
                     {/* 必填健康度指示徽章 */}
                     {validation.missingCount > 0 ? (
                         <button
@@ -959,6 +1468,14 @@ export function BillManagementDashboard({
                 </div>
 
                 <div className="yn-bm-topbar-right">
+                    <button
+                        type="button"
+                        className="yn-bm-btn yn-bm-btn--secondary yn-bm-btn--sm"
+                        onClick={refreshSCStatuses}
+                        title="查询最新出差申请单审批流状态与出差台账入库情况"
+                    >
+                        🔄 刷新审批状态
+                    </button>
                     <button
                         type="button"
                         className="yn-bm-btn yn-bm-btn--ai-hero yn-bm-btn--sm"
@@ -999,30 +1516,45 @@ export function BillManagementDashboard({
                                     />
                                 </th>
                                 <th style={{ width: '30px' }} />
-                                <th style={{ width: '125px' }}>单据类型</th>
-                                <th style={{ width: '90px' }}>出差类型</th>
-                                <th style={{ width: '95px' }}>
-                                    出差人员 <span className="yn-bm-req-star">*</span>
+                                <th style={{ width: '135px' }}>
+                                    <span className="yn-bm-badge-claim">[报销]</span> 单据类型
                                 </th>
-                                <th style={{ width: '100px' }}>
-                                    出張先 (城市) <span className="yn-bm-req-star">*</span>
+                                <th style={{ width: '95px' }}>
+                                    <span className="yn-bm-badge-common">[共通]</span> 出差类型
+                                </th>
+                                <th style={{ width: '105px' }}>
+                                    <span className="yn-bm-badge-common">[共通]</span> 出差人员 <span className="yn-bm-req-star">*</span>
+                                </th>
+                                <th style={{ width: '115px' }}>
+                                    <span className="yn-bm-badge-common">[共通]</span> 出張先 (城市) <span className="yn-bm-req-star">*</span>
                                 </th>
                                 <th style={{ width: '360px' }}>
-                                    出張目的 (PURPOSE) <span className="yn-bm-req-star">*</span>
+                                    <span className="yn-bm-badge-common">[共通]</span> 出張目的 (PURPOSE) <span className="yn-bm-req-star">*</span>
                                 </th>
-                                <th style={{ width: '215px' }}>
-                                    期間 (From ~ To) <span className="yn-bm-req-star">*</span>
+                                <th style={{ width: '225px' }}>
+                                    <span className="yn-bm-badge-common">[共通]</span> 期間 (From ~ To) <span className="yn-bm-req-star">*</span>
+                                </th>
+                                <th style={{ width: '155px' }}>
+                                    <span className="yn-bm-badge-apply">[申请]</span> 出差申请单 (SC) <span className="yn-bm-req-star">*</span>
                                 </th>
                                 <th style={{ width: '290px' }}>
-                                    预算归属 (项目维表) <span className="yn-bm-req-star">*</span>
+                                    <span className="yn-bm-badge-common">[共通]</span> 预算归属 (项目维表) <span className="yn-bm-req-star">*</span>
                                 </th>
-                                <th style={{ width: '85px', textAlign: 'center' }}>向客户请款</th>
-                                <th style={{ width: '120px', textAlign: 'right' }}>
-                                    预算合计 (SC) <span className="yn-bm-req-star">*</span>
+                                <th style={{ width: '95px', textAlign: 'center' }}>
+                                    <span className="yn-bm-badge-common">[共通]</span> 向客户请款
                                 </th>
-                                <th style={{ width: '110px', textAlign: 'right' }}>实报实销金额</th>
-                                <th style={{ width: '95px', textAlign: 'center' }}>出差总结报告</th>
-                                <th style={{ width: '95px', textAlign: 'center' }}>状态</th>
+                                <th style={{ width: '130px', textAlign: 'right' }}>
+                                    <span className="yn-bm-badge-apply">[申请]</span> 预算合计 (SC) <span className="yn-bm-req-star">*</span>
+                                </th>
+                                <th style={{ width: '115px', textAlign: 'right' }}>
+                                    <span className="yn-bm-badge-claim">[报销]</span> 实报实销金额
+                                </th>
+                                <th style={{ width: '105px', textAlign: 'center' }}>
+                                    <span className="yn-bm-badge-claim">[报销]</span> 出差总结报告
+                                </th>
+                                <th style={{ width: '95px', textAlign: 'center' }}>
+                                    <span className="yn-bm-badge-claim">[报销]</span> 状态
+                                </th>
                             </tr>
                         </thead>
                         <tbody>
@@ -1197,6 +1729,75 @@ export function BillManagementDashboard({
                                                 )}
                                             </td>
 
+                                            {/* 出差申请单 (SC) 与审批状态 */}
+                                            <td>
+                                                {sc ? (
+                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                                                        {sc.billCode ? (
+                                                            <a
+                                                                href={sc.billMainId ? `#/billWrite?billMainId=${sc.billMainId}` : `#/billWrite?billCode=${sc.billCode}`}
+                                                                target="_blank"
+                                                                rel="noreferrer"
+                                                                style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: '12px', color: '#2563eb', textDecoration: 'underline' }}
+                                                                title="在新标签页中打开出差申请单"
+                                                            >
+                                                                {sc.billCode} ↗
+                                                            </a>
+                                                        ) : (
+                                                            <span style={{ fontFamily: 'monospace', fontWeight: 600, fontSize: '11px', color: '#94a3b8' }}>
+                                                                待第1步生成
+                                                            </span>
+                                                        )}
+
+                                                        {sc.approvalStatus === 'approved' ? (
+                                                            <span className="yn-bm-badge yn-bm-badge--saved" style={{ fontSize: '10px', padding: '1px 5px', width: 'fit-content' }} title={`✅ 已审批通过并入库出差申请台账${sc.machineAccountBalance ? ` (可用额度: ¥${sc.machineAccountBalance})` : ''}，可安全生成报销单`}>
+                                                                ✅ 已审批 (台账就绪)
+                                                            </span>
+                                                        ) : sc.approvalStatus === 'approving' ? (
+                                                            <span className="yn-bm-badge yn-bm-badge--saving yn-bm-badge-pulse" style={{ fontSize: '10px', padding: '1px 5px', width: 'fit-content', background: '#fef3c7', color: '#b45309' }} title={`⏳ 正在审批流中，尚未入库台账，无法关联报销单${sc.currentApprover ? ` (当前审批人: ${sc.currentApprover})` : ''}`}>
+                                                                ⏳ 审批中 {sc.currentApprover ? `(${sc.currentApprover})` : '(未入账)'}
+                                                            </span>
+                                                        ) : sc.approvalStatus === 'draft' || sc.billCode ? (
+                                                            <span className="yn-bm-badge" style={{ fontSize: '10px', padding: '1px 5px', width: 'fit-content', background: '#f1f5f9', color: '#475569' }} title="📝 申请单草稿已保存，请在【我的申请】中复核并提交审批">
+                                                                📝 草稿未提交
+                                                            </span>
+                                                        ) : (
+                                                            <span style={{ fontSize: '10px', color: '#94a3b8' }}>
+                                                                未创建申请单
+                                                            </span>
+                                                        )}
+
+                                                        <div style={{ display: 'flex', gap: '6px', alignItems: 'center', marginTop: '2px' }}>
+                                                            <button
+                                                                type="button"
+                                                                className="yn-bm-btn-link"
+                                                                onClick={() => {
+                                                                    setScModalPlanId(plan.id);
+                                                                    setScFilterKeyword('');
+                                                                }}
+                                                                style={{ fontSize: '11px', color: '#2563eb', padding: 0, textDecoration: 'underline', cursor: 'pointer', background: 'none', border: 'none' }}
+                                                                title="从出差台账与我的申请中选择或切换关联申请单"
+                                                            >
+                                                                {sc.billCode ? '🔄 切换' : '🔍 关联已有'}
+                                                            </button>
+                                                            {sc.billCode && (
+                                                                <button
+                                                                    type="button"
+                                                                    className="yn-bm-btn-link"
+                                                                    onClick={() => handleUnlinkSC(plan.id)}
+                                                                    style={{ fontSize: '11px', color: '#ef4444', padding: 0, cursor: 'pointer', background: 'none', border: 'none' }}
+                                                                    title="解除与此申请单的关联"
+                                                                >
+                                                                    ✕ 解绑
+                                                                </button>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                ) : (
+                                                    <span className="yn-bm-muted">—</span>
+                                                )}
+                                            </td>
+
                                             {/* 预算归属 (项目维表 · 290px 宽) */}
                                             <td>
                                                 <ProjectSearchInput
@@ -1263,13 +1864,29 @@ export function BillManagementDashboard({
                                             {/* 状态 */}
                                             <td style={{ textAlign: 'center' }}>
                                                 <StatusBadge status={plan.status} error={plan.errorMessage} />
+                                                {plan.existingBcBillCode && (
+                                                    <div style={{ marginTop: '4px', display: 'flex', flexDirection: 'column', gap: '2px', alignItems: 'center' }}>
+                                                        <a
+                                                            href={`#/billWrite?billMainId=${plan.existingBcBillMainId}`}
+                                                            target="_blank"
+                                                            rel="noreferrer"
+                                                            style={{ fontFamily: 'monospace', fontWeight: 600, fontSize: '11px', color: '#2563eb', textDecoration: 'underline' }}
+                                                            title="在新标签页查看已创建的报销单详情"
+                                                        >
+                                                            BC: {plan.existingBcBillCode} ↗
+                                                        </a>
+                                                        <span className="yn-bm-badge" style={{ fontSize: '9px', padding: '1px 5px', background: '#e0f2fe', color: '#0369a1', width: 'fit-content' }}>
+                                                            {plan.existingBcStatus || '已建报销单'}
+                                                        </span>
+                                                    </div>
+                                                )}
                                             </td>
                                         </tr>
 
                                         {/* ── 展开区：纯二维子表格 (无卡片，无多余输入框) ── */}
                                         {isExpanded && (
                                             <tr className="yn-bm-subtables-row">
-                                                <td colSpan={14} className="yn-bm-subtables-cell">
+                                                <td colSpan={15} className="yn-bm-subtables-cell">
                                                     <div className="yn-bm-subtables-container">
                                                         {/* 子表格 1: 旅程明细 (ITINERARY) */}
                                                         {isBC && sc && (
@@ -1340,13 +1957,24 @@ export function BillManagementDashboard({
                     )}
                     <button
                         type="button"
-                        className="yn-bm-btn yn-bm-btn--primary yn-bm-btn--lg"
-                        onClick={handleSaveSelected}
+                        className="yn-bm-btn yn-bm-btn--secondary yn-bm-btn--lg"
+                        onClick={() => handleSaveSelected('SC_ONLY')}
                         disabled={isProcessing || stats.selectedCount === 0}
+                        title="第 1 步：为所选行程生成出差申请单(SC)草稿。生成后请前往【我的申请】核对并提交审批。审批通过后方可生成报销单。"
+                        style={{ borderColor: '#f59e0b', color: '#b45309', fontWeight: 600, background: '#fffbeb' }}
+                    >
+                        📝 ① 仅生成出差申请单 (SC)
+                    </button>
+                    <button
+                        type="button"
+                        className="yn-bm-btn yn-bm-btn--primary yn-bm-btn--lg"
+                        onClick={() => handleSaveSelected('BC_ONLY')}
+                        disabled={isProcessing || stats.selectedCount === 0}
+                        title="第 2 步：检测申请单审批状态，关联已入库台账生成出差费用报销单(BC)，自动完成预算归属关联。"
                     >
                         {isProcessing
-                            ? '⏳ 正在保存入库...'
-                            : `💾 批量持久化已选 ${stats.selectedCount} 张草稿入库 (commit: false)`
+                            ? '⏳ 正在处理中...'
+                            : `💾 ② 生成费用报销单 (BC，需申请单已审批)`
                         }
                     </button>
                 </div>
@@ -1360,6 +1988,198 @@ export function BillManagementDashboard({
                 onClose={() => setActiveReportBillId(null)}
                 onSave={handleSaveReport}
             />
+
+            {/* ── 出差申请单 (SC) 关联与选择弹窗 ── */}
+            {scModalPlanId && (
+                <div
+                    className="yn-bm-modal-overlay"
+                    style={{
+                        position: 'fixed',
+                        inset: 0,
+                        backgroundColor: 'rgba(15, 23, 42, 0.65)',
+                        backdropFilter: 'blur(4px)',
+                        zIndex: 999999,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        padding: '24px'
+                    }}
+                    onClick={() => setScModalPlanId(null)}
+                >
+                    <div
+                        className="yn-bm-modal-card"
+                        style={{
+                            background: '#ffffff',
+                            borderRadius: '12px',
+                            width: '920px',
+                            maxWidth: '96vw',
+                            maxHeight: '85vh',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
+                            border: '1px solid #e2e8f0',
+                            overflow: 'hidden'
+                        }}
+                        onClick={e => e.stopPropagation()}
+                    >
+                        {/* Header */}
+                        <div style={{
+                            padding: '16px 20px',
+                            borderBottom: '1px solid #e2e8f0',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            background: '#f8fafc'
+                        }}>
+                            <div>
+                                <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 700, color: '#0f172a' }}>
+                                    🔍 选择并关联出差申请单 (SC)
+                                </h3>
+                                <p style={{ margin: '4px 0 0 0', fontSize: '12px', color: '#64748b' }}>
+                                    当前行程：<strong>{targetPlanForScModal?.title || targetPlanForScModal?.destination || '出差'}</strong> · 关联后将自动将申请单核准的预算归属（项目代码/名称）同步继承至所有费用分摊项。
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setScModalPlanId(null)}
+                                style={{
+                                    background: 'transparent',
+                                    border: 'none',
+                                    fontSize: '20px',
+                                    cursor: 'pointer',
+                                    color: '#94a3b8',
+                                    padding: '4px 8px'
+                                }}
+                            >
+                                ✕
+                            </button>
+                        </div>
+
+                        {/* Filter Toolbar */}
+                        <div style={{ padding: '12px 20px', borderBottom: '1px solid #f1f5f9', display: 'flex', gap: '12px', alignItems: 'center', background: '#ffffff' }}>
+                            <input
+                                type="text"
+                                className="yn-bm-cell-input"
+                                placeholder="🔍 输入单号 / 出差地 / 目的 / 预算项目代码快速过滤..."
+                                value={scFilterKeyword}
+                                onChange={e => setScFilterKeyword(e.target.value)}
+                                style={{ flex: 1, padding: '7px 12px', fontSize: '13px' }}
+                                autoFocus
+                            />
+                            <button
+                                type="button"
+                                className="yn-bm-btn yn-bm-btn--secondary yn-bm-btn--sm"
+                                onClick={refreshSCStatuses}
+                                title="从元年云重新查询我的申请与出差台账"
+                            >
+                                🔄 刷新申请单
+                            </button>
+                        </div>
+
+                        {/* Table */}
+                        <div style={{ flex: 1, overflowY: 'auto', padding: '0 20px 16px' }}>
+                            {filteredAvailableSCs.length === 0 ? (
+                                <div style={{ textAlign: 'center', padding: '40px 0', color: '#94a3b8' }}>
+                                    <div style={{ fontSize: '32px', marginBottom: '8px' }}>📭</div>
+                                    <div style={{ fontSize: '14px', fontWeight: 600 }}>未检索到符合条件的出差申请单</div>
+                                    <div style={{ fontSize: '12px', marginTop: '4px' }}>请确认申请单是否已在【我的申请】中保存或提交</div>
+                                </div>
+                            ) : (
+                                <table className="yn-bm-spread-table" style={{ width: '100%', marginTop: '12px' }}>
+                                    <thead>
+                                        <tr style={{ background: '#f8fafc' }}>
+                                            <th style={{ width: '140px' }}>申请单号</th>
+                                            <th style={{ width: '150px' }}>出差地 / 事由</th>
+                                            <th style={{ width: '120px' }}>审批状态</th>
+                                            <th style={{ width: '240px' }}>预算归属项目</th>
+                                            <th style={{ width: '110px', textAlign: 'right' }}>可用额度/预算</th>
+                                            <th style={{ width: '90px', textAlign: 'center' }}>操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {filteredAvailableSCs.map(item => {
+                                            const isLinked = targetPlanForScModal?.scPlan?.billCode?.trim().toUpperCase() === item.billCode.trim().toUpperCase();
+                                            return (
+                                                <tr key={item.billCode} style={{ background: isLinked ? '#f0fdf4' : undefined }}>
+                                                    <td>
+                                                        <a
+                                                            href={item.billMainId ? `#/billWrite?billMainId=${item.billMainId}` : `#/billWrite?billCode=${item.billCode}`}
+                                                            target="_blank"
+                                                            rel="noreferrer"
+                                                            style={{ fontFamily: 'monospace', fontWeight: 700, color: '#2563eb', textDecoration: 'underline' }}
+                                                            title="查看申请单原始数据"
+                                                        >
+                                                            {item.billCode} ↗
+                                                        </a>
+                                                    </td>
+                                                    <td>
+                                                        <div style={{ fontWeight: 600, color: '#1e293b' }}>{item.destination || '出差'}</div>
+                                                        {item.purpose && (
+                                                            <div style={{ fontSize: '11px', color: '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '200px' }} title={item.purpose}>
+                                                                {item.purpose}
+                                                            </div>
+                                                        )}
+                                                    </td>
+                                                    <td>
+                                                        {item.approvalStatus === 'approved' ? (
+                                                            <span className="yn-bm-badge yn-bm-badge--saved" style={{ fontSize: '10px' }}>
+                                                                ✅ 已审批 (台账就绪)
+                                                            </span>
+                                                        ) : item.approvalStatus === 'approving' ? (
+                                                            <span className="yn-bm-badge" style={{ fontSize: '10px', background: '#fef3c7', color: '#b45309' }}>
+                                                                ⏳ {item.approvalStatusText}
+                                                            </span>
+                                                        ) : (
+                                                            <span className="yn-bm-badge" style={{ fontSize: '10px', background: '#f1f5f9', color: '#475569' }}>
+                                                                📝 {item.approvalStatusText}
+                                                            </span>
+                                                        )}
+                                                    </td>
+                                                    <td>
+                                                        <span style={{ fontWeight: item.projectName ? 600 : 400, color: item.projectName ? '#1e293b' : '#94a3b8', fontSize: '12px' }}>
+                                                            {item.projectName || '— (保存后由系统带出)'}
+                                                        </span>
+                                                    </td>
+                                                    <td style={{ textAlign: 'right', fontFamily: 'var(--bm-mono)', fontWeight: 600 }}>
+                                                        ¥{formatCurrency(item.balanceAmount ?? item.budgetSum ?? 0)}
+                                                    </td>
+                                                    <td style={{ textAlign: 'center' }}>
+                                                        {isLinked ? (
+                                                            <span style={{ color: '#059669', fontWeight: 600, fontSize: '12px' }}>
+                                                                ✓ 当前关联
+                                                            </span>
+                                                        ) : (
+                                                            <button
+                                                                type="button"
+                                                                className="yn-bm-btn yn-bm-btn--primary yn-bm-btn--xs"
+                                                                onClick={() => handleLinkSC(scModalPlanId, item)}
+                                                                style={{ padding: '3px 8px', fontSize: '11px' }}
+                                                            >
+                                                                选择并关联
+                                                            </button>
+                                                        )}
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                </table>
+                            )}
+                        </div>
+
+                        {/* Footer */}
+                        <div style={{ padding: '12px 20px', borderTop: '1px solid #e2e8f0', background: '#f8fafc', display: 'flex', justifyContent: 'flex-end' }}>
+                            <button
+                                type="button"
+                                className="yn-bm-btn yn-bm-btn--secondary"
+                                onClick={() => setScModalPlanId(null)}
+                            >
+                                关闭
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
